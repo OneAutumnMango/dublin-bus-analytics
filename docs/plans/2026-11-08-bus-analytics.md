@@ -42,7 +42,9 @@
 - `app/backup.py` — snapshot, gzip of closed months
 - `web/` — `index.html`, `app.js`, `chart.umd.min.js`, `style.css`
 - `tests/` — one file per module plus `fake_server.py`
-- `Dockerfile`, `pyproject.toml`, `README.md`; compose edit in `dublin-bus-server/docker-compose.yml`
+- `app/scheduler.py` — scheduled backups (Task 12)
+- `scripts/seed_demo.py`, `docker-compose.example.yml`, `analytics.env.example`, `README.md` (Task 13)
+- `Dockerfile`, `pyproject.toml`; compose edit in `dublin-bus-server/docker-compose.yml`
 
 ### Task 0: Server exposes scheduled time
 
@@ -199,14 +201,14 @@
 
 ### Task 9: Backup + monthly compaction
 
-**Files:** Create `app/backup.py`, `tests/test_backup.py`; modify `app/main.py` (nightly task, `POST /api/backup`, `GET /api/backup/download`); modify `app/db.py` samples opener to read `.db.gz` by decompressing to a temp file
+**Files:** Create `app/backup.py`, `tests/test_backup.py`; modify `app/main.py` (`POST /api/backup`, `GET /api/backup/download`; the scheduled nightly run is Task 12); modify `app/db.py` samples opener to read `.db.gz` by decompressing to a temp file
 
 **Interfaces:**
 - Consumes: `open_meta`, `samples_path`
 - Produces: `snapshot(data_dir: Path) -> Path` (consistent copies of `meta.db` and every `samples-*.db` via `sqlite3.Connection.backup`, tarred into `/data/backups/analytics-<UTC stamp>.tar`; retains last 7); `compact_closed_months(data_dir: Path, now: int) -> list[Path]` (gzip + remove months strictly before the current UTC month; idempotent).
 
 **Security flag:** `none`
-**Does NOT cover:** off-host backup (README says to copy the volume).
+**Does NOT cover:** off-host backup (README says to copy the volume); scheduling (Task 12).
 
 - [ ] **Step 1:** Tests: `test_snapshot_restorable_and_consistent_while_writing`, `test_snapshot_retention_keeps_7`, `test_compact_gzips_only_closed_months`, `test_compact_idempotent`, `test_series_reads_gzipped_month`.
 - [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add backup and compaction"`.
@@ -228,9 +230,9 @@ Follow `superpowers-optimized:frontend-design` for visual quality and accessibil
 - [ ] **Step 2:** Implement pages; manually verify against a seeded DB by running `uvicorn` and exercising every page; capture one screenshot per page.
 - [ ] **Step 3:** pytest -> PASS. **Step 4:** Commit `"Add web UI"`.
 
-### Task 11: Compose wiring, README, end-to-end smoke
+### Task 11: Compose wiring, end-to-end smoke
 
-**Files:** Modify `dublin-bus-server/docker-compose.yml`; create `dublin-bus-analytics/README.md`, `scripts/smoke.sh`
+**Files:** Modify `dublin-bus-server/docker-compose.yml`; create `dublin-bus-analytics/scripts/smoke.sh`, `docs/verification.md`
 
 **Interfaces:** Consumes everything. Produces: compose service:
 ```yaml
@@ -242,6 +244,10 @@ Follow `superpowers-optimized:frontend-design` for visual quality and accessibil
     ports: ["127.0.0.1:${ANALYTICS_PORT:-8081}:8081"]
     environment:
       SERVER_URL: http://dublin-bus-server:8080
+      POLL_SECONDS: "${ANALYTICS_POLL_SECONDS:-30}"
+      BACKUP_ENABLED: "${ANALYTICS_BACKUP_ENABLED:-true}"
+      BACKUP_TIME: "${ANALYTICS_BACKUP_TIME:-03:00}"
+      BACKUP_KEEP: "${ANALYTICS_BACKUP_KEEP:-7}"
     volumes: [analytics-data:/data]
 ```
 plus `analytics-data:` under `volumes:`.
@@ -249,8 +255,63 @@ plus `analytics-data:` under `volumes:`.
 **Security flag:** `none`
 **Does NOT cover:** publishing an image to ghcr.
 
-- [ ] **Step 1:** README: what it is, compose usage, config table, storage layout, backup/restore, "never expose publicly".
+- [ ] **Step 1:** Add the compose service above to `dublin-bus-server/docker-compose.yml` (README is Task 13).
 - [ ] **Step 2:** `scripts/smoke.sh`: `docker compose up -d --build`, wait for `/api/health`, track one route via `PUT /api/routes/tracked/15`, wait 90s, assert `/api/routes/15/summary` shows `n >= 1` for some stop.
 - [ ] **Step 3:** Run `cd dublin-bus-server && docker compose config` (valid) then `../dublin-bus-analytics/scripts/smoke.sh` (needs `GTFSR_API_KEY` in `server.env`). Expected: exits 0.
-- [ ] **Step 4:** Verify `scheduledEpochSeconds` against live API on a known stop vs the published timetable once (spot check, record result in README "Verification").
+- [ ] **Step 4:** Verify `scheduledEpochSeconds` against live API on a known stop vs the published timetable once (spot check, record the result in `docs/verification.md`).
 - [ ] **Step 5:** Commit in both repos.
+
+### Task 12: Backup scheduling
+
+Run after Task 9 (execution order: ... 9, 12, 10, 11, 13). Task 9 only provides the functions and manual endpoints; this task makes the nightly run real and configurable.
+
+**Files:** Create `app/scheduler.py`, `tests/test_scheduler.py`; modify `app/config.py` (Settings), `app/main.py` (lifespan starts/stops it), `tests/test_config.py` if present
+
+**Interfaces:**
+- Consumes: `backup.snapshot(data_dir) -> Path`, `backup.compact_closed_months(data_dir, now) -> list[Path]`, `Settings`
+- Produces: `Settings` gains `backup_enabled: bool = True`, `backup_time: str = "03:00"` (HH:MM, Europe/Dublin local), `backup_keep: int = 7` (env `BACKUP_ENABLED`, `BACKUP_TIME`, `BACKUP_KEEP`; invalid values raise ValueError naming the variable, like existing settings); `next_run(now: datetime, backup_time: str) -> datetime` (pure; next occurrence strictly after `now`, Europe/Dublin aware, DST-safe); `class BackupScheduler: __init__(settings, now_fn=...)`, `async run() -> None` (loop: sleep until `next_run`, run snapshot then compaction, log result, never die on error), `async run_once() -> Path | None`. On startup, if enabled and the newest backup in `/data/backups` is older than 24h (or none exists), one catch-up `run_once()` runs promptly. `snapshot` retention uses `backup_keep`.
+
+**Security flag:** `none`
+**Does NOT cover:** off-host copies, backup encryption, multiple schedules.
+
+- [ ] **Step 1: Failing tests** (inject a fake clock and fake sleep; no real waiting):
+  - `test_next_run_later_today_when_before_time`, `test_next_run_tomorrow_when_after_time`, `test_next_run_exactly_at_time_is_tomorrow`
+  - `test_next_run_dst_spring_forward_and_fall_back` (Europe/Dublin; time 01:30 on the transition days is still exactly one run per day, never skipped or doubled)
+  - `test_invalid_backup_time_rejected` (`25:00`, `3:00`, `""`, `abc`), `test_invalid_backup_keep_rejected` (`0`, `-1`, `x`), `test_backup_enabled_parsing` (`true/false/1/0`, anything else rejected)
+  - `test_disabled_scheduler_never_runs`
+  - `test_run_once_creates_snapshot_then_compacts_closed_months`
+  - `test_failure_in_snapshot_is_logged_and_loop_continues` (next iteration still runs)
+  - `test_catch_up_runs_when_last_backup_older_than_24h`, `test_no_catch_up_when_recent_backup`
+  - `test_retention_keeps_backup_keep_newest`
+  - hypothesis: for any `now` and any valid HH:MM, `next_run(now, t) > now` and `next_run(now, t) - now <= 25h`
+- [ ] **Step 2:** `.venv/bin/python -m pytest tests/test_scheduler.py` -> FAIL (no module).
+- [ ] **Step 3:** Implement `app/scheduler.py` and the Settings fields; lifespan in `app/main.py` creates the task on startup and cancels it cleanly on shutdown (test: app startup/shutdown with the scheduler enabled leaves no pending tasks).
+- [ ] **Step 4:** pytest -> PASS; full suite green.
+- [ ] **Step 5:** Commit (small commits per sub-step).
+
+### Task 13: Developer README, sample compose, example env
+
+Run last (execution order: ... 11, 13).
+
+**Files:** Create `README.md`, `docker-compose.example.yml`, `analytics.env.example`, `scripts/seed_demo.py`, `tests/test_seed_demo.py`
+
+**Interfaces:**
+- Consumes: `Settings` env names, the compose service from Task 11, `open_meta`/`open_samples`
+- Produces: `scripts/seed_demo.py DATA_DIR [--routes 15,46A] [--days 14]` writes synthetic but plausible arrivals/forecast/sample rows into DATA_DIR (via the real `open_meta`/`open_samples`) so the UI can be tried without waiting for live data; `README.md` (short, for developers, not users); `docker-compose.example.yml` (standalone sample with both `dublin-bus-server` and `dublin-bus-analytics` services, image/build placeholders, volumes, `env_file`s); `analytics.env.example` listing every setting with its default and a one-line comment: `SERVER_URL`, `DATA_DIR`, `POLL_SECONDS`, `PORT`, `ANALYTICS_PORT`, `BACKUP_ENABLED`, `BACKUP_TIME`, `BACKUP_KEEP`.
+
+**Security flag:** `none`
+**Does NOT cover:** end-user docs, API reference, deployment hardening beyond "bind to 127.0.0.1, never expose publicly".
+
+README contents, in this order, kept under ~100 lines:
+1. What this is (2 lines) and "never expose publicly; no auth".
+2. Run the site for testing: `python -m venv .venv && .venv/bin/pip install -e ".[dev]"`; `SERVER_URL=http://localhost:8080 DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload --port 8081`; open `http://127.0.0.1:8081`. Without a live server: `.venv/bin/python scripts/seed_demo.py ./data` first.
+3. Run the tests: `.venv/bin/python -m pytest` and with coverage `--cov=app --cov-branch`.
+4. Build the container: `docker build -t dublin-bus-analytics .`; run it standalone; or use compose (`docker compose -f docker-compose.example.yml up -d --build`).
+5. Configuration table (env var, default, meaning) matching `analytics.env.example`.
+6. Data and backups: where files live under `/data`, scheduled backup behavior (`BACKUP_*`), manual backup endpoint, restore = stop container, replace `/data`, start.
+
+- [ ] **Step 1: Failing test** `tests/test_seed_demo.py`: `test_seed_creates_rows_readable_via_api` (seed into tmp dir, `TestClient(create_app(settings))` returns `n > 0` for a seeded route summary), `test_seed_is_deterministic_for_same_args`, `test_seed_rejects_bad_args` (days <= 0, empty routes), `test_seed_twice_does_not_duplicate` (idempotent via UNIQUE).
+- [ ] **Step 2:** pytest -> FAIL. **Step 3:** Implement `scripts/seed_demo.py` (fixed random seed). **Step 4:** pytest -> PASS.
+- [ ] **Step 5:** Write `README.md`, `docker-compose.example.yml`, `analytics.env.example`.
+- [ ] **Step 6: Verify every README command actually works** (run each; do not paste unverified commands): fresh venv install, test command passes, `uvicorn` starts and `curl -s localhost:8081/api/health` returns `{"ok": true}`, seeded data shows in `curl -s localhost:8081/api/routes/tracked`, `docker build -t dublin-bus-analytics .` succeeds, `docker compose -f docker-compose.example.yml config` is valid. Add a test that every var in `analytics.env.example` is a name read by `Settings`/compose and vice versa (`test_env_example_matches_settings`).
+- [ ] **Step 7:** Commit.
