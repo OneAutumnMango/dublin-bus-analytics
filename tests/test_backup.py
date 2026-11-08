@@ -118,7 +118,7 @@ def test_restore_contents_equal(data, tmp_path):
 
 
 def test_snapshot_includes_gz_as_is_and_safe_names(data, tmp_path):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     gz = data / "samples-2026-09.db.gz"
     assert gz.exists()
     p = snapshot(data, tmp_path / "bk")
@@ -226,17 +226,24 @@ def test_compact_idempotent(data):
     assert compact_closed_months(data, ts(2026, 12, 1)) == []
 
 
-def test_month_boundary(data):
-    assert compact_closed_months(data, ts(2026, 10, 31, 23, 59, 59)) == [data / "samples-2026-09.db.gz"]
+def test_month_boundary_exact_grace(data):
+    g = backup.COMPACT_GRACE_S
+    assert g == 2 * 86400
+    assert compact_closed_months(data, ts(2026, 10, 1) + g - 1) == []  # Sept not yet eligible
+    assert compact_closed_months(data, ts(2026, 10, 1) + g) == [data / "samples-2026-09.db.gz"]
     assert (data / "samples-2026-10.db").exists()
-    assert compact_closed_months(data, ts(2026, 11, 1)) == [data / "samples-2026-10.db.gz"]
+    assert compact_closed_months(data, ts(2026, 11, 1) + g - 1) == []
+    assert compact_closed_months(data, ts(2026, 11, 1) + g) == [data / "samples-2026-10.db.gz"]
 
 
 def test_year_rollover(tmp_path):
     mk_month(tmp_path, 2025, 12)
     mk_month(tmp_path, 2026, 1)
-    assert compact_closed_months(tmp_path, ts(2026, 1, 1)) == [tmp_path / "samples-2025-12.db.gz"]
+    g = backup.COMPACT_GRACE_S
+    assert compact_closed_months(tmp_path, ts(2026, 1, 1) + g - 1) == []
+    assert compact_closed_months(tmp_path, ts(2026, 1, 1) + g) == [tmp_path / "samples-2025-12.db.gz"]
     assert (tmp_path / "samples-2026-01.db").exists()
+    assert compact_closed_months(tmp_path, ts(2026, 2, 1) + g) == [tmp_path / "samples-2026-01.db.gz"]
 
 
 def test_future_month_untouched(tmp_path):
@@ -259,7 +266,7 @@ def test_gz_roundtrip_sha256(data):
     c.execute("pragma wal_checkpoint(truncate)")
     c.close()
     want = hashlib.sha256((data / "samples-2026-09.db").read_bytes()).hexdigest()
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     got = hashlib.sha256(gzip.open(data / "samples-2026-09.db.gz").read()).hexdigest()
     assert got == want
 
@@ -279,24 +286,24 @@ def test_corrupt_original_not_deleted(tmp_path, caplog):
 def test_interrupted_compaction_then_rerun(data, monkeypatch):
     orig = backup._verify_gz
 
-    def boom(gz):
+    def boom(gz, sha):
         raise RuntimeError("crash")
 
     monkeypatch.setattr(backup, "_verify_gz", boom)
-    assert compact_closed_months(data, ts(2026, 10, 1)) == []
+    assert compact_closed_months(data, ts(2026, 10, 3)) == []
     assert (data / "samples-2026-09.db").exists()
     assert not (data / "samples-2026-09.db.gz").exists()
     assert rows(data / "samples-2026-09.db", "select count(*) from sample") == [(3,)]
     monkeypatch.setattr(backup, "_verify_gz", orig)
-    assert compact_closed_months(data, ts(2026, 10, 1)) == [data / "samples-2026-09.db.gz"]
+    assert compact_closed_months(data, ts(2026, 10, 3)) == [data / "samples-2026-09.db.gz"]
 
 
 def test_crash_after_gz_before_delete_rerun(data):
     """gz and original both present (crash between rename and unlink): rerun converges."""
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     db = data / "samples-2026-09.db"
     db.write_bytes(gzip.open(data / "samples-2026-09.db.gz").read())
-    assert compact_closed_months(data, ts(2026, 10, 1)) == [data / "samples-2026-09.db.gz"]
+    assert compact_closed_months(data, ts(2026, 10, 3)) == [data / "samples-2026-09.db.gz"]
     assert not db.exists()
 
 
@@ -309,7 +316,7 @@ def test_busy_writer_skipped(data):
     c.execute("begin immediate")
     c.execute("insert into sample values(1,'x','s',1,1,1,1)")
     try:
-        assert compact_closed_months(data, ts(2026, 10, 1)) == []
+        assert compact_closed_months(data, ts(2026, 10, 3)) == []
         assert (data / "samples-2026-09.db").exists()
     finally:
         c.execute("rollback")
@@ -340,8 +347,10 @@ def test_property_compacts_exactly_closed_months(tmp_path_factory, months, now):
     d = tmp_path_factory.mktemp("p")
     for y, m in months:
         mk_month(d, y, m, n=1)
-    cur = datetime.fromtimestamp(now, timezone.utc)
-    closed = {(y, m) for y, m in months if (y, m) < (cur.year, cur.month)}
+    def end(y, m):
+        return int(datetime(y + (m == 12), m % 12 + 1, 1, tzinfo=timezone.utc).timestamp())
+
+    closed = {(y, m) for y, m in months if now >= end(y, m) + backup.COMPACT_GRACE_S}
     out = compact_closed_months(d, now)
     assert {p.name for p in out} == {f"samples-{y}-{m:02d}.db.gz" for y, m in closed}
     assert {p.name for p in d.glob("samples-*.db")} == {f"samples-{y}-{m:02d}.db" for y, m in months - closed}
@@ -351,7 +360,7 @@ def test_property_compacts_exactly_closed_months(tmp_path_factory, months, now):
 # ---- open_samples_readonly / open_samples guards ----
 
 def test_series_reads_gzipped_month(data):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     c = open_samples_readonly(data, ts(2026, 9, 7))
     assert c.execute("select count(*), min(seq), max(seq) from sample").fetchone() == (3, 0, 2)
     c.close()
@@ -376,7 +385,7 @@ def _tmp_before():
 
 
 def test_readonly_gz_tempfile_removed_on_close(data):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
     assert len(_tmp_left(before)) == 1
@@ -387,7 +396,7 @@ def test_readonly_gz_tempfile_removed_on_close(data):
 
 
 def test_readonly_gz_tempfile_removed_on_gc(data):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
     del c
@@ -396,7 +405,7 @@ def test_readonly_gz_tempfile_removed_on_gc(data):
 
 
 def test_readonly_gz_tempfile_removed_on_exception(data):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
     try:
@@ -422,7 +431,7 @@ def test_readonly_missing_raises_and_creates_nothing(tmp_path):
 
 
 def test_open_samples_refuses_gz_only_month(data):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     with pytest.raises(RuntimeError):
         open_samples(data, ts(2026, 9, 7))
     assert not (data / "samples-2026-09.db").exists()
@@ -459,7 +468,7 @@ def test_api_download_returns_newest_and_no_filename_param(client, data):
 
 
 def test_readonly_close_tolerates_missing_tempfile(data):
-    compact_closed_months(data, ts(2026, 10, 1))
+    compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
     for f in _tmp_left(before):
@@ -488,5 +497,42 @@ def test_verify_rejects_integrity_failure(tmp_path):
     gz = tmp_path / "bad.db.gz"
     gz.write_bytes(gzip.compress(bytes(raw)))
     with pytest.raises(sqlite3.DatabaseError):
-        backup._verify_gz(gz)
+        backup._verify_gz(gz, hashlib.sha256(bytes(raw)).hexdigest())
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith("verify")] == []
+
+
+# ---- fix round 1 ----
+
+def test_never_clobber_existing_gz(tmp_path, caplog):
+    mk_month(tmp_path, 2026, 1, n=1000)
+    assert compact_closed_months(tmp_path, ts(2026, 6, 1))
+    plain = tmp_path / "samples-2026-01.db"
+    c = sqlite3.connect(plain)
+    c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, expected int, realtime int,"
+              " primary key(trip_id, stop_id, seq, ts)) without rowid")
+    c.execute("insert into sample values(1,'x','s',1,1,1,1)")
+    c.commit()
+    c.close()
+    before = plain.read_bytes()
+    assert compact_closed_months(tmp_path, ts(2026, 6, 1)) == []
+    assert plain.read_bytes() == before
+    r = open_samples_readonly(tmp_path, ts(2026, 1, 5))
+    assert r.execute("select count(*) from sample").fetchone() == (1000,)
+    r.close()
+    assert "samples-2026-01.db" in caplog.text and "skipped" in caplog.text
+
+
+def test_identical_plain_and_gz_plain_removed(data):
+    compact_closed_months(data, ts(2026, 10, 3))
+    plain = data / "samples-2026-09.db"
+    plain.write_bytes(gzip.open(data / "samples-2026-09.db.gz").read())
+    gz_before = (data / "samples-2026-09.db.gz").read_bytes()
+    assert compact_closed_months(data, ts(2026, 10, 3)) == [data / "samples-2026-09.db.gz"]
+    assert not plain.exists() and (data / "samples-2026-09.db.gz").read_bytes() == gz_before
+
+
+def test_open_samples_refuses_when_gz_exists_even_with_plain(data):
+    compact_closed_months(data, ts(2026, 10, 3))
+    (data / "samples-2026-09.db").write_bytes(b"")
+    with pytest.raises(RuntimeError):
+        open_samples(data, ts(2026, 9, 7))
