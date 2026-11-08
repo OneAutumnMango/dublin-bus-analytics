@@ -1,7 +1,11 @@
 """SQLite storage. One connection per owner: the tracker/poller owns one connection used only
 from the event-loop thread; API handlers and backup open their own connection per call
 (cheap under WAL) and close it. Connections are thread-bound (check_same_thread default)."""
+import gzip
+import os
+import shutil
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,4 +51,49 @@ def samples_path(data_dir: Path, ts: int) -> Path:
 
 
 def open_samples(data_dir: Path, ts: int) -> sqlite3.Connection:
-    return _connect(samples_path(data_dir, ts), SAMPLES_SCHEMA)
+    p = samples_path(data_dir, ts)
+    if not p.exists() and p.with_name(p.name + ".gz").exists():
+        raise RuntimeError(f"{p.name} is closed (gzipped) and immutable")
+    return _connect(p, SAMPLES_SCHEMA)
+
+
+class _TempConnection(sqlite3.Connection):
+    """Read-only connection over a decompressed temp copy; the copy is removed on close/GC."""
+    _tmp: str | None = None
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            self._cleanup()
+
+    def _cleanup(self):
+        tmp, self._tmp = self._tmp, None
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+    def __del__(self):
+        self._cleanup()
+
+
+def open_samples_readonly(data_dir: Path, ts: int) -> sqlite3.Connection:
+    """Read-only access to a month, plain or gzipped. Never creates the month; FileNotFoundError if absent."""
+    p = samples_path(data_dir, ts)
+    if p.exists():
+        return sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    gz = p.with_name(p.name + ".gz")
+    if not gz.exists():
+        raise FileNotFoundError(str(p))
+    fd, tmp = tempfile.mkstemp(prefix="samples-ro-", suffix=".db")
+    try:
+        with os.fdopen(fd, "wb") as out, gzip.open(gz, "rb") as src:
+            shutil.copyfileobj(src, out)
+        c = sqlite3.connect(f"file:{tmp}?mode=ro&immutable=1", uri=True, factory=_TempConnection)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+    c._tmp = tmp
+    return c
