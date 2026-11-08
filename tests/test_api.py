@@ -1,10 +1,14 @@
+import asyncio
 import json
 import math
+import time
+import types
 import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings as hsettings, strategies as st
@@ -33,18 +37,21 @@ class FakePoller:
 
 
 class Env:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, real_poller=False):
         self.s = Settings(server_url="http://fake", data_dir=tmp_path)
         self.fake = FakeServer()
-        self.app = create_app(self.s, start_background=False)
-        self.app.state.poller = FakePoller()
-        self.app.state.client = ServerClient("http://fake", self.fake.client())
+        self.app = create_app(self.s, start_background=False,
+                              client=ServerClient("http://fake", self.fake.client()))
+        if not real_poller:
+            self.app.state.poller = FakePoller()
         self.c = TestClient(self.app)
         self.n = 0
 
-    def add(self, route="15", stop="s1", seq=1, delay=0, scheduled=T0, confidence=1, realtime=1,
+    def add(self, route="15", stop="s1", seq=None, delay=0, scheduled=T0, confidence=1, realtime=1,
             trip=None, date="2026-01-01"):
+        """seq defaults to `scheduled`: in real data seq is the per-visit key, not a position."""
         self.n += 1
+        seq = scheduled if seq is None else seq
         db = open_meta(self.s.data_dir)
         with db:
             cur = db.execute(
@@ -54,6 +61,11 @@ class Env:
                  delay, confidence, realtime, route))
         db.close()
         return cur.lastrowid
+
+    def trip(self, trip, calls, route="15", t0=T0, step=60):
+        """One row per (trip, stop): calls = [(stop_id, delay)], scheduled = t0 + i*step."""
+        for i, (stop, d) in enumerate(calls):
+            self.add(route=route, stop=stop, delay=d, scheduled=t0 + i * step, trip=trip)
 
     def fc(self, arrival_id, horizon, err):
         db = open_meta(self.s.data_dir)
@@ -92,20 +104,39 @@ def test_track_untrack_roundtrip(env):
     assert env.c.delete("/api/routes/tracked/15").json() == {"routes": ["N4"]}  # absent: ok
 
 
-def test_track_awaits_async_poller(env):
-    class AP(FakePoller):
-        async def track(self, r):
-            self._t.add(r)
-
-    env.app.state.poller = AP()
-    assert env.c.put("/api/routes/tracked/15").json() == {"routes": ["15"]}
-
-
-@pytest.mark.parametrize("bad", ["%20", "a" * 33, "-x", "a;b", "a'b", "a%00b", ".x", "<b>"])
-def test_track_invalid_route_422(env, bad):
+@pytest.mark.parametrize("bad", ["%20", "a" * 21, "a" * 25, "a;b", "a'b", "a%00b", "<b>", "caf%C3%A9",
+                                 "%D9%A3", "a%0Ab"])
+def test_track_invalid_route_422_real_poller(tmp_path, bad):
+    env = Env(tmp_path, real_poller=True)
     assert env.c.put(f"/api/routes/tracked/{bad}").status_code == 422
     assert env.c.delete(f"/api/routes/tracked/{bad}").status_code == 422
-    assert env.app.state.poller.tracked() == set()
+    assert env.get("/api/routes/tracked").json() == {"routes": []}
+
+
+def test_real_poller_strip_roundtrip(tmp_path):
+    env = Env(tmp_path, real_poller=True)
+    assert env.c.put("/api/routes/tracked/16%20").json() == {"routes": ["16"]}
+    assert env.c.put("/api/routes/tracked/%2016").json() == {"routes": ["16"]}
+    assert env.c.delete("/api/routes/tracked/16%20").json() == {"routes": []}
+    assert env.app.state.poller.tracked() == []
+
+
+def test_real_poller_valid_special_names(tmp_path):
+    env = Env(tmp_path, real_poller=True)
+    for r in ("N4", "15/A", "15 A", "X_1.2-3", "a" * 20):
+        assert env.c.put("/api/routes/tracked/" + quote(r, safe="")).status_code == 200, r
+    assert env.get("/api/routes/tracked").json()["routes"] == sorted(
+        ["N4", "15/A", "15 A", "X_1.2-3", "a" * 20])
+
+
+def test_poller_value_error_maps_to_422(env):
+    class Raising(FakePoller):
+        def track(self, r):
+            raise ValueError("nope")
+
+    env.app.state.poller = Raising()
+    r = env.c.put("/api/routes/tracked/15")
+    assert r.status_code == 422 and r.json()["detail"] == "nope"
 
 
 def test_track_special_route_names(env):
@@ -146,15 +177,50 @@ def test_route_stops_proxy_and_errors(env):
 # ---------- summary ----------
 
 def test_route_summary_per_stop_in_route_order(env):
-    for stop, seq in (("sC", 3), ("sA", 1), ("sB", 2)):
-        env.add(stop=stop, seq=seq, delay=seq * 60)
-    env.add(stop="sB", seq=2, delay=60)
-    env.add(route="other", stop="zz", seq=0, delay=5)
+    # reviewer's repro: server order zz, mm, aa (neither alphabetical nor seq-sorted); seq == scheduled
+    env.fake.set_route_stops("15", {"out": [{"id": "zz"}, {"id": "mm"}, {"id": "aa"}]})
+    for i, t in enumerate(("t1", "t2", "t3")):
+        env.trip(t, [("zz", 0), ("mm", 60), ("aa", 180)], t0=T0 + i * 3600)
+    env.add(route="other", stop="qq", delay=5)
     j = env.get("/api/routes/15/summary").json()
-    assert [s["stop_id"] for s in j["stops"]] == ["sA", "sB", "sC"]
-    assert [s["seq"] for s in j["stops"]] == [1, 2, 3]
-    assert [s["n"] for s in j["stops"]] == [1, 2, 1]
-    assert j["n"] == 4 and j["low_n"] is True and j["route"] == "15"
+    assert j["order_source"] == "server"
+    assert [s["stop_id"] for s in j["stops"]] == ["zz", "mm", "aa"]
+    assert [s["position"] for s in j["stops"]] == [0, 1, 2]
+    assert [s["mean"] for s in j["stops"]] == [0, 60, 180]
+    assert [s["n"] for s in j["stops"]] == [3, 3, 3] and j["n"] == 9 and j["route"] == "15"
+    assert "seq" not in j["stops"][0]
+
+
+def test_summary_unlisted_stops_last_by_stop_id(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "b"}, {"id": "a"}]})
+    env.trip("t1", [("z", 1), ("a", 1), ("y", 1), ("b", 1)])
+    s = env.get("/api/routes/15/summary").json()["stops"]
+    assert [(x["stop_id"], x["position"]) for x in s] == [("b", 0), ("a", 1), ("y", None), ("z", None)]
+
+
+def test_summary_two_directions_and_loop_stop(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "a"}],
+                                    "in": [{"id": "c"}, {"id": "b"}]})
+    env.trip("t1", [("c", 1), ("b", 1), ("a", 1)])
+    s = env.get("/api/routes/15/summary").json()["stops"]
+    # first listing wins: a@0 (out), b@1 (out), c@0 (in, later direction)
+    assert [(x["stop_id"], x["position"], x["direction"]) for x in s] == [
+        ("a", 0, "out"), ("b", 1, "out"), ("c", 0, "in")]
+
+
+@pytest.mark.parametrize("mode", ["down", "404", "malformed"])
+def test_summary_order_none_fallback(env, mode):
+    env.trip("t1", [("sb", 1), ("sa", 2)])
+    if mode == "down":
+        env.fake.set_route_stops("15", {"out": [{"id": "sb"}]})
+        env.fake.set_down(True)
+    elif mode == "malformed":
+        env.fake.set_route_stops("15", {"out": ["sb", 5]})
+    j = env.get("/api/routes/15/summary").json()
+    assert j["order_source"] == "none"
+    assert [(x["stop_id"], x["position"], x["direction"]) for x in j["stops"]] == [
+        ("sa", None, None), ("sb", None, None)]
+    assert j["n"] == 2
 
 
 def test_summary_exact_numbers(env):
@@ -233,12 +299,6 @@ def test_weekday_hour_filters_dublin_local(env):
     assert n(weekdays="0") == 1 and n(weekdays="0,2") == 2 and n(weekdays="6") == 1
     assert n(hours="9") == 1 and n(hours="14,23") == 2 and n(hours="0") == 0
     assert n(weekdays="0", hours="14") == 0
-
-
-def test_summary_nonexistent_stop_seq_none_sorted_last(env):
-    env.add(stop="a", seq=None, delay=1)
-    env.add(stop="b", seq=5, delay=1)
-    assert [s["stop_id"] for s in env.get("/api/routes/15/summary").json()["stops"]] == ["b", "a"]
 
 
 # ---------- stop stats ----------
@@ -328,59 +388,148 @@ def test_heatmap_filters_and_sorted(env):
 
 # ---------- accumulation ----------
 
-def seed_trips(env):
-    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
-                                    "in": [{"id": "x"}, {"id": "y"}]})
-    for t, ds in (("t1", (0, 60, 180)), ("t2", (0, 120, 240))):
-        for i, (sid, d) in enumerate(zip("abc", ds), 1):
-            env.add(trip=t, stop=sid, seq=i, delay=d)
-    for i, (sid, d) in enumerate(zip("xy", (10, 40)), 1):
-        env.add(trip="t3", stop=sid, seq=i, delay=d)
-    env.add(trip="t4", stop="q", seq=1, delay=5)  # matches no direction
+def acc(env, **q):
+    return env.get("/api/routes/15/accumulation", **q).json()
 
 
-def test_accumulation_grouped_by_direction(env):
-    seed_trips(env)
-    j = env.get("/api/routes/15/accumulation").json()
-    assert j["direction_source"] == "server"
-    d = {g["direction"]: g for g in j["directions"]}
-    assert set(d) == {"out", "in", "unknown"}
-    assert d["out"]["n_trips"] == 2 and d["in"]["n_trips"] == 1 and d["unknown"]["n_trips"] == 1
-    out = d["out"]["stops"]
-    assert [s["stop_id"] for s in out] == ["a", "b", "c"]
-    assert [s["mean_delay"] for s in out] == [0, 90, 210]
-    assert [s["segment_delta"] for s in out] == [None, 90, 120]
-    assert [(s["n"], s["n_delta"], s["low_n"], s["low_n_delta"]) for s in out][1] == (2, 2, True, True)
-    assert d["in"]["stops"][1]["segment_delta"] == 30
+def test_accumulation_reviewer_repro_realistic_seq(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "zz"}, {"id": "mm"}, {"id": "aa"}]})
+    for i, t in enumerate(("t1", "t2", "t3")):
+        env.trip(t, [("zz", 0), ("mm", 60), ("aa", 180)], t0=T0 + i * 3600)
+    j = acc(env)
+    assert j["order_source"] == "server" and len(j["groups"]) == 1
+    g = j["groups"][0]
+    assert (g["direction"], g["n"], g["n_delta"], g["low_n"]) == ("out", 3, 3, True)
+    assert [x["stop_id"] for x in g["stops"]] == ["zz", "mm", "aa"]
+    assert [x["position"] for x in g["stops"]] == [0, 1, 2]
+    assert [x["mean_delay"] for x in g["stops"]] == [0, 60, 180]
+    assert [x["segment_delta"] for x in g["stops"]] == [None, 60, 120]
+    assert [(x["n"], x["n_delta"], x["low_n"], x["low_n_delta"]) for x in g["stops"]][1] == (3, 3, True, True)
     finite(j)
 
 
+def test_accumulation_two_directions_shared_stops(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+                                    "in": [{"id": "c"}, {"id": "b"}, {"id": "x"}]})
+    env.trip("o1", [("a", 0), ("b", 60), ("c", 180)])
+    env.trip("o2", [("a", 0), ("b", 120), ("c", 240)], t0=T0 + 5000)
+    env.trip("i1", [("c", 10), ("b", 40), ("x", 100)], t0=T0 + 9000)
+    g = {x["direction"]: x for x in acc(env)["groups"]}
+    assert list(g) == ["out", "in"]  # server direction order
+    assert [x["mean_delay"] for x in g["out"]["stops"]] == [0, 90, 210]
+    assert [x["segment_delta"] for x in g["out"]["stops"]] == [None, 90, 120]
+    assert g["out"]["n"] == 2 and g["in"]["n"] == 1
+    assert [(x["stop_id"], x["position"], x["segment_delta"]) for x in g["in"]["stops"]] == [
+        ("c", 0, None), ("b", 1, 30), ("x", 2, 60)]
+
+
+def test_accumulation_loop_trip(env):
+    # loop: a b c a ; second visit of "a" must map to position 3, not 0
+    env.fake.set_route_stops("15", {"loop": [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "a"}]})
+    env.trip("t1", [("a", 0), ("b", 30), ("c", 90), ("a", 100)])
+    g = acc(env)["groups"][0]
+    assert [(x["stop_id"], x["position"], x["mean_delay"]) for x in g["stops"]] == [
+        ("a", 0, 0), ("b", 1, 30), ("c", 2, 90), ("a", 3, 100)]
+    assert [x["segment_delta"] for x in g["stops"]] == [None, 30, 60, 10]
+
+
+def test_accumulation_tie_and_nomatch_unknown(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}], "in": [{"id": "a"}, {"id": "c"}]})
+    env.trip("tie", [("a", 5)])  # a is first in both: tie
+    env.trip("none", [("q", 5)], t0=T0 + 5000)  # matches nothing
+    g = acc(env)["groups"]
+    assert [(x["direction"], x["n"], x["n_delta"], x["stops"]) for x in g] == [("unknown", 2, 0, [])]
+
+
+def test_accumulation_partial_trip_best_match(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+                                    "in": [{"id": "c"}, {"id": "b"}, {"id": "a"}]})
+    env.trip("t1", [("b", 10), ("c", 50)])  # out: 2 matches; in: b@1 then c needs >1: only 1
+    g = acc(env)["groups"]
+    assert [x["direction"] for x in g] == ["out"]
+    assert [x["position"] for x in g[0]["stops"]] == [1, 2]
+
+
+def test_accumulation_rows_ordered_by_scheduled_not_seq(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}]})
+    env.add(trip="t1", stop="b", delay=60, scheduled=T0 + 60)
+    env.add(trip="t1", stop="a", delay=0, scheduled=T0)
+    g = acc(env)["groups"][0]
+    assert [(x["stop_id"], x["segment_delta"]) for x in g["stops"]] == [("a", None), ("b", 60)]
+
+
+def test_accumulation_filters_apply(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}]})
+    env.trip("t1", [("a", 0), ("b", 60)])
+    env.trip("t2", [("a", 0), ("b", 600)], t0=T0 + 5000)
+    j = acc(env, until=T0 + 1000)
+    assert j["groups"][0]["n"] == 1 and j["groups"][0]["stops"][1]["mean_delay"] == 60
+    assert acc(env, since=T0 + 4000)["groups"][0]["stops"][1]["mean_delay"] == 600
+
+
 def test_accumulation_direction_param(env):
-    seed_trips(env)
-    j = env.get("/api/routes/15/accumulation", direction="in").json()
-    assert [g["direction"] for g in j["directions"]] == ["in"]
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}], "in": [{"id": "x"}, {"id": "y"}]})
+    env.trip("t1", [("a", 0), ("b", 60)])
+    env.trip("t2", [("x", 0), ("y", 60)], t0=T0 + 5000)
+    assert [g["direction"] for g in acc(env, direction="in")["groups"]] == ["in"]
+    assert [g["direction"] for g in acc(env, direction="unknown")["groups"]] == []
     assert env.get("/api/routes/15/accumulation", direction="sideways").status_code == 404
 
 
-def test_accumulation_without_server(env):
-    seed_trips(env)
+def test_accumulation_without_server_order_none(env):
+    env.trip("t1", [("a", 0), ("b", 60)])
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
     env.fake.set_down(True)
-    j = env.get("/api/routes/15/accumulation").json()
-    assert j["direction_source"] == "none" and [g["direction"] for g in j["directions"]] == ["all"]
-    assert j["directions"][0]["n_trips"] == 4
+    j = acc(env)
+    assert j["order_source"] == "none" and j["groups"] == []
     assert env.get("/api/routes/15/accumulation", direction="out").status_code == 502
 
 
-def test_accumulation_direction_with_unknown_route_404(env):
+def test_accumulation_unknown_route_on_server(env):
     env.add(delay=1)
+    assert acc(env) == {"route": "15", "filters": acc(env)["filters"], "order_source": "none", "groups": []}
     assert env.get("/api/routes/15/accumulation", direction="out").status_code == 404
-    assert env.get("/api/routes/15/accumulation").json()["directions"][0]["direction"] == "all"
+
+
+@pytest.mark.parametrize("bad", [{"out": [5]}, {"out": "x"}, {"out": [{"id": 5}]}, {"out": [{}]}, []])
+def test_malformed_shapes_never_500(env, bad):
+    env.fake.set_route_stops("15", bad)
+    env.add(delay=1)
+    assert env.get("/api/routes/15/stops").status_code == 502
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "none"
+    assert acc(env)["order_source"] == "none"
+    assert env.get("/api/routes/15/accumulation", direction="out").status_code == 502
+
+
+def test_missing_directions_key_is_502(env):
+    # FakeServer always wraps in "directions"; emulate a server answering without it
+    import httpx
+    from app.serverclient import ServerClient as SC
+    h = lambda req: httpx.Response(200, json={"routeId": "15"})
+    env.app.state.client = SC("http://x", httpx.AsyncClient(transport=httpx.MockTransport(h)))
+    env.add(delay=1)
+    assert env.get("/api/routes/15/stops").status_code == 502
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "none"
+    assert acc(env)["groups"] == []
 
 
 def test_accumulation_stopid_key_variant(env):
     env.fake.set_route_stops("15", {"out": [{"stopId": "a"}]})
-    env.add(stop="a", seq=1, delay=3)
-    assert env.get("/api/routes/15/accumulation").json()["directions"][0]["direction"] == "out"
+    env.add(stop="a", delay=3)
+    assert acc(env)["groups"][0]["direction"] == "out"
+
+
+def test_accumulation_skips_null_delay_and_scheduled(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}]})
+    env.add(trip="t1", stop="a", delay=None, scheduled=T0)
+    env.add(trip="t1", stop="b", delay=60, scheduled=T0 + 60)
+    db = open_meta(env.s.data_dir)
+    with db:
+        db.execute("insert into arrivals(trip_id,stop_id,seq,service_date,scheduled,delay,confidence,"
+                   "realtime,route) values('t1','a',99,'d',NULL,5,1,1,'15')")
+    db.close()
+    g = acc(env)["groups"][0]
+    assert [(x["stop_id"], x["segment_delta"]) for x in g["stops"]] == [("b", None)]
 
 
 # ---------- forecast ----------
@@ -418,32 +567,40 @@ def test_forecast_filters(env):
 
 # ---------- empty database ----------
 
-@pytest.mark.parametrize("url", ["/api/routes/zz/summary", "/api/stops/zz/stats", "/api/routes/zz/heatmap",
-                                 "/api/routes/zz/forecast"])
-def test_empty_db_200_n0(env, url):
-    r = env.get(url)
-    assert r.status_code == 200
-    j = r.json()
+def assert_empty(url, j):
+    """The exact empty-result structure of each endpoint (n 0 / no data), never a vacuous check."""
     finite(j)
-    assert j.get("n", 0) == 0
-    if "stats" in url:
+    if "/stats" in url:
         assert j["n"] == 0 and j["low_n"] is True and j["delay"]["mean"] is None
         assert j["on_time_pct"] is None and j["reliability"] is None and j["recent"] == []
         assert sum(b["count"] for b in j["histogram"]) == 0
-    if "summary" in url:
-        assert j["stops"] == []
-    if "heatmap" in url:
-        assert j["cells"] == []
+    elif url.endswith("/summary"):
+        assert j["n"] == 0 and j["low_n"] is True and j["stops"] == []
+    elif url.endswith("/heatmap"):
+        assert j["n"] == 0 and j["cells"] == []
+    elif url.endswith("/forecast"):
+        assert [h["horizon_min"] for h in j["horizons"]] == [30, 20, 10, 5, 2]
+        assert all(h["n"] == 0 and h["mean_error"] is None for h in j["horizons"])
+    else:
+        assert url.endswith("/accumulation") and j["groups"] == [] and j["order_source"] == "none"
+
+
+EMPTY_URLS = ["/api/routes/{}/summary", "/api/stops/{}/stats", "/api/routes/{}/heatmap",
+              "/api/routes/{}/forecast", "/api/routes/{}/accumulation"]
+
+
+@pytest.mark.parametrize("url", EMPTY_URLS)
+def test_empty_db_200_n0(env, url):
+    url = url.format("zz")
+    r = env.get(url)
+    assert r.status_code == 200
+    assert_empty(url, r.json())
 
 
 def test_stop_with_no_arrivals_returns_n0_not_500(env):
     env.add(stop="other", delay=5)
     r = env.get("/api/stops/ghost/stats")
     assert r.status_code == 200 and r.json()["n"] == 0
-
-
-def test_empty_accumulation(env):
-    assert env.get("/api/routes/zz/accumulation").json()["directions"] == []
 
 
 def test_single_row_has_null_ci(env):
@@ -464,6 +621,8 @@ BAD = [("ci", "0"), ("ci", "1"), ("ci", "-0.1"), ("ci", "1.5"), ("ci", "abc"), (
        ("weekdays", "7"), ("weekdays", "-1"), ("weekdays", "a"), ("weekdays", ""), ("weekdays", "1,,2"),
        ("weekdays", "1.5"), ("hours", "24"), ("hours", "-1"), ("hours", "x"), ("hours", "1;2"),
        ("min_confidence", "2"), ("min_confidence", "-1"), ("min_confidence", "x"),
+       ("ci", "٠.٥"), ("ci", "1_0"), ("ci", "5e-1"), ("ci", "0.5\n"), ("ci", "+0.5"), ("window_lo", "٣"),
+       ("since", "٣"), ("until", "5\n"), ("weekdays", "٣"), ("hours", "١"), ("min_confidence", "١"),
        ("ci", "9" * 65), ("route", "x" * 65), ("direction", "x" * 65)]
 URLS = ["/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/15/heatmap",
         "/api/routes/15/accumulation", "/api/routes/15/forecast"]
@@ -489,7 +648,7 @@ def test_since_after_until_422(env):
     assert env.get("/api/routes/15/summary", since=9, until=9).status_code == 200
 
 
-@pytest.mark.parametrize("k,v", [("ci", "0.001"), ("ci", "0.999"), ("pct_lo", "0"), ("pct_hi", "1"),
+@pytest.mark.parametrize("k,v", [("ci", "0.001"), ("ci", "0.999"), ("pct_lo", "0"), ("pct_hi", "1"), ("ci", ".5"), ("ci", "0.5"), ("pct_lo", "0."),
                                  ("window_lo", "-99999"), ("window_lo", "300"), ("since", "0"),
                                  ("since", "-5"), ("hours", "0,23"), ("weekdays", "0,1,2,3,4,5,6")])
 def test_boundary_values_ok(env, k, v):
@@ -517,10 +676,11 @@ INJ = ["15' OR '1'='1", "15'; DROP TABLE arrivals;--", "x\" or 1=1 --", "%' unio
 def test_sql_injection_in_route_param_harmless(env, evil):
     env.add(delay=10)
     q = quote(evil, safe="")
-    for url in (f"/api/routes/{q}/summary", f"/api/routes/{q}/heatmap", f"/api/routes/{q}/forecast",
-                f"/api/routes/{q}/accumulation", f"/api/stops/{q}/stats"):
+    for u in EMPTY_URLS:
+        url = u.format(q)
         r = env.get(url)
-        assert r.status_code == 200 and r.json().get("n", 0) == 0, (url, r.text)
+        assert r.status_code == 200, (url, r.text)
+        assert_empty(url, r.json())
     r = env.get("/api/stops/s1/stats", route=evil)
     assert r.status_code == 200 and r.json()["n"] == 0
     assert env.c.put(f"/api/routes/tracked/{q}").status_code == 422
@@ -575,7 +735,7 @@ def test_connection_closed_on_db_error(env, monkeypatch):
         return c
 
     monkeypatch.setattr(api, "open_meta", spy)
-    monkeypatch.setattr(api.stats, "filter_rows", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(api, "_summ", lambda *a, **k: 1 / 0)
     env.add(delay=1)
     with pytest.raises(ZeroDivisionError):
         TestClient(env.app).get("/api/routes/15/summary")
@@ -616,3 +776,141 @@ def test_summary_n_matches_filtered_rows(tmp_path_factory, rows, minc, since):
         assert all(not (isinstance(v, float) and not math.isfinite(v)) for v in s.values())
     assert sum(b["count"] for b in env.get("/api/stops/a/stats", **q).json()["histogram"]) == \
         sum(s["n"] for s in j["stops"] if s["stop_id"] == "a")
+
+
+# ---------- SQL pushdown (scale) ----------
+
+@pytest.fixture
+def spy(monkeypatch):
+    """Records executed statements (expanded) and the row count of every _fetch."""
+    import app.api as api
+    st = types.SimpleNamespace(sql=[], fetched=[])
+    real_open, real_fetch = api.open_meta, api._fetch
+
+    def open_spy(d):
+        c = real_open(d)
+        c.set_trace_callback(st.sql.append)
+        return c
+
+    def fetch_spy(*a, **k):
+        r = real_fetch(*a, **k)
+        st.fetched.append(len(r))
+        return r
+
+    monkeypatch.setattr(api, "open_meta", open_spy)
+    monkeypatch.setattr(api, "_fetch", fetch_spy)
+    return st
+
+
+def bulk(env, n, route="15", step=60):
+    db = open_meta(env.s.data_dir)
+    with db:
+        db.executemany(
+            "insert into arrivals(trip_id,stop_id,seq,service_date,scheduled,actual,delay,confidence,"
+            "realtime,route) values(?,?,?,?,?,?,?,?,?,?)",
+            [(f"{route}t{i}", f"s{i % 20}", T0 + i * step, "d", T0 + i * step, T0 + i * step + i % 100, i % 100,
+              0 if i % 10 == 0 else 1, 1, route) for i in range(n)])
+    db.close()
+
+
+WEEK = 7 * 86400
+
+
+def test_window_fetches_only_window_rows(env, spy):
+    bulk(env, 50_000)
+    bulk(env, 500, route="other")
+    since = T0 + 10 * 86400
+    until = since + WEEK - 1
+    exp = [i for i in range(50_000) if since <= T0 + i * 60 <= until and i % 10 != 0]
+    j = env.get("/api/routes/15/summary", since=since, until=until).json()
+    assert spy.fetched == [len(exp)] and j["n"] == len(exp) and len(exp) < 10080
+    assert sum(s["n"] for s in j["stops"]) == len(exp)
+    spy.fetched.clear()
+    h = env.get("/api/routes/15/heatmap", since=since, until=until).json()
+    assert spy.fetched == [len(exp)] and h["n"] == len(exp)
+    spy.fetched.clear()
+    env.get("/api/routes/15/summary", since=since, until=until, min_confidence=0)
+    assert spy.fetched == [10080]  # confidence filter off: whole window, still not the table
+    spy.fetched.clear()
+    j = env.get("/api/stops/s3/stats", since=since, until=until).json()
+    assert spy.fetched == [len([i for i in exp if i % 20 == 3])] and j["n"] == spy.fetched[0]
+
+
+def test_weekday_filter_stays_python_but_window_is_sql(env, spy):
+    bulk(env, 20_000)
+    since = T0 + 3 * 86400
+    j = env.get("/api/routes/15/summary", since=since, until=since + WEEK - 1, weekdays="0").json()
+    assert spy.fetched[0] > j["n"] > 0
+
+
+def plan(sql, data_dir):
+    db = open_meta(data_dir)
+    try:
+        return " ".join(r[3] for r in db.execute("explain query plan " + sql))
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("url,idx", [("/api/routes/15/summary", "ix_arr_route_sched"),
+                                     ("/api/routes/15/heatmap", "ix_arr_route_sched"),
+                                     ("/api/routes/15/forecast", "ix_arr_route_sched"),
+                                     ("/api/routes/15/accumulation", "ix_arr_route_sched"),
+                                     ("/api/stops/s1/stats", "ix_arr_stop_sched")])
+@pytest.mark.parametrize("q", [{}, {"since": T0, "until": T0 + 99}])
+def test_statements_use_the_index(env, spy, url, idx, q):
+    bulk(env, 200)
+    env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
+    env.get(url, **q)
+    stmts = [x for x in spy.sql if "from arrivals" in x.lower() and not x.lower().startswith("insert")]
+    assert stmts, spy.sql
+    for x in stmts:
+        assert idx in plan(x, env.s.data_dir), (x, plan(x, env.s.data_dir))
+    assert not any("scan arrivals" in plan(x, env.s.data_dir).lower() for x in stmts)
+
+
+def test_forecast_pushdown_and_values(env, spy):
+    bulk(env, 5000)
+    db = open_meta(env.s.data_dir)
+    with db:
+        db.executemany("insert into forecast values(?,?,?,?)",
+                       [(i, h, 0, h) for i in range(1, 5001) for h in (30, 10, 7)])
+    db.close()
+    since = T0 + 1000 * 60
+    j = env.get("/api/routes/15/forecast", since=since, until=since + 99 * 60).json()
+    n = len([i for i in range(1000, 1100) if i % 10 != 0])
+    assert spy.fetched == [2 * n]  # horizons 30 and 10 only (7 filtered in SQL), window only
+    assert {h["horizon_min"]: h["n"] for h in j["horizons"]} == {30: n, 20: 0, 10: n, 5: 0, 2: 0}
+    assert j["horizons"][0]["mean_error"] == 30
+
+
+# ---------- event loop not blocked ----------
+
+@pytest.mark.parametrize("what", ["summary", "accumulation", "tracked", "track"])
+async def test_event_loop_not_blocked(tmp_path, monkeypatch, what):
+    import app.api as api
+    env = Env(tmp_path)
+    env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
+    if what == "summary":
+        monkeypatch.setattr(api, "_summary_db", lambda *a: (time.sleep(0.3), {})[1])
+        req = ("GET", "/api/routes/15/summary")
+    elif what == "accumulation":
+        monkeypatch.setattr(api, "_accumulation_db", lambda *a: (time.sleep(0.3), [])[1])
+        req = ("GET", "/api/routes/15/accumulation")
+    elif what == "tracked":
+        env.app.state.poller.tracked = lambda: (time.sleep(0.3), [])[1]
+        req = ("GET", "/api/routes/tracked")
+    else:
+        env.app.state.poller.track = lambda r: time.sleep(0.3)
+        req = ("PUT", "/api/routes/tracked/15")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=env.app), base_url="http://t") as c:
+        t = time.perf_counter()  # a blocked loop delays the sleep below as well as the health call
+        task = asyncio.create_task(c.request(*req))
+        await asyncio.sleep(0.05)
+        assert (await c.get("/api/health")).json() == {"ok": True}
+        assert time.perf_counter() - t < 0.15
+        assert (await task).status_code == 200
+
+
+def test_search_routes_404_and_502(env):
+    env.fake.set_status(404)
+    assert env.get("/api/routes").status_code == 404

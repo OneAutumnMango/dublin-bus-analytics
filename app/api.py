@@ -10,12 +10,13 @@ Statistics endpoints share these query parameters (all validated, invalid -> 422
   sample. Pass min_confidence=0 to include unconfirmed (confidence 0) rows. Non-realtime
   (scheduled-only) rows are ALWAYS excluded. Every response echoes the applied filters in `filters`.
 A route/stop with no stored data gives 200 with n=0 and null stats; only the server-proxy endpoints
-can 404 (unknown route). low_n is true when n < 10.
+can 404 (unknown route). `arrivals.seq` is a per-visit key (the scheduled epoch), never a stop position:
+stop order comes only from the server's route_stops (`order_source` 'server' | 'none'). low_n is true when n < 10.
 """
-import inspect
-import math
 import re
 import sqlite3
+from bisect import bisect_right
+from collections import defaultdict
 from contextlib import closing
 from typing import Annotated
 from urllib.parse import unquote
@@ -23,17 +24,21 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 
 from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
 from app import stats
 from app.db import open_meta
+from app.poller import ROUTE_RE
 from app.serverclient import RouteNotFound, ServerUnavailable
 
 
 
 class RawPathRoute(APIRoute):
     """Match on the still-encoded path so an encoded slash (route "15/A" as 15%2FA) stays inside
-    one path parameter; Starlette would otherwise decode it before routing and 404."""
+    one path parameter; Starlette would otherwise decode it before routing and 404.
+    Depends on the ASGI `raw_path` key and on unpinned FastAPI/Starlette routing internals
+    (Route.matches child scope); test_slash_route_encoded is the tripwire if an upgrade breaks it."""
 
     def matches(self, scope):
         raw = scope.get("raw_path")
@@ -50,8 +55,8 @@ LOW_N = 10
 HORIZONS = (30, 20, 10, 5, 2)
 RECENT = 20
 HIST_LO, HIST_HI, HIST_W = -600, 1800, 60  # seconds; outer bins are open-ended
-TRACK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,31}$")
-_INT = re.compile(r"^-?\d{1,12}$")
+_INT = re.compile(r"-?[0-9]{1,12}")  # [0-9], not \d: Arabic-Indic digits must be rejected
+_FLOAT = re.compile(r"-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)")
 
 RouteP = Annotated[str, Path(min_length=1, max_length=32)]
 StopP = Annotated[str, Path(min_length=1, max_length=64)]
@@ -63,19 +68,15 @@ def _bad(msg):
 
 
 def _int(name, raw):
-    if not _INT.match(raw):
+    if not _INT.fullmatch(raw):
         _bad(f"{name} must be an integer")
     return int(raw)
 
 
 def _float(name, raw):
-    try:
-        v = float(raw)
-    except ValueError:
+    if not _FLOAT.fullmatch(raw):  # also rejects nan/inf/1_0/unicode digits
         _bad(f"{name} must be a number")
-    if not math.isfinite(v):
-        _bad(f"{name} must be finite")
-    return v
+    return float(raw)
 
 
 def _int_list(name, raw, lo, hi):
@@ -117,25 +118,37 @@ def _filters(p):
     return {**p, "realtime_only": True}
 
 
-def _rows(request: Request, sql: str, args: tuple) -> list[dict]:
+def _fetch(request: Request, sql: str, args: list) -> list[tuple]:
     with closing(open_meta(request.app.state.settings.data_dir)) as c:
-        c.row_factory = sqlite3.Row
-        return [dict(r) for r in c.execute(sql, args).fetchall()]
+        return c.execute(sql, args).fetchall()
 
 
-_COLS = "trip_id, stop_id, seq, service_date, scheduled, actual, delay, confidence, realtime, route"
+def _cond(p, a=""):
+    """SQL fragment + params for the filters SQLite can apply (realtime, confidence, since/until)."""
+    sql, args = f"{a}realtime = 1 and {a}confidence >= ? and {a}scheduled is not null", [p["min_confidence"]]
+    for k, op in (("since", ">="), ("until", "<=")):
+        if p[k] is not None:
+            sql += f" and {a}scheduled {op} ?"
+            args.append(p[k])
+    return sql, args
 
 
-def _arrivals(request, p, where: str, args: tuple) -> list[dict]:
-    # shortcut: time filters applied in Python, not SQL; push into SQL if tables get huge
-    rows = _rows(request, f"select {_COLS} from arrivals where {where} and delay is not null "
-                 "order by scheduled, id", args)
-    return stats.filter_rows(rows, min_confidence=p["min_confidence"], since=p["since"],
-                             until=p["until"], weekdays=p["weekdays"], hours=p["hours"])
+def _tz(rows, i, p):
+    """Weekday/hour (Dublin-local) filter in Python on tuples; i = index of `scheduled`."""
+    if p["weekdays"] is None and p["hours"] is None:
+        return rows
+    kept = stats.filter_rows([{"scheduled": r[i], "_r": r} for r in rows], min_confidence=0,
+                             realtime_only=False, weekdays=p["weekdays"], hours=p["hours"])
+    return [d["_r"] for d in kept]
 
 
-def _delays(rows):
-    return [r["delay"] for r in rows]
+def _arrivals(request, p, where: str, args: list, cols: str) -> list[tuple]:
+    """Filtered arrivals as tuples of `cols` plus `scheduled` appended as the LAST column,
+    ordered by scheduled. realtime/confidence/since/until filter in SQL (index ix_arr_route_sched)."""
+    cond, cargs = _cond(p)
+    rows = _fetch(request, f"select {cols}, scheduled from arrivals where {where} and {cond} "
+                  "and delay is not null order by scheduled", args + cargs)
+    return _tz(rows, -1, p)
 
 
 def _summ(delays, p) -> dict:
@@ -154,6 +167,41 @@ async def _proxy(coro):
         raise HTTPException(502, f"server unavailable: {e}") from None
 
 
+class _NoOrder(Exception):
+    def __init__(self, status, msg):
+        self.status, self.msg = status, msg
+
+
+def _sid(x):
+    return x.get("id", x.get("stopId"))
+
+
+async def _directions(request, r) -> dict[str, list[dict]]:
+    """Server's {direction: [stop dicts in order]}, validated. Raises _NoOrder (404 unknown
+    route, 502 unavailable or malformed shape)."""
+    try:
+        raw = await request.app.state.client.route_stops(r)
+    except RouteNotFound:
+        raise _NoOrder(404, "route not found on server") from None
+    except (ServerUnavailable, KeyError, TypeError, AttributeError, ValueError) as e:
+        raise _NoOrder(502, f"server unavailable or malformed: {e}") from None
+    if not (isinstance(raw, dict) and all(
+            isinstance(k, str) and isinstance(v, list)
+            and all(isinstance(x, dict) and isinstance(_sid(x), str) for x in v)
+            for k, v in raw.items())):
+        raise _NoOrder(502, "malformed stops response from server")
+    return raw
+
+
+async def _order(request, r):
+    """-> ({direction: [stop_id...]}, "server") or (None, "none") when the order is unavailable."""
+    try:
+        d = await _directions(request, r)
+    except _NoOrder:
+        return None, "none"
+    return {k: [_sid(x) for x in v] for k, v in d.items()}, "server"
+
+
 # ---- routes: proxy + tracking ----
 
 @router.get("/routes")
@@ -161,57 +209,72 @@ async def search_routes(request: Request, q: QStr = ""):
     return await _proxy(request.app.state.client.search_routes(q or ""))
 
 
+async def _tracked(request):
+    return {"routes": sorted(await run_in_threadpool(request.app.state.poller.tracked))}
+
+
 @router.get("/routes/tracked")
 async def tracked(request: Request):
-    return {"routes": sorted(request.app.state.poller.tracked())}
+    return await _tracked(request)
 
 
-async def _call(x):
-    return await x if inspect.isawaitable(x) else x
-
-
-def _track_name(route):
-    if not TRACK_RE.match(route):
+async def _change(request, route, fn_name):
+    route = route.strip()
+    if not ROUTE_RE.match(route):
         _bad("invalid route name")
-    return route
+    try:  # poller methods open sqlite connections: keep them off the event loop
+        await run_in_threadpool(getattr(request.app.state.poller, fn_name), route)
+    except ValueError as e:
+        _bad(str(e))
+    return await _tracked(request)
 
 
 @router.put("/routes/tracked/{route}")
 async def track(request: Request, route: RouteP):
-    await _call(request.app.state.poller.track(_track_name(route)))
-    return {"routes": sorted(request.app.state.poller.tracked())}
+    return await _change(request, route, "track")
 
 
 @router.delete("/routes/tracked/{route}")
 async def untrack(request: Request, route: RouteP):
-    await _call(request.app.state.poller.untrack(_track_name(route)))
-    return {"routes": sorted(request.app.state.poller.tracked())}
+    return await _change(request, route, "untrack")
 
 
 @router.get("/routes/{r}/stops")
 async def route_stops(request: Request, r: RouteP):
-    return {"route": r, "directions": await _proxy(request.app.state.client.route_stops(r))}
+    try:
+        return {"route": r, "directions": await _directions(request, r)}
+    except _NoOrder as e:
+        raise HTTPException(e.status, e.msg) from None
 
 
 # ---- stats ----
 
+def _summary_db(request, r, p, lists):
+    rows = _arrivals(request, p, "route = ?", [r], "stop_id, delay")
+    by_stop: dict[str, list[int]] = defaultdict(list)
+    for sid, d, _ in rows:
+        by_stop[sid].append(d)
+    pos = {}  # stop -> (direction index, position, direction); first occurrence wins
+    for di, (name, ids) in enumerate((lists or {}).items()):
+        for i, sid in enumerate(ids):
+            pos.setdefault(sid, (di, i, name))
+    out = [{"stop_id": sid, "position": pos[sid][1] if sid in pos else None,
+            "direction": pos[sid][2] if sid in pos else None, **_summ(ds, p)}
+           for sid, ds in by_stop.items()]
+    out.sort(key=lambda s: (s["stop_id"] not in pos, pos.get(s["stop_id"], (0, 0))[:2], s["stop_id"]))
+    return {"route": r, "filters": _filters(p), "order_source": "none" if lists is None else "server",
+            "n": len(rows), "low_n": len(rows) < LOW_N, "stops": out}
+
+
 @router.get("/routes/{r}/summary")
-def route_summary(request: Request, r: RouteP, p: P):
-    """Per-stop delay stats in route order (median seq of the stop's rows, ties by stop_id).
-    Each stop: stop_id, seq, n, low_n, mean/min/max/std/median/ci_low/ci_high/p_low/p_high,
-    on_time_pct, reliability."""
-    rows = _arrivals(request, p, "route = ?", (r,))
-    by_stop: dict[str, list[dict]] = {}
-    for x in rows:
-        by_stop.setdefault(x["stop_id"], []).append(x)
-    out = []
-    for sid, rs in by_stop.items():
-        seqs = sorted(x["seq"] for x in rs if x["seq"] is not None)
-        seq = seqs[len(seqs) // 2] if seqs else None
-        out.append({"stop_id": sid, "seq": seq, **_summ(_delays(rs), p)})
-    out.sort(key=lambda s: (s["seq"] is None, s["seq"], s["stop_id"]))
-    return {"route": r, "filters": _filters(p), "n": len(rows), "low_n": len(rows) < LOW_N,
-            "stops": out}
+async def route_summary(request: Request, r: RouteP, p: P):
+    """Per-stop delay stats in ROUTE order from the server's route_stops (first direction listing
+    the stop, by its index there); stops the server does not list come last by stop_id with
+    position null; server down or malformed -> stop_id order and order_source "none".
+    Each stop: stop_id, position, direction, n, low_n, mean/min/max/std/median/ci_low/ci_high/
+    p_low/p_high, on_time_pct, reliability."""
+    lists, _src = await _order(request, r)
+    return await run_in_threadpool(_summary_db, request, r, p, lists)
 
 
 def _histogram(delays):
@@ -219,9 +282,7 @@ def _histogram(delays):
     for d in delays:
         counts[min(max((d - HIST_LO) // HIST_W + 1, 0), len(counts) - 1)] += 1
     edges = list(range(HIST_LO, HIST_HI + 1, HIST_W))
-    his = edges + [None]
-    los = [None] + edges
-    return [{"lo": a, "hi": b, "count": c} for a, b, c in zip(los, his, counts)]
+    return [{"lo": a, "hi": b, "count": c} for a, b, c in zip([None] + edges, edges + [None], counts)]
 
 
 @router.get("/stops/{s}/stats")
@@ -229,74 +290,108 @@ def stop_stats(request: Request, s: StopP, p: P, route: QStr = None):
     """Stop stats (optionally for one route): n, low_n, delay{summary; ci_low..ci_high is the CI of
     the actual-minus-scheduled delay}, on_time_pct, reliability, histogram (60 s bins from -600 to
     1800 plus open-ended outer bins) and the 20 most recent arrivals."""
-    where, args = ("stop_id = ?", (s,)) if route is None else ("stop_id = ? and route = ?", (s, route))
-    rows = _arrivals(request, p, where, args)
-    d = _summ(_delays(rows), p)
-    recent = [{k: x[k] for k in ("trip_id", "route", "seq", "service_date", "scheduled", "actual",
-                                "delay", "confidence")} for x in reversed(rows[-RECENT:])]
+    where, args = ("stop_id = ?", [s]) if route is None else ("stop_id = ? and route = ?", [s, route])
+    rows = _arrivals(request, p, where, args,
+                     "trip_id, route, seq, service_date, actual, delay, confidence")
+    delays = [r[5] for r in rows]
+    d = _summ(delays, p)
+    keys = ("trip_id", "route", "seq", "service_date", "actual", "delay", "confidence", "scheduled")
+    recent = [dict(zip(keys, r)) for r in reversed(rows[-RECENT:])]
     return {"stop_id": s, "route": route, "filters": _filters(p), "n": d["n"], "low_n": d["low_n"],
             "delay": {k: d[k] for k in ("mean", "min", "max", "std", "median", "ci_low", "ci_high",
                                        "p_low", "p_high")},
             "on_time_pct": d["on_time_pct"], "reliability": d["reliability"],
-            "histogram": _histogram(_delays(rows)), "recent": recent}
+            "histogram": _histogram(delays), "recent": recent}
 
 
 @router.get("/routes/{r}/heatmap")
 def route_heatmap(request: Request, r: RouteP, p: P):
     """cells: [{weekday 0=Mon, hour, n, low_n, mean_delay}] for Dublin-local scheduled time."""
-    rows = _arrivals(request, p, "route = ?", (r,))
-    cells = [{**c, "low_n": c["n"] < LOW_N} for c in stats.heatmap_to_json(stats.heatmap(rows))]
+    rows = _arrivals(request, p, "route = ?", [r], "delay")
+    h = stats.heatmap([{"delay": d, "scheduled": s} for d, s in rows])
+    cells = [{**c, "low_n": c["n"] < LOW_N} for c in stats.heatmap_to_json(h)]
     return {"route": r, "filters": _filters(p), "n": len(rows), "cells": cells}
+
+
+def _assign(trip, pos):
+    """trip: [(stop_id, delay)] sorted by scheduled; pos: {direction: {stop_id: [positions]}}.
+    Greedy per direction: each row takes the first occurrence of its stop after the previous
+    matched position (handles loops). Best match count wins; a tie or no match -> (None, [])."""
+    scored = []
+    for name, occ in pos.items():
+        prev, m = -1, []
+        for sid, d in trip:
+            lst = occ.get(sid, ())
+            j = bisect_right(lst, prev)
+            if j < len(lst):
+                prev = lst[j]
+                m.append({"stop_id": sid, "seq": prev, "delay": d})
+        scored.append((len(m), name, m))
+    top = max((x[0] for x in scored), default=0)
+    win = [x for x in scored if x[0] == top]
+    return (win[0][1], win[0][2]) if top > 0 and len(win) == 1 else (None, [])
+
+
+def _accumulation_db(request, r, p, lists, direction):
+    rows = _arrivals(request, p, "route = ?", [r], "trip_id, service_date, stop_id, delay")
+    trips: dict[tuple, list] = defaultdict(list)
+    for t, sd, sid, d, _ in rows:  # rows come ordered by scheduled
+        trips[(t, sd)].append((sid, d))
+    pos = {}
+    for name, ids in lists.items():
+        pos[name] = defaultdict(list)
+        for i, sid in enumerate(ids):
+            pos[name][sid].append(i)
+    groups: dict[str, list] = {name: [] for name in lists} | {"unknown": []}
+    for trip in trips.values():
+        name, matched = _assign(trip, pos)
+        groups[name or "unknown"].append(matched)
+    out = []
+    for name, ts in groups.items():
+        if not ts or (direction is not None and name != direction):
+            continue
+        # unknown trips have no positions, so no per-stop numbers are fabricated for them
+        acc = [] if name == "unknown" else [
+            {"stop_id": a["stop_id"], "position": a["seq"], "mean_delay": a["mean_delay"],
+             "segment_delta": a["segment_delta"], "n": a["n"], "n_delta": a["n_delta"],
+             "low_n": a["n"] < LOW_N, "low_n_delta": a["n_delta"] < LOW_N}
+            for a in stats.accumulation(ts)]
+        out.append({"direction": name, "n": len(ts), "low_n": len(ts) < LOW_N,
+                    "n_delta": max((a["n_delta"] for a in acc), default=0), "stops": acc})
+    return out
 
 
 @router.get("/routes/{r}/accumulation")
 async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr = None):
-    """directions: [{direction, n_trips, stops:[{stop_id, seq, mean_delay, segment_delta, n, n_delta,
-    low_n, low_n_delta}]}]. Direction is inferred per trip from the server's stop lists
-    (`direction_source: "server"`); if the server is unreachable all trips fall in one group
-    named "all" (`direction_source: "none"`), unless `direction` was requested (then 502)."""
-    dirs = None
+    """groups: [{direction, n (trips), n_delta (max trips behind any segment delta), low_n,
+    stops:[{stop_id, position, mean_delay, segment_delta, n, n_delta, low_n, low_n_delta}]}].
+    A trip's direction is the server direction whose stop list its rows (by scheduled time) follow
+    in increasing position, best match wins; a tie or no match -> group "unknown" (n only, stops []).
+    Server unavailable/malformed -> 200 {"order_source": "none", "groups": []}, unless
+    `direction` was requested (then 404 unknown route / 502). Unknown `direction` -> 404."""
     try:
-        dirs = await request.app.state.client.route_stops(r)
-    except (RouteNotFound, ServerUnavailable) as e:
+        lists = {k: [_sid(x) for x in v] for k, v in (await _directions(request, r)).items()}
+    except _NoOrder as e:
         if direction is not None:
-            raise HTTPException(404 if isinstance(e, RouteNotFound) else 502,
-                                f"cannot resolve direction: {e}") from None
-    if direction is not None and direction not in dirs:
+            raise HTTPException(e.status, e.msg) from None
+        return {"route": r, "filters": _filters(p), "order_source": "none", "groups": []}
+    if direction is not None and direction not in (*lists, "unknown"):
         raise HTTPException(404, "unknown direction")
-    sets = {n: {x.get("id", x.get("stopId")) for x in stops} for n, stops in (dirs or {}).items()}
-    rows = _arrivals(request, p, "route = ?", (r,))
-    trips: dict[tuple, list[dict]] = {}
-    for x in rows:
-        trips.setdefault((x["trip_id"], x["service_date"]), []).append(x)
-    groups: dict[str, list[list[dict]]] = {}
-    for t in trips.values():
-        ids = [x["stop_id"] for x in t]
-        name = "all" if dirs is None else (
-            max(sorted(sets), key=lambda n: sum(i in sets[n] for i in ids))
-            if sets and any(i in sv for i in ids for sv in sets.values()) else "unknown")
-        groups.setdefault(name, []).append(t)
-    out = []
-    for name in sorted(groups):
-        if direction is not None and name != direction:
-            continue
-        acc = [{**a, "low_n": a["n"] < LOW_N, "low_n_delta": a["n_delta"] < LOW_N}
-               for a in stats.accumulation(groups[name])]
-        out.append({"direction": name, "n_trips": len(groups[name]), "stops": acc})
-    return {"route": r, "filters": _filters(p), "direction_source": "none" if dirs is None else "server",
-            "directions": out}
+    groups = await run_in_threadpool(_accumulation_db, request, r, p, lists, direction)
+    return {"route": r, "filters": _filters(p), "order_source": "server", "groups": groups}
 
 
 @router.get("/routes/{r}/forecast")
 def route_forecast(request: Request, r: RouteP, p: P):
     """horizons: always [30,20,10,5,2] in that order: {horizon_min, n, low_n, mean_error, mae,
     p_low, p_high} (null stats when n=0). error = actual minus predicted seconds."""
-    rows = _rows(request, "select f.horizon_min, f.error_s, a.confidence, a.realtime, a.scheduled "
-                 "from forecast f join arrivals a on a.id = f.arrival_id "
-                 "where a.route = ? and f.error_s is not null", (r,))
-    rows = stats.filter_rows(rows, min_confidence=p["min_confidence"], since=p["since"],
-                             until=p["until"], weekdays=p["weekdays"], hours=p["hours"])
-    acc = stats.forecast_accuracy(rows)
+    cond, cargs = _cond(p, "a.")
+    marks = ",".join("?" * len(HORIZONS))
+    rows = _tz(_fetch(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
+                      "join forecast f on f.arrival_id = a.id "
+                      f"where a.route = ? and {cond} and f.error_s is not null "
+                      f"and f.horizon_min in ({marks})", [r] + cargs + list(HORIZONS)), 2, p)
+    acc = stats.forecast_accuracy([{"horizon_min": h, "error_s": e} for h, e, _ in rows])
     empty = dict.fromkeys(("mean_error", "mae", "p_low", "p_high"))
     hs = [{"horizon_min": h, **{"n": 0, **empty, **acc.get(h, {})}} for h in HORIZONS]
     for h in hs:
