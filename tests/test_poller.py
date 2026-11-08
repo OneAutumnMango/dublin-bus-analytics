@@ -552,3 +552,20 @@ async def test_lazy_tracker_opens_on_first_ingest_and_closes(tmp_path):
     await lt.ingest("15", [], T0 + 30)  # reuses the same Tracker
     lt.close()
     assert lt._t is None
+
+
+async def test_create_app_injected_client_used_by_poller_and_closed_once(tmp_path):
+    from app.main import create_app
+    fs = FakeServer()
+    fs.set_arrivals("15", {})
+    http = fs.client()
+    client = ServerClient("http://fake", http)
+    app = create_app(Settings("http://unreachable.invalid", tmp_path), start_background=False, client=client)
+    assert app.state.client is client and app.state.poller.client is client
+    app.state.poller.track("15")
+    await app.state.poller.tick(T0)  # hits the fake, not the network
+    assert fs.requests == ["/v1/routes/15/arrivals"]
+    app.state.tracker.close()
+    with TestClient(app):
+        assert not http.is_closed
+    assert http.is_closed  # lifespan closed the client it was given

@@ -11,7 +11,10 @@ from app.poller import LazyTracker, Poller, seq_lookup
 from app.serverclient import ServerClient
 
 
-def create_app(settings: Settings | None = None, *, start_background: bool = True) -> FastAPI:
+def create_app(settings: Settings | None = None, *, start_background: bool = True,
+               client: ServerClient | None = None) -> FastAPI:
+    """`client` lets tests inject a fake-backed ServerClient; the lifespan closes whichever client the app
+    holds. Everything is wired from it at creation: replacing app.state.client afterwards is unsupported."""
     settings = settings or Settings.from_env()
 
     @asynccontextmanager
@@ -31,7 +34,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.state.settings = settings
     app.include_router(api_router)
     # constructors do no I/O (LazyTracker opens the DB on first ingest), so importing this module is safe
-    app.state.client = ServerClient(settings.server_url)
+    app.state.client = client or ServerClient(settings.server_url)
     app.state.tracker = LazyTracker(settings.data_dir, seq_lookup)
     app.state.poller = Poller(settings, app.state.client, app.state.tracker)
 
