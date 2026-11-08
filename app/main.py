@@ -6,9 +6,8 @@ from fastapi import FastAPI
 
 from app.api import router as api_router
 from app.backup_api import router as backup_router
-from app.api import router as api_router
 from app.config import Settings
-from app.poller import LazyTracker, Poller, SeqResolver
+from app.poller import LazyTracker, Poller, seq_lookup
 from app.serverclient import ServerClient
 
 
@@ -33,7 +32,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.include_router(api_router)
     # constructors do no I/O (LazyTracker opens the DB on first ingest), so importing this module is safe
     app.state.client = ServerClient(settings.server_url)
-    app.state.tracker = LazyTracker(settings.data_dir, SeqResolver(app.state.client))
+    app.state.tracker = LazyTracker(settings.data_dir, seq_lookup)
     app.state.poller = Poller(settings, app.state.client, app.state.tracker)
 
     app.include_router(backup_router)

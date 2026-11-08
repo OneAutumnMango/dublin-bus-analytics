@@ -11,7 +11,7 @@ from hypothesis import HealthCheck, given, settings as hsettings, strategies as 
 from app.config import Settings
 from app.db import open_meta
 from app.models import Arrival
-from app.poller import LazyTracker, Poller, SeqResolver
+from app.poller import LazyTracker, Poller, seq_lookup
 from app.serverclient import ServerClient
 from app.tracker import IngestResult, Tracker
 from tests.fake_server import FakeServer
@@ -25,18 +25,12 @@ def ja(trip="t1", stop="s1", due=5, expected=None, sched=T0 + 300, route="15", r
             "scheduledEpochSeconds": sched, "delaySeconds": 0, "isRealtime": rt}
 
 
-def calls(trip_stops):  # [(stopId, scheduled)] -> stopCalls
-    return [{"stopSequence": i + 1, "stopId": s, "scheduledEpochSeconds": t}
-            for i, (s, t) in enumerate(trip_stops)]
-
-
 class Env:
     def __init__(self, tmp_path, **kw):
         self.fs = FakeServer()
         self.cfg = Settings("http://fake", tmp_path, 30)
         self.client = ServerClient("http://fake", self.fs.client())
-        self.resolver = SeqResolver(self.client)
-        self.tracker = Tracker(tmp_path, self.resolver)
+        self.tracker = Tracker(tmp_path, seq_lookup)
         self.poller = Poller(self.cfg, self.client, self.tracker, **kw)
         self.tmp = tmp_path
 
@@ -64,7 +58,6 @@ def env(tmp_path):
 
 def one_route(env, route="15", due=5, trip="t1"):
     env.fs.set_arrivals(route, {"s1": [ja(trip=trip, due=due, route=route)]})
-    env.fs.set_trip_calls(trip, calls([("s1", T0 + 300)]))
     env.poller.track(route)
 
 
@@ -233,90 +226,81 @@ async def test_gap_not_resumed_after_restart(env):
     assert env.gaps() == [(T0, T0), (T0 + 300, T0 + 330)]
 
 
-# ---- end to end ----
+# ---- end to end (realistic server: trip_calls is never consulted; seq == scheduled epoch) ----
+async def countdown(env, mk, start=T0, step=60, dues=(5, 4, 3, 2, 1, 0)):
+    for k, due in enumerate(dues):
+        env.fs.set_arrivals("15", {"s1": mk(due, k)})
+        await env.poller.tick(start + step * k)
+
+
 async def test_end_to_end_one_finalised_row(env):
     env.poller.track("15")
-    env.fs.set_trip_calls("t1", calls([("s1", T0 + 300)]))
-    for k, due in enumerate([5, 4, 3, 2, 1, 0]):
-        env.fs.set_arrivals("15", {"s1": [ja(due=due, expected=T0 + 300 + 20 + (k > 3) * 10)]})
-        await env.poller.tick(T0 + 60 * k)
-    # a further tick with it gone must not duplicate
+    await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300 + 20 + (k > 3) * 10)])
     env.fs.set_arrivals("15", {})
-    await env.poller.tick(T0 + 400)
-    assert env.arrivals() == [("15", "t1", "s1", 0, T0 + 300, T0 + 330, 30, 1, 1)]
+    await env.poller.tick(T0 + 400)  # gone after finalising: no duplicate
+    assert env.arrivals() == [("15", "t1", "s1", T0 + 300, T0 + 300, T0 + 330, 30, 1, 1)]
+    assert not any("/v1/trips" in r for r in env.fs.requests)
 
 
-async def test_loop_trip_same_stop_twice_gives_seq_0_and_1(env):
+async def test_scheduled_only_bus_stored_realtime_0(env):
     env.poller.track("15")
-    env.fs.set_trip_calls("t1", calls([("s1", T0 + 300), ("s2", T0 + 600), ("s1", T0 + 900)]))
+    await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300, rt=False)])
+    rows = env.arrivals()
+    assert len(rows) == 1 and rows[0][4] == T0 + 300 and rows[0][8] == 0
+
+
+async def test_scheduled_only_then_live_is_one_row(env):
+    env.poller.track("15")
+    await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300 + 15, rt=k >= 2)])
+    rows = env.arrivals()
+    assert len(rows) == 1 and rows[0][8] == 1 and rows[0][4] == T0 + 300
+
+
+async def test_same_trip_next_service_day_is_second_row(env):
+    env.poller.track("15")
+    await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300)])
+    day = 86400
+    await countdown(env, lambda due, k: [ja(due=due, expected=T0 + day + 300, sched=T0 + day + 300)],
+                    start=T0 + day)
+    assert [r[4] for r in env.arrivals()] == [T0 + 300, T0 + day + 300]
+
+
+async def test_loop_trip_same_stop_twice_gives_two_rows(env):
+    env.poller.track("15")
     env.fs.set_arrivals("15", {"s1": [ja(due=0, expected=T0 + 300, sched=T0 + 300),
                                       ja(due=0, expected=T0 + 900, sched=T0 + 900)]})
     await env.poller.tick(T0 + 300)
-    assert [(r[3], r[4]) for r in env.arrivals()] == [(0, T0 + 300), (1, T0 + 900)]
+    assert sorted(r[3] for r in env.arrivals()) == [T0 + 300, T0 + 900]
+    assert len(env.arrivals()) == 2
 
 
-async def test_unmatched_or_none_scheduled_skipped_rest_stored(env, caplog):
+async def test_many_stops_one_trip_all_stored(env):
     env.poller.track("15")
-    env.fs.set_trip_calls("t1", calls([("s1", T0 + 300)]))
+    stops = [f"s{i}" for i in range(6)]
+    env.fs.set_arrivals("15", {s: [ja(stop=s, due=0, expected=T0 + 300 + 60 * i, sched=T0 + 300 + 60 * i)]
+                               for i, s in enumerate(stops)})
+    await env.poller.tick(T0 + 300 + 360)
+    assert sorted(r[2] for r in env.arrivals()) == stops
+
+
+async def test_none_scheduled_skipped_counted_rest_stored(env, caplog):
+    env.poller.track("15")
     env.fs.set_arrivals("15", {"s1": [ja(due=0, expected=T0 + 300),
-                                      ja(due=0, expected=T0 + 300, sched=T0 + 12345),
-                                      ja(trip="t1", stop="s9", due=0, expected=T0 + 300),
-                                      ja(due=0, expected=T0 + 300, sched=None)]})
+                                      ja(trip="t2", due=0, expected=T0 + 300, sched=None)]})
     with caplog.at_level(logging.WARNING):
         await env.poller.tick(T0 + 300)
-    assert [(r[2], r[3]) for r in env.arrivals()] == [("s1", 0)]
-    assert "skipped=" in caplog.text
+    assert [(r[1], r[3]) for r in env.arrivals()] == [("t1", T0 + 300)]
+    assert "skipped=1" in caplog.text
 
 
-# ---- SeqResolver ----
+async def test_seq_lookup_contract():
+    assert await seq_lookup(arrival(sched=T0 + 5)) == T0 + 5
+    with pytest.raises(ValueError):
+        await seq_lookup(arrival(sched=None))
+
+
 def arrival(trip="t1", stop="s1", sched=T0 + 300):
     return Arrival(stop, trip, "15", 1, T0, sched, 0, True, None, False)
-
-
-async def test_seq_cached_per_trip_across_ticks(env):
-    env.poller.track("15")
-    env.fs.set_trip_calls("t1", calls([("s1", T0 + 300)]))
-    for k in range(3):
-        env.fs.set_arrivals("15", {"s1": [ja(due=5 - k)]})
-        await env.poller.tick(T0 + 30 * k)
-    assert env.fs.requests.count("/v1/trips/t1") == 1
-
-
-async def test_resolver_lru_bounded_and_refetches_evicted(env):
-    r = SeqResolver(env.client, max_trips=2)
-    for t in ("a", "b", "c"):
-        env.fs.set_trip_calls(t, calls([("s1", T0 + 300)]))
-        assert await r(arrival(trip=t)) == 0
-    assert list(r._cache) == ["b", "c"]
-    await r(arrival(trip="b"))  # refresh b
-    await r(arrival(trip="a"))  # evicts c, refetches a
-    assert list(r._cache) == ["b", "a"]
-    assert env.fs.requests.count("/v1/trips/a") == 2
-
-
-async def test_resolver_raises_cases(env):
-    r = SeqResolver(env.client)
-    env.fs.set_trip_calls("t1", [{"stopSequence": 1, "stopId": "s1", "scheduledEpochSeconds": None},
-                                 {"stopSequence": 2, "stopId": "s1", "scheduledEpochSeconds": True},
-                                 {"stopSequence": 3, "stopId": "s2", "scheduledEpochSeconds": T0}])
-    with pytest.raises(ValueError):
-        await r(arrival(sched=None))
-    with pytest.raises(KeyError):
-        await r(arrival(stop="s1"))
-    with pytest.raises(ValueError):
-        await r(arrival(stop="s2", sched=T0 + 1))
-    assert await r(arrival(stop="s2", sched=T0)) == 0
-    from app.serverclient import RouteNotFound
-    with pytest.raises(RouteNotFound):
-        await r(arrival(trip="nope"))
-    assert "nope" not in r._cache  # failures are not cached
-
-
-async def test_resolver_sorts_by_scheduled(env):
-    r = SeqResolver(env.client)
-    env.fs.set_trip_calls("t1", calls([("s1", T0 + 900), ("s2", T0), ("s1", T0 + 300)]))
-    assert await r(arrival(sched=T0 + 300)) == 0
-    assert await r(arrival(sched=T0 + 900)) == 1
 
 
 # ---- track validation, threads ----
@@ -516,7 +500,7 @@ def test_lifespan_runs_and_cancels_poller(tmp_path):
 
 
 async def test_lazy_tracker_opens_on_first_ingest_and_closes(tmp_path):
-    lt = LazyTracker(tmp_path / "d", SeqResolver(None))
+    lt = LazyTracker(tmp_path / "d", seq_lookup)
     assert not (tmp_path / "d").exists()
     lt.close()  # close before use is a no-op
     res = await lt.ingest("15", [], T0)

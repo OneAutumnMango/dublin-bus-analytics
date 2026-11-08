@@ -5,12 +5,17 @@ row (start=end=now); while failures continue the open row's end is extended; the
 failure and at least one successful fetch closes it (end=that tick's now). The open gap is in-memory
 only: a restarted Poller does not resume an old row, the next outage simply opens a new one (rows
 never overlap because the old row's end is <= the new start).
+
+Visit number: the tracker's 'seq' (arrivals.seq) is the arrival's scheduled epoch, not a stop-sequence
+rank. The server's /v1/trips stopCalls come from the live feed only (empty before a bus starts,
+partial once live), so they cannot number visits. A loop trip's two visits of one stop, and a recycled
+trip id on another day, have different scheduled epochs; a bus going from scheduled-only to live keeps
+its scheduled epoch, hence the same key. Arrivals with no scheduled time are skipped by the tracker.
 """
 import asyncio
 import logging
 import re
 import time
-from collections import OrderedDict
 from pathlib import Path
 
 from app.db import open_meta
@@ -22,37 +27,11 @@ log = logging.getLogger(__name__)
 ROUTE_RE = re.compile(r"^[A-Za-z0-9 _./-]{1,20}$")
 
 
-class SeqResolver:
-    """Tracker seq_lookup: rank of arrival.scheduled among the trip's calls at that stop.
-    Raises (never returns None) when it cannot answer, so the tracker skips the arrival."""
-
-    def __init__(self, client, max_trips: int = 2048):
-        self.client = client
-        self.max_trips = max_trips
-        self._cache: OrderedDict[str, dict[str, list[int]]] = OrderedDict()
-        self._lock = asyncio.Lock()  # one trip fetch at a time; avoids duplicate fetches per trip
-
-    async def _ranks(self, trip_id: str) -> dict[str, list[int]]:
-        async with self._lock:
-            if trip_id in self._cache:
-                self._cache.move_to_end(trip_id)
-                return self._cache[trip_id]
-            by_stop: dict[str, list[int]] = {}
-            for c in await self.client.trip_calls(trip_id):
-                s = c.get("scheduledEpochSeconds")
-                if isinstance(s, int) and not isinstance(s, bool):
-                    by_stop.setdefault(str(c.get("stopId")), []).append(s)
-            for v in by_stop.values():
-                v.sort()
-            self._cache[trip_id] = by_stop
-            while len(self._cache) > self.max_trips:
-                self._cache.popitem(last=False)
-            return by_stop
-
-    async def __call__(self, a) -> int:
-        if a.scheduled is None:
-            raise ValueError("no scheduled time")
-        return (await self._ranks(a.trip_id))[a.stop_id].index(a.scheduled)  # KeyError/ValueError if unmatched
+async def seq_lookup(a) -> int:
+    """Tracker visit discriminator. The seq column holds the call's scheduled epoch."""
+    if a.scheduled is None:
+        raise ValueError("no scheduled time")  # tracker skips (and counts) the arrival
+    return a.scheduled
 
 
 class LazyTracker:
