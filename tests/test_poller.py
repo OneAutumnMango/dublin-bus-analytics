@@ -144,20 +144,64 @@ async def test_route_not_found_does_not_close_open_gap_or_open_one(env):
     assert env.gaps() == [(T0, T0 + 30)]
 
 
-async def test_only_not_found_does_not_close_gap(env):
+async def test_all_not_found_tick_leaves_open_gap_unchanged(env):
+    one_route(env)
+    env.fs.set_down(True)
+    await env.poller.tick(T0)
+    await env.poller.tick(T0 + 30)
+    before = env.gaps()
+    env.poller.untrack("15")
     env.poller.track("ghost")
-    env.poller._gap_open = None
+    env.fs.set_down(False)
+    await env.poller.tick(T0 + 60)  # every route 404s: no success, no outage
+    assert env.gaps() == before == [(T0, T0 + 30)]
+    one_route(env)
+    await env.poller.tick(T0 + 90)  # a real success still closes it
+    assert env.gaps() == [(T0, T0 + 90)]
+
+
+async def test_all_not_found_tick_opens_no_gap(env):
+    env.poller.track("ghost")
     await env.poller.tick(T0)
     assert env.gaps() == []
 
 
-async def test_mixed_tick_keeps_gap_open_and_extends(env):
+def bad_route(env, name="bad"):
+    env.fs.set_arrivals(name, {"s": [{"nonsense": 1}]})  # unexpected shape -> ServerUnavailable
+    env.poller.track(name)
+
+
+async def test_one_route_failing_while_other_healthy_no_gap(env, caplog):
     one_route(env)
-    env.fs.set_arrivals("bad", {"s": [{"nonsense": 1}]})  # unexpected shape -> ServerUnavailable
-    env.poller.track("bad")
-    await env.poller.tick(T0)
-    await env.poller.tick(T0 + 30)
+    bad_route(env)
+    with caplog.at_level(logging.WARNING):
+        for k in range(10):
+            await env.poller.tick(T0 + 30 * k)
+    assert env.gaps() == []
+    assert "unavailable for route bad" in caplog.text
+
+
+async def test_partial_failure_does_not_extend_open_gap(env):
+    one_route(env)
+    bad_route(env)
+    env.fs.set_down(True)
+    await env.poller.tick(T0)  # both fail: gap opens
+    env.fs.set_down(False)
+    await env.poller.tick(T0 + 30)  # one succeeds: closes at T0+30, bad still failing
+    await env.poller.tick(T0 + 60)
     assert env.gaps() == [(T0, T0 + 30)]
+
+
+async def test_all_routes_down_then_recovery_one_gap(env):
+    one_route(env)
+    one_route(env, "46A", trip="t2")
+    await env.poller.tick(T0)
+    env.fs.set_down(True)
+    for k in range(1, 4):
+        await env.poller.tick(T0 + 30 * k)
+    env.fs.set_down(False)
+    await env.poller.tick(T0 + 120)
+    assert env.gaps() == [(T0 + 30, T0 + 120)]
 
 
 async def test_exception_in_one_route_does_not_block_others(env, monkeypatch, caplog):

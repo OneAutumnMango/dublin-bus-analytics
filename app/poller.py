@@ -1,8 +1,9 @@
 """Poll tracked routes every poll_seconds, feed the Tracker, record server outages as gaps.
 
-Gap policy: a gap row is (start, end) in epoch seconds. The first ServerUnavailable in a tick opens a
-row (start=end=now); while failures continue the open row's end is extended; the first tick with no
-failure and at least one successful fetch closes it (end=that tick's now). The open gap is in-memory
+Gap policy: a gap row is (start, end) in epoch seconds and means the service as a whole is down: a
+tick with at least one ServerUnavailable and zero successful fetches. It opens a row (start=end=now);
+while such ticks continue the open row's end is extended; the first tick with any successful fetch
+closes it (end=that tick's now). Per-route failures while other routes succeed are only logged. The open gap is in-memory
 only: a restarted Poller does not resume an old row, the next outage simply opens a new one (rows
 never overlap because the old row's end is <= the new start).
 
@@ -136,8 +137,10 @@ class Poller:
                 log.error("poll failed for route %s", route, exc_info=res)
             else:
                 fetched = True
-        if down or fetched:
-            self._gap(now, down)
+        if fetched:  # per-route failures alongside a success are not a service outage
+            self._gap(now, False)
+        elif down:
+            self._gap(now, True)
 
     async def run(self) -> None:
         interval = self.settings.poll_seconds
