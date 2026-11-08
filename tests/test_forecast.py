@@ -8,13 +8,14 @@ from app.db import open_samples
 from app.forecast import HORIZONS, extract_forecasts, open_previous_month
 
 ACT = 1_000_000
+SCHEMA = ("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "
+          "expected int, realtime int, primary key(trip_id, stop_id, seq, ts)) without rowid")
 
 
 @pytest.fixture
 def conn():
     c = sqlite3.connect(":memory:")
-    c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "
-              "expected int, realtime int, primary key(trip_id, stop_id, seq, ts)) without rowid")
+    c.execute(SCHEMA)
     yield c
     c.close()
 
@@ -59,8 +60,7 @@ def test_exact_boundary_included_one_second_later_excluded(conn):
     add(conn, ACT - 120, 7)
     assert fc([conn]) == [(2, 7, ACT - 7)]
     c = sqlite3.connect(":memory:")
-    c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "
-              "expected int, realtime int)")
+    c.execute(SCHEMA)
     add(c, ACT - 119, 7)
     assert fc([c]) == []
     c.close()
@@ -107,8 +107,7 @@ def test_no_samples_and_no_conns(conn):
 def test_current_conn_preferred_over_previous():
     a, b = sqlite3.connect(":memory:"), sqlite3.connect(":memory:")
     for c in (a, b):
-        c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "
-                  "expected int, realtime int)")
+        c.execute(SCHEMA)
     add(a, ACT - 5000, 1)
     add(b, ACT - 6000, 2)
     assert fc([a, b])[0][1] == 1
@@ -118,8 +117,7 @@ def test_current_conn_preferred_over_previous():
 def test_previous_used_when_current_has_none_or_too_late():
     a, b = sqlite3.connect(":memory:"), sqlite3.connect(":memory:")
     for c in (a, b):
-        c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "
-                  "expected int, realtime int)")
+        c.execute(SCHEMA)
     add(b, ACT - 6000, 2)
     assert fc([a, b])[0] == (30, 2, ACT - 2)
     add(a, ACT - 100, 9)  # only qualifies for horizon 0 < 2 min: not at all
@@ -194,8 +192,7 @@ def test_matches_oracle(a, b, actual, key):
     conns = []
     for rows in (a, b):
         c = sqlite3.connect(":memory:")
-        c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "
-                  "expected int, realtime int, primary key(trip_id, stop_id, seq, ts)) without rowid")
+        c.execute(SCHEMA)
         c.executemany("insert or replace into sample values(?,?,?,?,?,?,?)", rows)
         conns.append(c)
     dedup = [list({(r[1], r[2], r[3], r[0]): r for r in rows}.values()) for rows in (a, b)]
@@ -206,3 +203,38 @@ def test_matches_oracle(a, b, actual, key):
     assert all(e == actual - p for _, p, e in got)
     for c in conns:
         c.close()
+
+
+def test_null_expected_skipped_falls_back(conn):
+    add(conn, ACT - 5000, 11)
+    add(conn, ACT - 4000, None)  # latest qualifying but NULL
+    assert fc([conn])[0] == (30, 11, ACT - 11)
+
+
+def test_null_expected_only_omitted(conn):
+    add(conn, ACT - 5000, None)
+    assert fc([conn]) == []
+
+
+def test_previous_month_leaves_no_files_behind(tmp_path):
+    t = ts_of(2026, 2)
+    c = open_samples(tmp_path, t)
+    c.execute("insert into sample values(?,?,?,?,?,?,?)", (t, "T", "S", 1, 5, t + 300, 1))
+    c.commit(); c.close()
+    before = sorted(p.name for p in tmp_path.iterdir())
+    prev = open_previous_month(tmp_path, ts_of(2026, 3))
+    assert prev.execute("select expected from sample").fetchall() == [(t + 300,)]
+    prev.close()
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert not any(n.endswith(("-wal", "-shm")) for n in before)
+
+
+@pytest.mark.parametrize("ts,prev_ts", [
+    (int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()), ts_of(2025, 12)),
+    (int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp()), ts_of(2026, 2)),
+])
+def test_open_previous_month_exact_month_start(tmp_path, ts, prev_ts):
+    open_samples(tmp_path, prev_ts).close()
+    prev = open_previous_month(tmp_path, ts)
+    assert prev is not None
+    prev.close()
