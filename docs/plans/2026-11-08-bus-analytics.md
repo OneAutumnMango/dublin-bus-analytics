@@ -96,8 +96,8 @@
 **Security flag:** `none`
 **Does NOT cover:** gzipping, backup (Task 9).
 
-- [ ] **Step 1:** Tests: `test_meta_schema_has_tables`, `test_samples_file_named_by_month` (ts 2026-11-08 -> `samples-2026-11.db`), `test_arrival_unique_key_rejects_duplicate`, `test_wal_enabled`.
-- [ ] **Step 2:** pytest -> FAIL. **Step 3:** implement. **Step 4:** pytest -> PASS. **Step 5:** Commit `"Add storage schema"`.
+- [x] **Step 1:** Tests: `test_meta_schema_has_tables`, `test_samples_file_named_by_month` (ts 2026-11-08 -> `samples-2026-11.db`), `test_arrival_unique_key_rejects_duplicate`, `test_wal_enabled`.
+- [x] **Step 2:** pytest -> FAIL. **Step 3:** implement. **Step 4:** pytest -> PASS. **Step 5:** Commit `"Add storage schema"`.
 
 ### Task 3: Server client + fake server
 
