@@ -254,6 +254,24 @@ async def test_skipped_and_stale_logged_as_warnings(env, monkeypatch, caplog):
     assert "skipped=2 stale=True" in caplog.text
 
 
+async def test_stale_only_logged_as_warning(env, monkeypatch, caplog):
+    one_route(env)
+
+    async def fake(route, a, now):
+        return IngestResult(0, 0, 0, skipped=0, stale=True)
+    monkeypatch.setattr(env.tracker, "ingest", fake)
+    with caplog.at_level(logging.WARNING):
+        await env.poller.tick(T0)
+    assert "skipped=0 stale=True" in caplog.text
+
+
+async def test_clean_ingest_logs_nothing(env, caplog):
+    one_route(env)
+    with caplog.at_level(logging.WARNING):
+        await env.poller.tick(T0)
+    assert caplog.text == ""
+
+
 async def test_tick_with_no_tracked_routes(env):
     await env.poller.tick(T0)
     assert env.fs.requests == [] and env.gaps() == []
@@ -360,6 +378,11 @@ def test_track_strips_dedups_sorts_and_boundaries(env):
         env.poller.track(r)
     assert env.poller.tracked() == sorted(["15", "46A", "x" * 20, "A 1.2_3-/"])
     env.poller.untrack("nope")  # no-op
+    env.poller.untrack(" 15 ")  # stripped like track
+    assert "15" not in env.poller.tracked()
+    for bad in ["", "a;b", None]:
+        with pytest.raises(ValueError):
+            env.poller.untrack(bad)
     env.poller.untrack("46A")
     env.poller.untrack("46A")
     assert "46A" not in env.poller.tracked()
@@ -379,7 +402,7 @@ def test_track_from_other_thread(env):
     th = threading.Thread(target=work)
     th.start()
     th.join(10)
-    assert not errs and not isinstance(errs, sqlite3.ProgrammingError)
+    assert errs == []
     assert len(env.poller.tracked()) == 17
 
 
@@ -550,8 +573,11 @@ async def test_lazy_tracker_opens_on_first_ingest_and_closes(tmp_path):
     res = await lt.ingest("15", [], T0)
     assert res.samples_written == 0 and (tmp_path / "d" / "meta.db").exists()
     await lt.ingest("15", [], T0 + 30)  # reuses the same Tracker
+    real = lt._t
     lt.close()
     assert lt._t is None
+    with pytest.raises(sqlite3.ProgrammingError):  # the real Tracker's connection was closed
+        real.meta.execute("select 1")
 
 
 async def test_create_app_injected_client_used_by_poller_and_closed_once(tmp_path):

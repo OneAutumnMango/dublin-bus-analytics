@@ -69,9 +69,14 @@ class Poller:
     def _meta(self):
         return open_meta(self.settings.data_dir)
 
-    def track(self, route: str) -> None:
+    @staticmethod
+    def _clean(route: str) -> str:
         if not isinstance(route, str) or not ROUTE_RE.match(route := route.strip()):
             raise ValueError(f"invalid route {route!r}")
+        return route
+
+    def track(self, route: str) -> None:
+        route = self._clean(route)
         c = self._meta()
         try:
             with c:
@@ -81,6 +86,7 @@ class Poller:
             c.close()
 
     def untrack(self, route: str) -> None:
+        route = self._clean(route)
         c = self._meta()
         try:
             with c:
@@ -153,7 +159,7 @@ class Poller:
                 log.exception("poll tick failed")
             nxt += interval
             delay = nxt - self.mono_fn()
-            if delay < 0:  # overran: skip missed slots rather than overlap or burst
+            if delay < 0:  # overran: realign to now and run the next tick at once; missed slots are dropped, never burst
                 nxt = self.mono_fn()
                 delay = 0
             await self.sleep_fn(delay)
