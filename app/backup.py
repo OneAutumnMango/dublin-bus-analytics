@@ -172,7 +172,7 @@ def _exclusive(db: Path):
     try:
         c.execute("pragma locking_mode=exclusive")
         c.execute("select count(*) from sqlite_master").fetchall()
-        if c.execute("pragma wal_checkpoint(truncate)").fetchone()[0]:
+        if c.execute("pragma wal_checkpoint(truncate)").fetchone()[0]:  # pragma: no cover - defensive; unreachable under the exclusive lock
             raise sqlite3.OperationalError("checkpoint busy")
         yield
     finally:

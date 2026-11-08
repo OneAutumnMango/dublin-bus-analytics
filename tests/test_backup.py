@@ -61,6 +61,7 @@ def data(tmp_path):
 def test_snapshot_restorable_and_consistent_while_writing(data, tmp_path):
     stop = threading.Event()
     errs = []
+    committed = [0]
 
     def writer():
         c = open_samples(data, ts(2026, 10, 5))
@@ -70,6 +71,7 @@ def test_snapshot_restorable_and_consistent_while_writing(data, tmp_path):
                 with c:
                     c.execute("insert into sample values(?,?,?,?,?,?,?)", (i, "w", "s", i, 1, i * 2, 1))
                     c.execute("insert into sample values(?,?,?,?,?,?,?)", (i, "w2", "s", i, 1, i * 2, 1))
+                committed[0] += 1
                 i += 1
         except Exception as e:  # pragma: no cover
             errs.append(e)
@@ -80,7 +82,10 @@ def test_snapshot_restorable_and_consistent_while_writing(data, tmp_path):
     t.start()
     time.sleep(0.2)
     try:
-        tars = [snapshot(data, tmp_path / "bk", keep=10) for _ in range(3)]
+        tars, lbs = [], []
+        for _ in range(3):
+            lbs.append(committed[0])
+            tars.append(snapshot(data, tmp_path / "bk", keep=10))
     finally:
         stop.set()
         t.join()
@@ -93,8 +98,8 @@ def test_snapshot_restorable_and_consistent_while_writing(data, tmp_path):
     assert rows(f, "pragma integrity_check") == [("ok",)]
     r = rows(f, "select count(*) from sample where trip_id='w'")[0][0]
     r2 = rows(f, "select count(*) from sample where trip_id='w2'")[0][0]
-    assert r > 0
-    assert abs(r - r2) <= 0 or r == r2  # both inserts of a txn are present together
+    assert r >= lbs[-1] > 0  # everything committed before the snapshot started is in it
+    assert r == r2  # both inserts of a txn are present together
     assert rows(f, "select count(*) from sample where trip_id='w' and expected != ts*2")[0][0] == 0
 
 
@@ -536,3 +541,193 @@ def test_open_samples_refuses_when_gz_exists_even_with_plain(data):
     (data / "samples-2026-09.db").write_bytes(b"")
     with pytest.raises(RuntimeError):
         open_samples(data, ts(2026, 9, 7))
+
+
+def test_snapshot_with_open_write_txn_and_uncheckpointed_wal(data, tmp_path):
+    c = sqlite3.connect(data / "samples-2026-10.db", isolation_level=None)
+    c.execute("pragma wal_autocheckpoint=0")
+    for i in range(50):  # committed, but only in the WAL: a plain file copy would miss these
+        c.execute("insert into sample values(?,?,?,?,?,?,?)", (5000 + i, "c", "s", i, 1, i, 1))
+    c.execute("begin immediate")
+    c.execute("insert into sample values(9999,'uncommitted','s',1,1,1,1)")
+    try:
+        p = snapshot(data, tmp_path / "bk")
+    finally:
+        c.execute("commit")
+        c.close()
+    out = tmp_path / "r"
+    out.mkdir()
+    with tarfile.open(p) as tar:
+        tar.extractall(out, filter="data")
+    f = out / "samples-2026-10.db"
+    assert rows(f, "pragma integrity_check") == [("ok",)]
+    assert rows(f, "select count(*) from sample where trip_id='c'") == [(50,)]
+    assert rows(f, "select count(*) from sample where trip_id='uncommitted'") == [(0,)]
+    assert rows(f, "select count(*) from sample") == [(53,)]
+
+
+# ---- item 2 ----
+
+def test_writer_blocked_during_compaction_and_gz_complete(data, monkeypatch):
+    orig = backup._verify_gz
+    seen = []
+
+    def spy(gz, sha):
+        c = sqlite3.connect(data / "samples-2026-09.db", timeout=0.1)
+        try:
+            c.execute("insert into sample values(77,'late','s',1,1,1,1)")
+            c.commit()
+            seen.append("wrote")
+        except sqlite3.OperationalError as e:
+            seen.append(str(e))
+        finally:
+            c.close()
+        orig(gz, sha)
+
+    monkeypatch.setattr(backup, "_verify_gz", spy)
+    assert compact_closed_months(data, ts(2026, 10, 3)) == [data / "samples-2026-09.db.gz"]
+    assert seen and ("locked" in seen[0] or "busy" in seen[0])
+    r = open_samples_readonly(data, ts(2026, 9, 7))
+    assert r.execute("select count(*) from sample").fetchone() == (3,)
+    r.close()
+
+
+def test_verify_rejects_truncated_but_valid_gz(data, tmp_path):
+    raw = (data / "samples-2026-09.db").read_bytes()
+    gz = tmp_path / "t.db.gz"
+    gz.write_bytes(gzip.compress(raw[:-4096]))
+    with pytest.raises(sqlite3.DatabaseError, match="does not match"):
+        backup._verify_gz(gz, hashlib.sha256(raw).hexdigest())
+
+
+def test_verify_rejects_integrity_not_ok(data, monkeypatch):
+    monkeypatch.setattr(backup, "_integrity", lambda p: [("row 1 missing",)])
+    assert compact_closed_months(data, ts(2026, 10, 3)) == []
+    assert (data / "samples-2026-09.db").exists() and not (data / "samples-2026-09.db.gz").exists()
+    assert not list(data.glob("*.tmp")) and not list(data.glob("verify-*"))
+
+
+def test_source_modified_before_unlink_aborts(data, monkeypatch):
+    orig = backup._verify_gz
+
+    def tamper(gz, sha):
+        orig(gz, sha)
+        with open(data / "samples-2026-09.db", "ab") as f:
+            f.write(b"\0" * 16)
+
+    monkeypatch.setattr(backup, "_verify_gz", tamper)
+    assert compact_closed_months(data, ts(2026, 10, 3)) == []
+    assert (data / "samples-2026-09.db").exists() and not (data / "samples-2026-09.db.gz").exists()
+
+
+# ---- item 3 ----
+
+@pytest.mark.parametrize("name", ["a#b", "a?b", "a%20b", "a b", "a&b", "a%b", "a;b=c"])
+def test_weird_data_dir_names(tmp_path, name):
+    d = tmp_path / name
+    d.mkdir()
+    mk_meta(d)
+    mk_month(d, 2026, 9)
+    p = snapshot(d, tmp_path / "bk")
+    out = tmp_path / "r"
+    out.mkdir()
+    with tarfile.open(p) as tar:
+        tar.extractall(out, filter="data")
+    assert rows(out / "meta.db", "select count(*) from routes_tracked") == [(3,)]
+    assert rows(out / "samples-2026-09.db", "select count(*) from sample") == [(3,)]
+    c = open_samples_readonly(d, ts(2026, 9, 7))
+    assert c.execute("select count(*) from sample").fetchone() == (3,)
+    c.close()
+    compact_closed_months(d, ts(2026, 12, 1))
+    c = open_samples_readonly(d, ts(2026, 9, 7))
+    assert c.execute("select count(*) from sample").fetchone() == (3,)
+    c.close()
+    assert sorted(x.name for x in tmp_path.iterdir()) == sorted([name, "bk", "r"])  # no stray db next to the dir
+
+
+# ---- items 5-9 ----
+
+def test_directory_named_like_backup_ignored(data, tmp_path, client):
+    bk = tmp_path / "bk"
+    (bk / "analytics-20200101T000000Z.tar").mkdir(parents=True)
+    assert list_backups(bk) == []
+    p = snapshot(data, bk, keep=1)
+    assert list_backups(bk) == [p] and (bk / "analytics-20200101T000000Z.tar").is_dir()
+
+
+def test_api_download_ignores_directory_named_like_backup(client, data):
+    (data / "backups" / "analytics-20990101T000000Z.tar").mkdir(parents=True)
+    assert client.get("/api/backup/download").status_code == 404
+    j = client.post("/api/backup").json()
+    assert client.get("/api/backup/download").content == (data / "backups" / j["file"]).read_bytes()
+
+
+def test_clock_behind_newest_backup_keeps_final(data, tmp_path):
+    import os
+    bk = tmp_path / "bk"
+    bk.mkdir()
+    future = bk / "analytics-20990101T000000Z.tar"
+    future.write_bytes(b"x")
+    os.utime(future, (time.time() + 1000, time.time() + 1000))
+    p = snapshot(data, bk, keep=1)
+    assert p.exists() and list_backups(bk) == [p]
+
+
+def test_link_unsupported_falls_back(data, tmp_path, monkeypatch):
+    def nolink(a, b):
+        raise PermissionError("no hard links")
+
+    monkeypatch.setattr(backup.os, "link", nolink)
+
+    class FixedDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 8, 1, 2, 3, tzinfo=tz)
+
+    monkeypatch.setattr(backup, "datetime", FixedDT)
+    a = snapshot(data, tmp_path / "bk", keep=5)
+    b = snapshot(data, tmp_path / "bk", keep=5)  # name collision under fallback -> next suffix
+    assert a != b and a.exists() and b.exists()
+    with tarfile.open(b) as tar:
+        assert "meta.db" in tar.getnames()
+    assert not [p for p in (tmp_path / "bk").iterdir() if p.name.startswith(".snap")]
+
+
+def test_snapshot_fsyncs_tar_and_dir(data, tmp_path, monkeypatch):
+    calls = []
+    real = backup.os.fsync
+    monkeypatch.setattr(backup.os, "fsync", lambda fd: (calls.append(fd), real(fd))[1])
+    snapshot(data, tmp_path / "bk")
+    assert len(calls) >= 2
+
+
+def _age(p, secs):
+    import os
+    t = time.time() - secs
+    os.utime(p, (t, t))
+
+
+def test_snapshot_cleans_only_stale_own_leftovers(data, tmp_path):
+    bk = tmp_path / "bk"
+    (bk / ".snap-old").mkdir(parents=True)
+    (bk / ".snap-old" / "x").write_text("x")
+    (bk / ".snap-new").mkdir()
+    (bk / "unrelated.txt").write_text("u")
+    (bk / ".other").write_text("o")
+    _age(bk / ".snap-old", 7200)
+    _age(bk / "unrelated.txt", 7200)
+    _age(bk / ".other", 7200)
+    snapshot(data, bk)
+    assert not (bk / ".snap-old").exists()
+    assert (bk / ".snap-new").exists() and (bk / "unrelated.txt").exists() and (bk / ".other").exists()
+
+
+def test_compaction_cleans_only_stale_own_leftovers(data):
+    for n in ("verify-old.db", "verify-old.db-wal", "samples-2020-01.db.gz.tmp", "notes.txt", "verify-new.db"):
+        (data / n).write_text("x")
+    for n in ("verify-old.db", "verify-old.db-wal", "samples-2020-01.db.gz.tmp", "notes.txt"):
+        _age(data / n, 7200)
+    compact_closed_months(data, ts(2026, 10, 3))
+    assert sorted(p.name for p in data.glob("verify-*")) == ["verify-new.db"]
+    assert not (data / "samples-2020-01.db.gz.tmp").exists()
+    assert (data / "notes.txt").exists()
