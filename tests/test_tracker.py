@@ -10,7 +10,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from app.db import open_meta, open_samples
 from app.models import Arrival
-from app.tracker import FINALISED_TTL_S, Tracker
+from app.tracker import FINALISED_TTL_S, NEG_TTL_S, Tracker
 
 T0 = 1_760_000_000  # Oct 2025
 
@@ -28,7 +28,7 @@ def make_lookup(calls=None):
         if calls is not None:
             calls.append((a.trip_id, a.stop_id, a.scheduled))
         # seq = rank of scheduled among the trip's calls at that stop; tests use scheduled offsets
-        return 0 if a.scheduled is None else (a.scheduled - T0 - 300) // 3600
+        return 0 if a.scheduled is None else max(0, (a.scheduled - T0 - 300) // 3600)
     return lookup
 
 
@@ -182,8 +182,8 @@ async def test_service_date_across_dst_change(tr, tmp_path):
     # BST ends 2025-10-26 at 02:00 local (01:00 UTC)
     s1 = dub(2025, 10, 26, 0, 30)
     s2 = dub(2025, 10, 27, 0, 30)
-    await tr.ingest("15", [arr(0, scheduled=s1, expected=s1, trip="a"),
-                           arr(0, scheduled=s2, expected=s2, trip="b")], s1 - 600)
+    await tr.ingest("15", [arr(0, scheduled=s1, expected=s1, trip="a")], s1 - 600)
+    await tr.ingest("15", [arr(0, scheduled=s2, expected=s2, trip="b")], s2 - 600)
     assert [r[4] for r in rows(tmp_path)] == ["2025-10-26", "2025-10-27"]
 
 
@@ -242,8 +242,8 @@ async def test_finalised_state_evicted_after_ttl_and_bounded(tr, tmp_path):
 
 async def test_month_rollover_switches_samples_file(tr, tmp_path):
     end_oct = int(datetime(2025, 10, 31, 23, 59, 30, tzinfo=ZoneInfo("UTC")).timestamp())
-    await tr.ingest("15", [arr(5)], end_oct)
-    await tr.ingest("15", [arr(4, expected=T0)], end_oct + 60)
+    await tr.ingest("15", [arr(5, expected=end_oct + 300, scheduled=end_oct + 300)], end_oct)
+    await tr.ingest("15", [arr(4, expected=end_oct + 301, scheduled=end_oct + 300)], end_oct + 60)
     assert len(samples(tmp_path, end_oct)) == 1
     assert len(samples(tmp_path, end_oct + 60)) == 1
 
@@ -376,8 +376,8 @@ async def test_gather_routes_one_failing_leaves_other_intact(tmp_path):
 async def test_gather_across_month_boundary(tmp_path):
     end_oct = int(datetime(2025, 10, 31, 23, 59, 50, tzinfo=ZoneInfo("UTC")).timestamp())
     t = Tracker(tmp_path, make_lookup())
-    await asyncio.gather(t.ingest("15", [arr(5)], end_oct),
-                         t.ingest("16", [arr(5, route="16", trip="z")], end_oct + 20))
+    await asyncio.gather(t.ingest("15", [arr(5, expected=end_oct + 300, scheduled=end_oct + 300)], end_oct),
+                         t.ingest("16", [arr(5, route="16", trip="z", expected=end_oct + 300, scheduled=end_oct + 300)], end_oct + 20))
     t.close()
     assert len(samples(tmp_path, end_oct)) == 1 and len(samples(tmp_path, end_oct + 20)) == 1
 
@@ -501,17 +501,18 @@ async def test_open_samples_failure_at_rollover_is_clean(tmp_path, monkeypatch):
         return real(d, ts)
     monkeypatch.setattr(trk, "open_samples", op)
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(5, trip="x")], E)
-    await t.ingest("16", [arr(5, trip="y", route="16")], E)
+    sc = dict(expected=E + 300, scheduled=E + 300)
+    await t.ingest("15", [arr(5, trip="x", **sc)], E)
+    await t.ingest("16", [arr(5, trip="y", route="16", **sc)], E)
     before = (copy.deepcopy((t._live, t._finalised, t._seq, t._last_now)))
     fail["on"] = True
     with pytest.raises(OSError):
-        await t.ingest("15", [arr(4, trip="x", expected=T0)], E + 30)
+        await t.ingest("15", [arr(4, trip="x", expected=E + 301, scheduled=E + 300)], E + 30)
     assert before == copy.deepcopy((t._live, t._finalised, t._seq, t._last_now))
     fail["on"] = False
-    res = await t.ingest("15", [arr(4, trip="x", expected=T0)], E + 30)  # same now: not stale
+    res = await t.ingest("15", [arr(4, trip="x", expected=E + 301, scheduled=E + 300)], E + 30)  # same now: not stale
     assert res.stale is False and res.samples_written == 1
-    assert (await t.ingest("16", [arr(5, trip="y", route="16")], E + 40)).stale is False
+    assert (await t.ingest("16", [arr(5, trip="y", route="16", **sc)], E + 40)).stale is False
     t.close()
 
 
@@ -645,3 +646,189 @@ async def test_stale_precheck_skips_lookups(tmp_path):
 async def test_concurrent_same_route_same_now_second_is_stale(tr):
     r1, r2 = await asyncio.gather(tr.ingest("15", [arr(5)], T0), tr.ingest("15", [arr(5)], T0))
     assert sorted([r1.stale, r2.stale]) == [False, True]
+
+
+# ---- fix round 3 -----------------------------------------------------------------------
+def guarded(coro, t=10):
+    return asyncio.wait_for(coro, t)
+
+
+def good_samples(tmp_path):
+    return [s for s in samples(tmp_path) if s[1] == "good"]
+
+
+@pytest.mark.parametrize("bad", [
+    dict(expected=1_760_000_000_000, scheduled=None), dict(scheduled=1_760_000_000_300),
+    dict(realtime=None), dict(realtime=1),
+])
+async def test_poison_arrival_never_blocks_route(tmp_path, bad):
+    t = Tracker(tmp_path, make_lookup())
+    for i in range(3):
+        res = await guarded(t.ingest("15", [arr(0 if bad.get("expected") else 4, trip="bad", **bad),
+                                            arr(5 - i, trip="good")], T0 + 30 * i))
+        assert res.skipped == 1
+    assert len(good_samples(tmp_path)) == 3
+    t.close()
+
+
+@pytest.mark.parametrize("v", [None, "0", 1.5, True, -1])
+async def test_poison_seq_lookup_result_never_blocks_route(tmp_path, v):
+    async def lk(a):
+        return v if a.trip_id == "odd" else 0
+    t = Tracker(tmp_path, lk)
+    for i in range(3):
+        res = await guarded(t.ingest("15", [arr(0, trip="odd"), arr(5 - i, trip="good")], T0 + 30 * i))
+        assert res.skipped == 1
+    assert len(good_samples(tmp_path)) == 3
+    t.close()
+
+
+async def test_epoch_window_boundary(tr):
+    ok = arr(5, expected=T0 + 86400, scheduled=T0 - 86400)
+    bad = arr(5, trip="b", expected=T0 + 86401)
+    res = await tr.ingest("15", [ok, bad], T0)
+    assert (res.samples_written, res.skipped) == (1, 1)
+
+
+async def test_unexpected_error_in_one_arrival_skips_only_it(tmp_path, monkeypatch):
+    orig = Tracker._row
+
+    def row(key, st):
+        if key[0] == "boom":
+            raise RuntimeError("unexpected")
+        return orig(key, st)
+    monkeypatch.setattr(Tracker, "_row", staticmethod(row))
+    t = Tracker(tmp_path, make_lookup())
+    res = await t.ingest("15", [arr(0, trip="boom"), arr(0, trip="ok")], T0)
+    assert (res.skipped, res.finalised) == (1, 1)
+    assert "boom" not in {k[0] for k in t._live} and [r[1] for r in rows(tmp_path)] == ["ok"]
+    t.close()
+
+
+def table_lookup(table, fail=None):
+    async def lk(a):
+        if fail and fail["on"]:
+            raise RuntimeError("down")
+        return table[a.scheduled]
+    return lk
+
+
+async def test_loop_fallback_does_not_misassign_second_visit(tmp_path):
+    fail = {"on": False}
+    S0, S1 = T0 + 300, T0 + 300 + 3600
+    t = Tracker(tmp_path, table_lookup({S0: 0, S1: 1}, fail))
+    v0 = lambda due: arr(due, scheduled=S0)
+    v1 = lambda due: arr(due, scheduled=S1, expected=T0 + 3600 + due * 60)
+    await t.ingest("15", [v0(2)], T0)
+    fail["on"] = True
+    r = await t.ingest("15", [v0(1), v1(45)], T0 + 30)
+    assert r.skipped == 1
+    await t.ingest("15", [v1(44)], T0 + 60)  # visit 0 vanished after due 1 -> finalised
+    (row,) = rows(tmp_path)
+    assert (row[3], row[6]) == (0, T0 + 60)
+    assert all(s[3] == 0 for s in samples(tmp_path)) and len(samples(tmp_path)) == 2
+    t.close()
+
+
+async def test_fallback_picks_closest_due_and_same_route_only(tmp_path):
+    fail = {"on": False}
+    S = T0 + 300
+    t = Tracker(tmp_path, table_lookup({S: 0, S + 500: 1}, fail))
+    await t.ingest("15", [arr(10, scheduled=S), arr(3, scheduled=S + 500, expected=T0 + 181)], T0)
+    await t.ingest("16", [arr(3, scheduled=S + 500, expected=T0 + 181, route="16")], T0)  # other route, seq 1
+    fail["on"] = True
+    await t.ingest("15", [arr(4, scheduled=S + 400, expected=T0 + 242)], T0 + 30)
+    ss = [x for x in samples(tmp_path) if x[0] == T0 + 30]
+    assert [(x[3], x[4]) for x in ss] == [(1, 4)]  # min |due diff| -> seq 1
+    # other route's live key is never used as a fallback
+    r = await t.ingest("16", [arr(4, scheduled=S + 400, expected=T0 + 242, route="16", stop="zz")], T0 + 60)
+    assert r.skipped == 1
+    t.close()
+
+
+async def test_fallback_other_route_key_not_used(tmp_path):
+    fail = {"on": False}
+    S = T0 + 300
+    t = Tracker(tmp_path, table_lookup({S: 0}, fail))
+    await t.ingest("16", [arr(5, scheduled=S, route="16")], T0)
+    fail["on"] = True
+    r = await t.ingest("15", [arr(5, scheduled=S + 1, route="15")], T0 + 30)
+    assert r.skipped == 1
+    t.close()
+
+
+async def test_fallback_claimed_key_not_reused_in_same_tick(tmp_path):
+    fail = {"on": False}
+    S = T0 + 300
+    t = Tracker(tmp_path, table_lookup({S: 0}, fail))
+    await t.ingest("15", [arr(5, scheduled=S)], T0)
+    fail["on"] = True
+    r = await t.ingest("15", [arr(4, scheduled=S + 1), arr(4, scheduled=S + 2)], T0 + 30)
+    assert r.skipped == 1  # one claims the live key, the other is skipped
+
+
+async def test_fallback_requires_scheduled(tmp_path):
+    fail = {"on": False}
+    t = Tracker(tmp_path, table_lookup({T0 + 300: 0}, fail))
+    await t.ingest("15", [arr(5)], T0)
+    fail["on"] = True
+    r = await t.ingest("15", [arr(4, scheduled=None)], T0 + 30)
+    assert r.skipped == 1
+    t.close()
+
+
+async def test_resolve_before_lock_four_routes_one_slow_key_each(tmp_path):
+    T = 0.3
+
+    async def slow(a):
+        await asyncio.sleep(T)
+        return 0
+    t = Tracker(tmp_path, slow)
+    t0 = time.perf_counter()
+    await guarded(asyncio.gather(*(t.ingest(str(r), [arr(5, trip=f"k{r}", route=str(r))], T0) for r in range(4))))
+    assert time.perf_counter() - t0 < 2 * T
+    t.close()
+
+
+async def test_route_b_completes_while_route_a_lookup_pending(tmp_path):
+    gate = asyncio.Event()
+
+    async def lk(a):
+        if a.route == "A":
+            await gate.wait()
+        return 0
+    t = Tracker(tmp_path, lk, lookup_timeout=30)
+    ta = asyncio.create_task(t.ingest("A", [arr(0, route="A", trip="a")], T0))
+    await asyncio.sleep(0)
+    rb = await guarded(t.ingest("B", [arr(0, route="B", trip="b")], T0))
+    assert rb.finalised == 1 and not ta.done()
+    gate.set()
+    assert (await guarded(ta)).finalised == 1
+    t.close()
+
+
+async def test_semaphore_wait_counts_against_timeout(tmp_path):
+    async def lk(a):
+        if a.route == "A":
+            await asyncio.Event().wait()
+        return 0
+    TO = 0.2
+    t = Tracker(tmp_path, lk, lookup_timeout=TO)
+    t0 = time.perf_counter()
+    ra, rb = await guarded(asyncio.gather(
+        t.ingest("A", [arr(5, route="A", trip=f"a{i}") for i in range(16)], T0),
+        t.ingest("B", [arr(0, route="B", trip="b")], T0)))
+    assert time.perf_counter() - t0 < 2 * TO + 0.3
+    assert ra.skipped == 16
+    t.close()
+
+
+async def test_neg_cache_entries_swept(tmp_path):
+    async def bad(a):
+        raise RuntimeError
+    t = Tracker(tmp_path, bad)
+    await t.ingest("15", [arr(5)], T0)
+    assert "t1" in t._neg
+    await t.ingest("15", [], T0 + NEG_TTL_S)  # age == TTL: swept (>=)
+    assert t._neg == {}
+    t.close()

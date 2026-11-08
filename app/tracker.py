@@ -39,6 +39,8 @@ _MISSING = object()
 NEG_TTL_S = 60  # failed trip lookups are not retried for this long (in ingest `now` time)
 INT64 = 2**63 - 1
 LOOKUP_CONCURRENCY = 8
+EPOCH_WINDOW_S = 86400  # expected/scheduled must be within this of the ingest `now`
+FALLBACK_SCHED_S = 600
 
 
 @dataclass
@@ -104,17 +106,21 @@ class Tracker:
         d = self._undo[store]
         if key not in d:
             src = getattr(self, store)
-            d[key] = copy.deepcopy(src[key]) if key in src else _MISSING
+            d[key] = src[key] if key in src else _MISSING  # states are replaced, never mutated in place
 
-    def _finalise(self, key: tuple, st: _State, now: int) -> int:
+    @staticmethod
+    def _row(key: tuple, st: _State) -> dict:
+        """Pure: the arrivals row for a finalising state (may raise; callers guard)."""
         trip, stop, seq = key
         actual = st.actual
         basis = st.scheduled if st.scheduled is not None else actual
-        row = dict(trip_id=trip, stop_id=stop, seq=seq,
-                   service_date=datetime.fromtimestamp(basis, DUBLIN).date().isoformat(),
-                   scheduled=st.scheduled, actual=actual,
-                   delay=None if st.scheduled is None else actual - st.scheduled,
-                   confidence=int(st.saw_zero), realtime=int(st.ever_realtime), route=st.route)
+        return dict(trip_id=trip, stop_id=stop, seq=seq,
+                    service_date=datetime.fromtimestamp(basis, DUBLIN).date().isoformat(),
+                    scheduled=st.scheduled, actual=actual,
+                    delay=None if st.scheduled is None else actual - st.scheduled,
+                    confidence=int(st.saw_zero), realtime=int(st.ever_realtime), route=st.route)
+
+    def _insert(self, key: tuple, row: dict, now: int) -> int:
         cur = self.meta.execute(
             "insert or ignore into arrivals(trip_id,stop_id,seq,service_date,scheduled,actual,delay,confidence,realtime,route)"
             " values(:trip_id,:stop_id,:seq,:service_date,:scheduled,:actual,:delay,:confidence,:realtime,:route)", row)
@@ -126,14 +132,17 @@ class Tracker:
         return 1
 
     @staticmethod
-    def _valid(a: Arrival) -> bool:
-        def num(x, lo):
+    def _valid(a: Arrival, now: int) -> bool:
+        def num(x, lo=1):
             return type(x) is int and lo <= x <= INT64
+        def near(x):  # plausible epoch seconds; also keeps datetime.fromtimestamp safe
+            return num(x) and abs(x - now) <= EPOCH_WINDOW_S
         return (isinstance(a.trip_id, str) and bool(a.trip_id) and isinstance(a.stop_id, str) and bool(a.stop_id)
-                and num(a.due_min, -INT64) and num(a.expected, 1) and (a.scheduled is None or num(a.scheduled, 1)))
+                and num(a.due_min, -INT64) and near(a.expected) and (a.scheduled is None or near(a.scheduled))
+                and type(a.realtime) is bool)
 
-    async def _resolve(self, valid: list[Arrival], now: int) -> tuple[dict, set, set]:
-        """Look up uncached seqs outside the lock. Returns (ck -> seq, failed trips, newly failed). Mutates nothing."""
+    async def _resolve(self, valid: list[Arrival], now: int) -> tuple[dict, set]:
+        """Look up uncached seqs outside the lock. Returns (ck -> seq, newly failed trips). Mutates nothing."""
         by_trip: dict[str, dict[tuple, Arrival]] = {}
         for a in valid:
             ck = (a.trip_id, a.stop_id, a.scheduled)
@@ -142,31 +151,36 @@ class Tracker:
         if self._sem is None:
             self._sem = asyncio.Semaphore(LOOKUP_CONCURRENCY)
         resolved: dict[tuple, int] = {}
-        failed: set[str] = set()
         fresh: set[str] = set()
+
+        async def call(a: Arrival) -> int:
+            async with self._sem:
+                seq = await self.seq_lookup(a)
+            if type(seq) is not int or seq < 0:
+                raise ValueError("bad seq")
+            return seq
 
         async def one_trip(trip: str, cks: dict[tuple, Arrival]) -> None:
             if now - self._neg.get(trip, -10**18) < NEG_TTL_S:
-                failed.add(trip)
                 return
             for ck, a in cks.items():
-                try:
-                    async with self._sem:
-                        resolved[ck] = await asyncio.wait_for(self.seq_lookup(a), self.lookup_timeout)
+                try:  # the timeout budget includes waiting for a semaphore slot
+                    resolved[ck] = await asyncio.wait_for(call(a), self.lookup_timeout)
                 except Exception:
-                    failed.add(trip)
                     fresh.add(trip)
                     return
 
         await asyncio.gather(*(one_trip(t, c) for t, c in by_trip.items()))
-        return resolved, failed, fresh
+        return resolved, fresh
 
     async def ingest(self, route: str, arrivals: list[Arrival], now: int) -> IngestResult:
         if now <= self._last_now.get(route, -1):
             return IngestResult(0, 0, 0, stale=True)
-        valid = [a for a in arrivals if self._valid(a)]
-        invalid = [a for a in arrivals if not self._valid(a)]
-        resolved, failed, fresh = await self._resolve(valid, now)
+        valid: list[Arrival] = []
+        invalid: list[Arrival] = []
+        for a in arrivals:
+            (valid if self._valid(a, now) else invalid).append(a)
+        resolved, fresh = await self._resolve(valid, now)
         async with self._lock_():
             if now <= self._last_now.get(route, -1):
                 return IngestResult(0, 0, 0, stale=True)
@@ -215,13 +229,23 @@ class Tracker:
         for k in [k for k, t in self._neg.items() if now - t >= NEG_TTL_S]:
             del self._neg[k]
 
-    def _live_fallback(self, route: str, a: Arrival) -> int | None:
-        """seq of an already-live (trip, stop) of this route whose lookup failed this tick."""
+    def _live_fallback(self, route: str, a: Arrival, claimed: set) -> int | None:
+        """seq of an unclaimed live key of this route/(trip, stop) with a scheduled time within
+        FALLBACK_SCHED_S of the arrival's, for when the seq lookup failed (never mis-assigns loop visits)."""
+        if a.scheduled is None:
+            return None
         cands = [k for k, s in self._live.items()
-                 if k[:2] == (a.trip_id, a.stop_id) and s.route == route and s.gone_at is None]
+                 if k[:2] == (a.trip_id, a.stop_id) and s.route == route and s.gone_at is None
+                 and k not in claimed and s.scheduled is not None
+                 and abs(a.scheduled - s.scheduled) <= FALLBACK_SCHED_S]
         if not cands:
             return None
         return min(cands, key=lambda k: abs(self._live[k].last_due - a.due_min))[2]
+
+    @staticmethod
+    def _shielded(key: tuple, st: _State, unkeyed: set) -> bool:
+        return any(u[:2] == key[:2] and (u[2] is None or st.scheduled is None
+                                         or abs(u[2] - st.scheduled) <= FALLBACK_SCHED_S) for u in unkeyed)
 
     async def _ingest(self, route: str, valid: list[Arrival], invalid: list[Arrival], now: int,
                       resolved: dict) -> IngestResult:
@@ -233,56 +257,71 @@ class Tracker:
         skipped = len(invalid)
         seen: set[tuple] = set()
         # (trip, stop) of skipped arrivals: never treated as vanished
-        unkeyed = {(a.trip_id, a.stop_id) for a in invalid
+        # scheduled None = wildcard (untrusted arrival); else only live keys scheduled within FALLBACK_SCHED_S
+        unkeyed = {(a.trip_id, a.stop_id, None) for a in invalid
                    if isinstance(a.trip_id, str) and isinstance(a.stop_id, str)}
         keyed: dict[tuple, Arrival] = {}
+        failed: list[Arrival] = []
         for a in valid:
             ck = (a.trip_id, a.stop_id, a.scheduled)
-            self._mark("_seq", ck)
-            if ck in self._seq:
-                seq = self._seq[ck][0]
-            elif ck in resolved:
-                seq = resolved[ck]
-            else:
-                seq = self._live_fallback(route, a)  # lookup failed: keep the live key's seq
-                if seq is None:
-                    skipped += 1
-                    unkeyed.add((a.trip_id, a.stop_id))
-                else:
-                    keyed[(a.trip_id, a.stop_id, seq)] = a
+            hit = self._seq.get(ck)
+            seq = hit[0] if hit else resolved.get(ck)
+            if seq is None:
+                failed.append(a)
                 continue
+            self._mark("_seq", ck)
             self._seq[ck] = (seq, now)  # also refreshes last-used
             keyed[(a.trip_id, a.stop_id, seq)] = a
+        for a in failed:  # second pass: only now do we know which live keys are claimed
+            seq = self._live_fallback(route, a, set(keyed))
+            if seq is None:
+                skipped += 1
+                unkeyed.add((a.trip_id, a.stop_id, a.scheduled))
+            else:
+                keyed[(a.trip_id, a.stop_id, seq)] = a
+        plan = []
         for key, a in keyed.items():
             seen.add(key)
             if key in self._finalised:
                 continue
-            sample = (a.due_min, a.expected, int(a.realtime))
+            try:  # pure phase: one odd arrival must not abort the tick
+                old = self._live.get(key)
+                st = copy.copy(old) if old else _State(route, a.scheduled, (), a.due_min, None, False, False)
+                sample = (a.due_min, a.expected, int(a.realtime))
+                write = sample != st.last_sample
+                st.last_sample = sample
+                st.gone_at = None
+                st.last_due = a.due_min
+                st.ever_realtime |= a.realtime
+                if a.due_min <= FINALISE_DUE_MAX:
+                    st.actual = a.expected
+                if a.due_min <= 0:
+                    st.saw_zero = True
+                row = self._row(key, st) if a.due_min <= 0 else None
+            except Exception:
+                skipped += 1
+                unkeyed.add((*key[:2], None))
+                continue
+            plan.append((key, st, sample if write else None, row))
+        for key, st, sample, row in plan:  # write phase: errors here are tick-level and roll back
             self._mark("_live", key)
-            st = self._live.get(key)
-            if st is None:
-                st = self._live[key] = _State(route, a.scheduled, (), a.due_min, None, False, False)
-            if sample != st.last_sample:
+            if sample is not None:
                 samples.execute("insert into sample values(?,?,?,?,?,?,?)", (now, *key[:2], key[2], *sample))
                 written += 1
-                st.last_sample = sample
-            st.gone_at = None
-            st.last_due = a.due_min
-            st.ever_realtime |= a.realtime
-            if a.due_min <= FINALISE_DUE_MAX:
-                st.actual = a.expected
-            if a.due_min <= 0:
-                st.saw_zero = True
-                finalised += self._finalise(key, st, now)
-                del self._live[key]
+            if row is None:
+                self._live[key] = st
+            else:
+                self._live.pop(key, None)
+                finalised += self._insert(key, row, now)
         for key in [k for k, s in self._live.items()
-                    if s.route == route and s.gone_at is None and k not in seen and k[:2] not in unkeyed]:
+                    if s.route == route and s.gone_at is None and k not in seen and not self._shielded(k, s, unkeyed)]:
             self._mark("_live", key)
-            st = self._live[key]
+            st = copy.copy(self._live[key])
             if st.last_due <= FINALISE_DUE_MAX:
                 del self._live[key]
-                finalised += self._finalise(key, st, now)
+                finalised += self._insert(key, self._row(key, st), now)
             else:
                 st.gone_at = now
+                self._live[key] = st
                 dropped += 1
         return IngestResult(written, finalised, dropped, skipped)
