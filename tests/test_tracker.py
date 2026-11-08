@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -284,61 +285,6 @@ async def test_close_idempotent(tmp_path):
     t.close()
 
 
-# ---- property test -------------------------------------------------------------------
-
-KEYS = [("t1", "s1", 0), ("t1", "s1", 1), ("t1", "s2", 0), ("t2", "s1", 0)]
-
-
-@st.composite
-def scenarios(draw):
-    ticks = []
-    dues = {k: draw(st.integers(0, 8)) for k in KEYS}
-    for _ in range(draw(st.integers(1, 12))):
-        subset = draw(st.lists(st.sampled_from(KEYS), unique=True, max_size=4))
-        if draw(st.booleans()):
-            subset = draw(st.permutations(subset))
-        al = []
-        for k in subset:
-            dues[k] = max(0, dues[k] - draw(st.integers(0, 2)))
-            noise = draw(st.integers(-30, 30))
-            if draw(st.booleans()):
-                al.append((k, dues[k], noise, draw(st.booleans())))
-            al.append((k, dues[k], noise, draw(st.booleans())))  # repeats / dup keys
-        ticks.append(al)
-    return ticks
-
-
-@given(scenarios())
-@settings(max_examples=150, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_property_invariants(tmp_path_factory, ticks):
-    d = tmp_path_factory.mktemp("prop")
-
-    async def lookup(a):
-        return int(a.scheduled - T0 - 300) // 3600
-
-    t = Tracker(d, lookup)
-    for i, al in enumerate(ticks):
-        arrs = [arr(due, expected=T0 + due * 60 + noise, scheduled=T0 + 300 + k[2] * 3600,
-                    trip=k[0], stop=k[1], realtime=rt) for k, due, noise, rt in al]
-        await t.ingest("15", arrs, T0 + i * 30)
-    t.close()
-    m = sqlite3.connect(d / "meta.db")
-    s = open_samples(d, T0)
-    try:
-        arrivals = m.execute("select trip_id,stop_id,seq,service_date,scheduled,actual,delay from arrivals").fetchall()
-        assert len({a[:4] for a in arrivals}) == len(arrivals)
-        for trip, stop, seq, _, sched, actual, delay in arrivals:
-            exp = {r[0] for r in s.execute("select expected from sample where trip_id=? and stop_id=? and seq=?", (trip, stop, seq))}
-            assert actual in exp
-            assert delay == actual - sched
-        for key in {(r[0], r[1], r[2]) for r in s.execute("select trip_id,stop_id,seq from sample")}:
-            seq_rows = s.execute("select due_min,expected,realtime from sample where trip_id=? and stop_id=? and seq=? order by ts", key).fetchall()
-            assert all(a != b for a, b in zip(seq_rows, seq_rows[1:]))
-    finally:
-        m.close()
-        s.close()
-
-
 async def test_dropped_key_reappearing_keeps_change_only_and_evicts(tr, tmp_path):
     await tr.ingest("15", [arr(5)], T0)
     assert (await tr.ingest("15", [], T0 + 30)).dropped == 1
@@ -349,11 +295,177 @@ async def test_dropped_key_reappearing_keeps_change_only_and_evicts(tr, tmp_path
     assert tr._live == {}
 
 
-async def test_seq_lookup_failure_leaves_state_untouched(tmp_path):
-    async def bad(a):
-        raise RuntimeError("lookup down")
-    t = Tracker(tmp_path, bad)
-    with pytest.raises(RuntimeError):
-        await t.ingest("15", [arr(0)], T0)
-    assert t._last_now == {} and t._live == {}
+async def test_seq_lookup_failure_skips_only_that_arrival(tmp_path):
+    async def lookup(a):
+        if a.trip_id == "bad":
+            raise RuntimeError("lookup down")
+        return 0
+    t = Tracker(tmp_path, lookup)
+    res = await t.ingest("15", [arr(0, trip="good"), arr(0, trip="bad")], T0)
     t.close()
+    assert (res.finalised, res.skipped) == (1, 1)
+    assert [r[1] for r in rows(tmp_path)] == ["good"]
+
+
+@pytest.mark.parametrize("kw", [dict(scheduled="x"), dict(trip=""), dict(trip=None), dict(due="3"),
+                                dict(expected="9")])
+async def test_invalid_arrival_skipped_not_raised(tr, tmp_path, kw):
+    a = arr(**{k: v for k, v in kw.items() if k != "due" and k != "expected"})
+    if "due" in kw:
+        a.due_min = kw["due"]
+    if "expected" in kw:
+        a.expected = kw["expected"]
+    res = await tr.ingest("15", [a, arr(0, trip="ok")], T0)
+    assert (res.skipped, res.finalised) == (1, 1)
+
+
+async def test_skipped_arrival_does_not_cause_false_vanish(tmp_path):
+    fail = {"on": False}
+
+    async def lookup(a):
+        if fail["on"] and a.scheduled == T0 + 301:
+            raise RuntimeError
+        return 0
+    t = Tracker(tmp_path, lookup)
+    await t.ingest("15", [arr(1, scheduled=T0 + 300)], T0)
+    fail["on"] = True
+    res = await t.ingest("15", [arr(1, scheduled=T0 + 301)], T0 + 30)  # same trip/stop, lookup fails
+    t.close()
+    assert (res.skipped, res.finalised, res.dropped) == (1, 0, 0)
+
+
+async def test_negative_due_treated_as_arrived(tr, tmp_path):
+    res = await tr.ingest("15", [arr(-1, expected=T0 + 290)], T0)
+    assert res.finalised == 1
+    assert rows(tmp_path)[0][8] == 1
+
+
+async def test_stale_flag(tr):
+    assert (await tr.ingest("15", [], T0)).stale is False
+    assert (await tr.ingest("15", [], T0)).stale is True
+
+
+async def test_state_bounded_over_days(tr):
+    for day in range(5):
+        base = T0 + day * 86400
+        al = [arr(0, trip=f"f{day}-{i}", scheduled=base + 300) for i in range(20)]
+        al += [arr(5, trip=f"d{day}-{i}", scheduled=base + 300) for i in range(20)]
+        await tr.ingest("15", al, base)
+        await tr.ingest("15", [], base + 30)  # drops the due-5 ones
+    await tr.ingest("15", [], T0 + 5 * 86400)
+    assert (len(tr._seq), len(tr._live), len(tr._finalised)) == (0, 0, 0)
+
+
+async def test_gather_routes_one_failing_leaves_other_intact(tmp_path):
+    async def lookup(a):
+        await asyncio.sleep(0)
+        if a.trip_id == "bad":
+            raise RuntimeError
+        return 0
+    t = Tracker(tmp_path, lookup)
+    r15, r16 = await asyncio.gather(
+        t.ingest("15", [arr(0, trip="bad"), arr(0, trip="a")], T0),
+        t.ingest("16", [arr(0, trip="b", route="16")], T0))
+    t.close()
+    assert (r15.finalised, r15.skipped, r16.finalised) == (1, 1, 1)
+    assert sorted(r[1] for r in rows(tmp_path)) == ["a", "b"]
+
+
+async def test_gather_across_month_boundary(tmp_path):
+    end_oct = int(datetime(2025, 10, 31, 23, 59, 50, tzinfo=ZoneInfo("UTC")).timestamp())
+    t = Tracker(tmp_path, make_lookup())
+    await asyncio.gather(t.ingest("15", [arr(5)], end_oct),
+                         t.ingest("16", [arr(5, route="16", trip="z")], end_oct + 20))
+    t.close()
+    assert len(samples(tmp_path, end_oct)) == 1 and len(samples(tmp_path, end_oct + 20)) == 1
+
+
+async def test_failed_tick_restores_seq_and_state(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(5, trip="keep")], T0)
+    before = (dict(t._seq), {k: v.__dict__.copy() for k, v in t._live.items()}, dict(t._last_now))
+    t._on_finalised = lambda i, r: 1 / 0
+    with pytest.raises(ZeroDivisionError):
+        await t.ingest("15", [arr(0, trip="n"), arr(3, trip="keep", expected=T0 + 7)], T0 + 30)
+    assert before == (dict(t._seq), {k: v.__dict__.copy() for k, v in t._live.items()}, dict(t._last_now))
+    t.close()
+
+
+# ---- property test -------------------------------------------------------------------
+
+KEYS = [("t1", "s1", 0), ("t1", "s1", 1), ("t1", "s2", 0), ("t2", "s1", 0)]
+ROUTE_OF = {k: "15" if i % 2 == 0 else "16" for i, k in enumerate(KEYS)}
+
+
+@st.composite
+def scenarios(draw):
+    """ticks: list of (route, now, [(key, due, noise, realtime)])."""
+    ticks = []
+    now = T0
+    for _ in range(draw(st.integers(1, 14))):
+        now += draw(st.integers(-20, 60)) if draw(st.integers(0, 6)) == 0 else draw(st.integers(1, 60))
+        route = draw(st.sampled_from(["15", "16"]))
+        subset = draw(st.lists(st.sampled_from([k for k in KEYS if ROUTE_OF[k] == route]), unique=True, max_size=4))
+        subset = draw(st.permutations(subset))
+        al = [(k, draw(st.integers(-1, 8)), draw(st.integers(-30, 30)), draw(st.booleans())) for k in subset]
+        if al and draw(st.booleans()):
+            al.append(al[0])  # repeated key in one tick
+        ticks.append((route, now, al))
+    return ticks
+
+
+@given(scenarios())
+@settings(max_examples=200, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+async def test_property_invariants(tmp_path_factory, ticks):
+    d = tmp_path_factory.mktemp("prop")
+
+    async def lookup(a):
+        return int(a.scheduled - T0 - 300) // 3600
+
+    t = Tracker(d, lookup)
+    total_final = 0
+    # independent model of what the tracker should have seen, per key, over accepted ticks
+    last_now: dict[str, int] = {}
+    model: dict[tuple, dict] = {}
+    for route, now, al in ticks:
+        arrs = [arr(due, expected=T0 + due * 60 + noise, scheduled=T0 + 300 + k[2] * 3600,
+                    trip=k[0], stop=k[1], realtime=rt, route=route) for k, due, noise, rt in al]
+        res = await t.ingest(route, arrs, now)
+        total_final += res.finalised
+        if now <= last_now.get(route, -1):
+            assert res.stale
+            continue
+        last_now[route] = now
+        for k, due, noise, rt in {x[0]: x for x in al}.values():  # last occurrence wins
+            m = model.setdefault(k, dict(actual=None, zero=False, done=False, last_due=None))
+            if m["done"]:
+                continue
+            m["last_due"] = due
+            if due <= 2:
+                m["actual"] = T0 + due * 60 + noise
+            if due <= 0:
+                m["zero"] = m["done"] = True
+        present = {x[0] for x in al}
+        for k, m in model.items():  # vanish: live key of this route absent from this tick
+            if ROUTE_OF[k] == route and not m["done"] and k not in present and m["last_due"] <= 2:
+                m["done"] = True
+    t.close()
+    m = sqlite3.connect(d / "meta.db")
+    try:
+        arrivals = m.execute("select trip_id,stop_id,seq,actual,delay,scheduled,confidence from arrivals").fetchall()
+    finally:
+        m.close()
+    assert total_final == len(arrivals)  # each key finalised at most once, no phantom rows
+    sc = open_samples(d, T0)
+    try:
+        for key in sc.execute("select distinct trip_id,stop_id,seq from sample").fetchall():
+            seq_rows = sc.execute("select due_min,expected,realtime from sample where trip_id=? and stop_id=? and seq=? order by ts", key).fetchall()
+            assert all(x != y for x, y in zip(seq_rows, seq_rows[1:]))  # change-only
+    finally:
+        sc.close()
+    assert {(r[0], r[1], r[2]) for r in arrivals} == {k for k, v in model.items() if v["done"]}
+    for trip, stop, seq, actual, delay, sched, conf in arrivals:
+        mk = model[(trip, stop, seq)]
+        assert delay == actual - sched
+        assert actual == mk["actual"]  # last expected seen with due <= 2
+        assert conf == int(mk["zero"])
