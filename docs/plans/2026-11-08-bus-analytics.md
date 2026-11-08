@@ -69,6 +69,17 @@
 - [x] **Step 4:** Run `./scripts/test.sh`. Expected: PASS.
 - [x] **Step 5:** Commit in `dublin-bus-server`: `git commit -m "Expose scheduledEpochSeconds on arrivals and trip stop calls"`.
 
+### Task 0b: Server hardening of scheduledEpochSeconds
+
+Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for (trip, stop), so it must be null rather than wrong.
+
+**Files:** Modify `dublin-bus-server/src/main/kotlin/dev/dublinbustracker/server/ArrivalsService.kt` (+ tests)
+**Interfaces:** Consumes Task 0. Produces: `scheduledEpochSeconds` is null when the nearest timetable call is more than 1800 s from `time - delay` (or raw time when delay-less), and null for a delay-less direct event on a trip with two or more same-day candidate calls at that stop; unchanged otherwise. HTTP-body tests use the real Ktor JSON config.
+**Security flag:** `none`
+**Does NOT cover:** stop_sequence in the static bundle.
+
+- [ ] Tests first (1800 s accepted, 1801 s null, delay-less loop ambiguity null, delay present exact), then code; `./scripts/test.sh` green.
+
 ### Task 1: Scaffold analytics service
 
 **Files:**
@@ -161,7 +172,7 @@
 - Consumes: `ServerClient`, `Tracker`, `open_meta`
 - Produces: `class Poller: __init__(settings, client, tracker)`, `async tick(now: int) -> None` (one pass over tracked routes), `async run() -> None` (loop every `poll_seconds`), `track(route: str)`, `untrack(route: str)`, `tracked() -> list[str]`. On `ServerUnavailable` it writes/extends a `gaps` row and keeps going; the first successful tick after closes the gap.
 
-**Wiring and threading rules (decided after Task 4 review):** `create_app(settings=None, *, start_background: bool = True)` builds `app.state.client` (ServerClient), `app.state.tracker` (Tracker), `app.state.poller` (Poller) eagerly in `create_app`; only the lifespan starts/cancels the poll loop, and only when `start_background` is true, so tests can use `TestClient` hermetically and swap `app.state.client`. `Poller.track/untrack/tracked` and gap writes open a short-lived `open_meta` connection per call and close it (callable from any thread). The Tracker keeps its own connections and is only used from the event-loop thread. `tick` ingests routes concurrently with `asyncio.gather`. On `ServerUnavailable` it records a gap and must NOT call `ingest` with an empty list (that would mass-finalise/drop buses). Any other exception for one route is logged and does not stop the other routes or the loop. `RouteNotFound` is non-retryable: log, keep the route tracked, do not record a gap. `seq_lookup` given to the Tracker: rank of `arrival.scheduled` among the trip's calls at that stop (from `client.trip_calls(trip_id)`, cached per trip with a bounded LRU; raises when scheduled is None or unmatched so the tracker skips it). Log `IngestResult` fields (`skipped`, `stale`).
+**Wiring and threading rules (decided after Task 4 review; seq source revised after Task 6 review):** `create_app(settings=None, *, start_background: bool = True)` builds `app.state.client` (ServerClient), `app.state.tracker` (Tracker), `app.state.poller` (Poller) eagerly in `create_app`; only the lifespan starts/cancels the poll loop, and only when `start_background` is true, so tests can use `TestClient` hermetically and swap `app.state.client`. `Poller.track/untrack/tracked` and gap writes open a short-lived `open_meta` connection per call and close it (callable from any thread). The Tracker keeps its own connections and is only used from the event-loop thread. `tick` ingests routes concurrently with `asyncio.gather`. On `ServerUnavailable` it records a gap and must NOT call `ingest` with an empty list (that would mass-finalise/drop buses). Any other exception for one route is logged and does not stop the other routes or the loop. `RouteNotFound` is non-retryable: log, keep the route tracked, do not record a gap. `seq_lookup` given to the Tracker (REVISED after review): the server's `/v1/trips/{id}` `stopCalls` is built from the live realtime feed only (empty for buses not yet started, next-stops-only for live ones), so it cannot supply a visit number. The visit discriminator stored in the `seq` column is the arrival's scheduled epoch: `async def seq_lookup(a): return a.scheduled`, raising when `a.scheduled` is None so the tracker skips it. Unique per visit (loop trips), differs on recycled trip ids across days, stable from scheduled-only through live. No trip fetches, cache or LRU. Gap policy: a gap row opens only when the whole service is down (at least one ServerUnavailable and zero routes fetched). `create_app` takes an optional `client` keyword and builds everything from it. Log `IngestResult` fields (`skipped`, `stale`).
 
 **Security flag:** `none`
 **Does NOT cover:** concurrent writers.

@@ -48,8 +48,10 @@ All under `/data`, SQLite WAL, integer ids and epoch seconds.
   `forecast` (arrival_id, horizon_min, predicted_epoch, error_s) for horizons 30/20/10/5/2,
   computed at finalisation from raw samples, `gaps`.
 - `samples-YYYY-MM.db` (raw time series): `sample(ts, trip_id, stop_id, seq, due_min, expected,
-  realtime)` WITHOUT ROWID, keyed (trip_id, stop_id, seq, ts). `seq` is the occurrence index
-  of that stop on the trip (distinguishes loops; derived from `/v1/trips/{id}` stop calls). Finalisation reads the current
+  realtime)` WITHOUT ROWID, keyed (trip_id, stop_id, seq, ts). `seq` holds the scheduled epoch
+  of that call (the per-visit discriminator: distinguishes loops and recycled trip ids; every arrival carries it from
+  the server's `scheduledEpochSeconds`; arrivals without one are skipped). REVISED 2026-11-08: the original
+  plan derived an occurrence index from `/v1/trips/{id}`, but those stop calls come from the live feed only. Finalisation reads the current
   month (and previous month at a boundary).
 - Closed months are immutable; a nightly job gzips them. Gzipped months are readable via
   decompress-on-demand for trip drill-down.
