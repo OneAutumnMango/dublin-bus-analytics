@@ -26,6 +26,7 @@ def delay_summary(delays, ci: float = 0.95, pct: tuple[float, float] = (0.05, 0.
     lo, hi = pct
     if not (0 <= lo < hi <= 1):
         raise ValueError("pct must satisfy 0 <= lo < hi <= 1")
+    delays = [d for d in delays if d is not None]
     n = len(delays)
     out = dict.fromkeys(
         ["mean", "min", "max", "std", "ci_low", "ci_high", "p_low", "p_high", "median"])
@@ -47,6 +48,7 @@ def on_time_pct(delays, lo_s: int = -60, hi_s: int = 300) -> dict:
     """Share (0-100) of delays within [lo_s, hi_s], both edges inclusive."""
     if lo_s > hi_s:
         raise ValueError("lo_s must be <= hi_s")
+    delays = [d for d in delays if d is not None]
     n = len(delays)
     if n == 0:
         return {"n": 0, "pct": None}
@@ -54,12 +56,12 @@ def on_time_pct(delays, lo_s: int = -60, hi_s: int = 300) -> dict:
 
 
 def reliability_score(delays, lo_s: int = -60, hi_s: int = 300) -> float | None:
-    """on_time_pct / (1 + std/300); std of a single sample is treated as 0."""
-    pct = on_time_pct(delays, lo_s, hi_s)["pct"]
-    if pct is None:
+    """on_time_pct / (1 + std/300). None for n < 2 (spread is undefined)."""
+    delays = [d for d in delays if d is not None]
+    r = on_time_pct(delays, lo_s, hi_s)
+    if r["n"] < 2:
         return None
-    std = np.asarray(delays, dtype=float).std(ddof=1) if len(delays) > 1 else 0.0
-    return pct / (1 + _f(std) / 300)
+    return r["pct"] / (1 + _f(np.asarray(delays, dtype=float).std(ddof=1)) / 300)
 
 
 def _local(epoch):
@@ -89,7 +91,7 @@ def filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=No
     timed = not (since is None and until is None and weekdays is None and hours is None)
     out = []
     for r in rows:
-        if r.get("confidence", 0) < min_confidence or (realtime_only and not r.get("realtime")):
+        if (r.get("confidence") or 0) < min_confidence or (realtime_only and not r.get("realtime")):
             continue
         if timed:
             s = r.get("scheduled")
@@ -110,6 +112,9 @@ def accumulation(rows_by_trip_ordered) -> list[dict]:
     keys stop_id, seq, delay (sorted by seq here, so order is not required).
     Output per seq: mean_delay over trips, and segment_delta = mean over trips of
     delay(seq) - delay(seq-1) for trips that have both *adjacent* seqs (None if none).
+    n = trips with a delay at that seq; n_delta = trips contributing to segment_delta
+    (use these for the n<10 flag). mean_delay is over all trips present at that seq, so it is
+    NOT the cumulative sum of segment_deltas (different trip sets); group by route variant.
     """
     trips = rows_by_trip_ordered.values() if isinstance(rows_by_trip_ordered, dict) \
         else rows_by_trip_ordered
@@ -127,17 +132,21 @@ def accumulation(rows_by_trip_ordered) -> list[dict]:
                 deltas[s].append(r["delay"] - prev[1])
             prev = (s, r["delay"])
     return [{"stop_id": ids[s], "seq": s, "mean_delay": _f(np.mean(delays[s])),
-             "segment_delta": _f(np.mean(deltas[s])) if deltas[s] else None}
+             "segment_delta": _f(np.mean(deltas[s])) if deltas[s] else None,
+             "n": len(delays[s]), "n_delta": len(deltas[s])}
             for s in sorted(delays)]
 
 
 def forecast_accuracy(forecast_rows) -> dict:
     """{horizon_min: {n, mean_error, mae, p_low, p_high}} from rows with keys
-    horizon_min and error (seconds, actual minus predicted; positive = bus later than predicted). p_low/p_high = 5th/95th pct."""
+    horizon_min and error_s (or error; error_s preferred) (seconds, actual minus predicted; positive = bus later than predicted). p_low/p_high = 5th/95th pct."""
     acc = defaultdict(list)
     for r in forecast_rows:
-        if r.get("horizon_min") is not None and r.get("error") is not None:
-            acc[r["horizon_min"]].append(r["error"])
+        e = r.get("error_s")
+        if e is None:
+            e = r.get("error")
+        if r.get("horizon_min") is not None and e is not None:
+            acc[r["horizon_min"]].append(e)
     out = {}
     for h, errs in acc.items():
         a = np.asarray(errs, dtype=float)

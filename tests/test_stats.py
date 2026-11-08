@@ -1,5 +1,7 @@
 import json
 import math
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from hypothesis import given, strategies as st
@@ -133,8 +135,9 @@ def test_reliability_none_when_empty():
 
 def test_reliability_std_zero_equals_pct():
     assert reliability_score([0, 0, 0]) == 100.0
-    assert reliability_score([1000]) == 0.0
-    assert reliability_score([0]) == 100.0  # n=1: std unknown -> no penalty
+    assert reliability_score([1000, 1000]) == 0.0
+    assert reliability_score([0]) is None  # n<2: spread unknown -> no score
+    assert reliability_score([None, 0]) is None
 
 
 def test_reliability_penalises_spread():
@@ -152,16 +155,15 @@ def test_on_time_invariants(d, lo, hi):
     assert r["n"] == len(d)
     if d:
         assert 0 <= r["pct"] <= 100
-        assert 0 <= reliability_score(d, lo, hi) <= r["pct"] + 1e-9
+        rel = reliability_score(d, lo, hi)
+        assert (rel is None) == (len(d) < 2)
+        assert rel is None or 0 <= rel <= r["pct"] + 1e-9
     else:
         assert r["pct"] is None
     json.dumps(r)
 
 
 # ---- heatmap / filter_rows ----
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
 DUB = ZoneInfo("Europe/Dublin")
 
 
@@ -287,9 +289,9 @@ def test_accumulation_segment_delta():
     b = [stop(1, 60), stop(2, 60), stop(3, 120)]
     out = accumulation([a, b])
     assert out == [
-        {"stop_id": 101, "seq": 1, "mean_delay": 30.0, "segment_delta": None},
-        {"stop_id": 102, "seq": 2, "mean_delay": 60.0, "segment_delta": 30.0},   # (60+0)/2
-        {"stop_id": 103, "seq": 3, "mean_delay": 150.0, "segment_delta": 90.0},  # (120+60)/2
+        {"stop_id": 101, "seq": 1, "mean_delay": 30.0, "segment_delta": None, "n": 2, "n_delta": 0},
+        {"stop_id": 102, "seq": 2, "mean_delay": 60.0, "segment_delta": 30.0, "n": 2, "n_delta": 2},   # (60+0)/2
+        {"stop_id": 103, "seq": 3, "mean_delay": 150.0, "segment_delta": 90.0, "n": 2, "n_delta": 2},  # (120+60)/2
     ]
 
 
@@ -305,12 +307,13 @@ def test_accumulation_gap_in_seq_gives_no_delta():
     gap = [stop(1, 0), stop(3, 900)]
     out = accumulation([full, gap])
     assert out[2]["mean_delay"] == 480.0 and out[2]["segment_delta"] == 60.0
+    assert out[2]["n"] == 2 and out[2]["n_delta"] == 1
 
 
 def test_accumulation_empty_and_single_stop():
     assert accumulation([]) == [] and accumulation([[]]) == []
     assert accumulation([[stop(1, 5)]]) == [
-        {"stop_id": 101, "seq": 1, "mean_delay": 5.0, "segment_delta": None}]
+        {"stop_id": 101, "seq": 1, "mean_delay": 5.0, "segment_delta": None, "n": 1, "n_delta": 0}]
 
 
 def test_accumulation_skips_none_delay():
@@ -380,3 +383,46 @@ def test_heatmap_to_json_sorted_and_serialisable():
                    {"weekday": 3, "hour": 0, "n": 1, "mean_delay": 30.0}]
     json.dumps(out)
     assert heatmap_to_json({}) == []
+
+
+# ---- round 2: None handling, error_s, n counts ----
+
+def test_none_values_dropped():
+    s = delay_summary([None, 1, 2])
+    assert s["n"] == 2 and s["mean"] == 1.5
+    assert delay_summary([None]) == delay_summary([])
+    assert on_time_pct([None]) == {"n": 0, "pct": None}
+    assert on_time_pct([None, 0]) == {"n": 1, "pct": 100.0}
+    assert reliability_score([None]) is None
+
+
+def test_filter_null_confidence():
+    r = row(1)
+    r["confidence"] = None
+    assert filter_rows([r]) == [r]
+    assert filter_rows([r], min_confidence=1) == []
+
+
+mixed_st = st.lists(st.one_of(st.none(), st.integers(-10**6, 10**6)), max_size=30)
+
+
+@given(mixed_st)
+def test_mixed_none_never_raises_and_finite(d):
+    outs = [delay_summary(d), on_time_pct(d), {"r": reliability_score(d)},
+            {"h": [heatmap_to_json(heatmap([row(x, 1_750_000_000) for x in d]))]},
+            {"a": accumulation([[stop(i + 1, x) for i, x in enumerate(d)]])},
+            {"f": forecast_accuracy([{"horizon_min": 5, "error_s": x} for x in d])}]
+    for o in outs:
+        json.dumps(o, allow_nan=False)
+
+
+def test_accumulation_counts_and_none_gap():
+    out = accumulation([[stop(1, 0), stop(2, 10)], [stop(1, 5)], [stop(1, 1), stop(2, None), stop(3, 9)]])
+    assert [(r["n"], r["n_delta"]) for r in out] == [(3, 0), (1, 1), (1, 0)]
+
+
+def test_forecast_accepts_error_s_and_prefers_it():
+    assert forecast_accuracy([{"horizon_min": 5, "error_s": 60}])[5]["mean_error"] == 60
+    assert forecast_accuracy([{"horizon_min": 5, "error": 30}])[5]["mean_error"] == 30
+    assert forecast_accuracy([{"horizon_min": 5, "error_s": 60, "error": 30}])[5]["mean_error"] == 60
+    assert forecast_accuracy([{"horizon_min": 5, "error_s": None, "error": 30}])[5]["mean_error"] == 30
