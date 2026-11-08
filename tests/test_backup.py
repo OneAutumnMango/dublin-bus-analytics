@@ -398,12 +398,12 @@ def test_readonly_gz_tempfile_removed_on_gc(data):
 def test_readonly_gz_tempfile_removed_on_exception(data):
     compact_closed_months(data, ts(2026, 10, 1))
     before = _tmp_before()
-    with pytest.raises(sqlite3.OperationalError):
-        with open_samples_readonly(data, ts(2026, 9, 7)) as c:
-            try:
-                c.execute("select * from nope")
-            finally:
-                c.close()
+    c = open_samples_readonly(data, ts(2026, 9, 7))
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            c.execute("select * from nope")
+    finally:
+        c.close()
     assert _tmp_left(before) == set()
 
 
@@ -456,3 +456,37 @@ def test_api_download_returns_newest_and_no_filename_param(client, data):
     d = client.get("/api/backup/download", params={"file": "../../meta.db"})
     assert d.content == (data / "backups" / last).read_bytes()
     assert client.get("/api/backup/download/../../meta.db").status_code in (404, 405)
+
+
+def test_readonly_close_tolerates_missing_tempfile(data):
+    compact_closed_months(data, ts(2026, 10, 1))
+    before = _tmp_before()
+    c = open_samples_readonly(data, ts(2026, 9, 7))
+    for f in _tmp_left(before):
+        f.unlink()
+    c.close()
+
+
+def test_too_many_same_second_snapshots(data, tmp_path, monkeypatch):
+    def exists(a, b):
+        raise FileExistsError
+
+    monkeypatch.setattr(backup.os, "link", exists)
+    with pytest.raises(RuntimeError):
+        snapshot(data, tmp_path / "bk")
+    assert [p.name for p in (tmp_path / "bk").iterdir()] == []
+
+
+def test_verify_rejects_integrity_failure(tmp_path):
+    c = sqlite3.connect(tmp_path / "a.db")
+    c.execute("create table t(x int primary key)")
+    c.execute("insert into t values(1)")
+    c.commit()
+    c.close()
+    raw = bytearray((tmp_path / "a.db").read_bytes())
+    raw[4096:8192] = b"\xff" * 4096  # destroy the table root page
+    gz = tmp_path / "bad.db.gz"
+    gz.write_bytes(gzip.compress(bytes(raw)))
+    with pytest.raises(sqlite3.DatabaseError):
+        backup._verify_gz(gz)
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("verify")] == []
