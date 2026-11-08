@@ -79,11 +79,11 @@
 **Security flag:** `none`
 **Does NOT cover:** poller, DB.
 
-- [ ] **Step 1:** Test `test_health_returns_ok` using FastAPI `TestClient`: `GET /api/health` is 200 and `{"ok": true}`.
-- [ ] **Step 2:** `cd dublin-bus-analytics && python -m pytest tests/test_health.py` -> FAIL (no module).
-- [ ] **Step 3:** Implement `config.py` (env: `SERVER_URL`, `DATA_DIR=/data`, `POLL_SECONDS`, `PORT`), `main.py` `create_app`, pyproject deps, Dockerfile (python:3.12-slim, `uvicorn app.main:app --host 0.0.0.0 --port 8081`).
-- [ ] **Step 4:** pytest -> PASS.
-- [ ] **Step 5:** Commit `"Scaffold analytics service"`.
+- [x] **Step 1:** Test `test_health_returns_ok` using FastAPI `TestClient`: `GET /api/health` is 200 and `{"ok": true}`.
+- [x] **Step 2:** `cd dublin-bus-analytics && python -m pytest tests/test_health.py` -> FAIL (no module).
+- [x] **Step 3:** Implement `config.py` (env: `SERVER_URL`, `DATA_DIR=/data`, `POLL_SECONDS`, `PORT`), `main.py` `create_app`, pyproject deps, Dockerfile (python:3.12-slim, `uvicorn app.main:app --host 0.0.0.0 --port 8081`).
+- [x] **Step 4:** pytest -> PASS.
+- [x] **Step 5:** Commit `"Scaffold analytics service"`.
 
 ### Task 2: Storage schema
 
