@@ -101,3 +101,46 @@ def filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=No
                 continue
         out.append(r)
     return out
+
+
+def accumulation(rows_by_trip_ordered) -> list[dict]:
+    """Delay build-up along a route.
+
+    Input: list of trips (or dict trip_id -> trip); each trip is a list of rows with
+    keys stop_id, seq, delay (sorted by seq here, so order is not required).
+    Output per seq: mean_delay over trips, and segment_delta = mean over trips of
+    delay(seq) - delay(seq-1) for trips that have both *adjacent* seqs (None if none).
+    """
+    trips = rows_by_trip_ordered.values() if isinstance(rows_by_trip_ordered, dict) \
+        else rows_by_trip_ordered
+    delays, deltas, ids = defaultdict(list), defaultdict(list), {}
+    for trip in trips:
+        prev = None
+        for r in sorted(trip, key=lambda r: r["seq"]):
+            if r.get("delay") is None:
+                prev = None
+                continue
+            s = r["seq"]
+            ids[s] = r["stop_id"]
+            delays[s].append(r["delay"])
+            if prev is not None and prev[0] == s - 1:
+                deltas[s].append(r["delay"] - prev[1])
+            prev = (s, r["delay"])
+    return [{"stop_id": ids[s], "seq": s, "mean_delay": _f(np.mean(delays[s])),
+             "segment_delta": _f(np.mean(deltas[s])) if deltas[s] else None}
+            for s in sorted(delays)]
+
+
+def forecast_accuracy(forecast_rows) -> dict:
+    """{horizon_min: {n, mean_error, mae, p_low, p_high}} from rows with keys
+    horizon_min and error (seconds, forecast minus actual). p_low/p_high = 5th/95th pct."""
+    acc = defaultdict(list)
+    for r in forecast_rows:
+        if r.get("horizon_min") is not None and r.get("error") is not None:
+            acc[r["horizon_min"]].append(r["error"])
+    out = {}
+    for h, errs in acc.items():
+        a = np.asarray(errs, dtype=float)
+        out[h] = {"n": len(errs), "mean_error": _f(a.mean()), "mae": _f(np.abs(a).mean()),
+                  "p_low": _f(np.percentile(a, 5)), "p_high": _f(np.percentile(a, 95))}
+    return out
