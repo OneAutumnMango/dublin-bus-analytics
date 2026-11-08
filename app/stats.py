@@ -133,7 +133,7 @@ def accumulation(rows_by_trip_ordered) -> list[dict]:
 
 def forecast_accuracy(forecast_rows) -> dict:
     """{horizon_min: {n, mean_error, mae, p_low, p_high}} from rows with keys
-    horizon_min and error (seconds, forecast minus actual). p_low/p_high = 5th/95th pct."""
+    horizon_min and error (seconds, actual minus predicted; positive = bus later than predicted). p_low/p_high = 5th/95th pct."""
     acc = defaultdict(list)
     for r in forecast_rows:
         if r.get("horizon_min") is not None and r.get("error") is not None:
@@ -144,3 +144,8 @@ def forecast_accuracy(forecast_rows) -> dict:
         out[h] = {"n": len(errs), "mean_error": _f(a.mean()), "mae": _f(np.abs(a).mean()),
                   "p_low": _f(np.percentile(a, 5)), "p_high": _f(np.percentile(a, 95))}
     return out
+
+
+def heatmap_to_json(h: dict) -> list[dict]:
+    """Flatten heatmap() output to JSON-friendly rows sorted by (weekday, hour)."""
+    return [{"weekday": wd, "hour": hr, **v} for (wd, hr), v in sorted(h.items())]

@@ -6,6 +6,7 @@ from hypothesis import given, strategies as st
 from scipy.stats import t as student_t
 
 from app.stats import (accumulation, delay_summary, filter_rows, forecast_accuracy, heatmap,
+                       heatmap_to_json,
                        on_time_pct, reliability_score)
 
 delays_st = st.lists(st.integers(-10_000, 10_000), min_size=0, max_size=60)
@@ -362,3 +363,20 @@ def test_forecast_accuracy_invariants(rows):
     for v in out.values():
         assert v["mae"] >= abs(v["mean_error"]) - 1e-9
         assert v["p_low"] <= v["p_high"] + 1e-9
+
+
+def test_forecast_error_sign_is_actual_minus_predicted():
+    # error = actual - predicted: +120 means the bus was 2 min later than predicted
+    out = forecast_accuracy([fr(10, 120)])
+    assert out[10]["mean_error"] == 120 and out[10]["mae"] == 120
+
+
+def test_heatmap_to_json_sorted_and_serialisable():
+    h = {(3, 0): {"n": 1, "mean_delay": 30.0}, (0, 5): {"n": 2, "mean_delay": 1.5},
+         (0, 2): {"n": 1, "mean_delay": -4.0}}
+    out = heatmap_to_json(h)
+    assert out == [{"weekday": 0, "hour": 2, "n": 1, "mean_delay": -4.0},
+                   {"weekday": 0, "hour": 5, "n": 2, "mean_delay": 1.5},
+                   {"weekday": 3, "hour": 0, "n": 1, "mean_delay": 30.0}]
+    json.dumps(out)
+    assert heatmap_to_json({}) == []
