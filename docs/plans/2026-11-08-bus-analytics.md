@@ -57,15 +57,15 @@
 **Security flag:** `none`
 **Does NOT cover:** changing `expectedEpochSeconds`/`delaySeconds` semantics; Android app changes.
 
-- [ ] **Step 1: Failing tests** in the existing `ArrivalsService` test file:
+- [x] **Step 1: Failing tests** in the existing `ArrivalsService` test file:
   - `direct realtime arrival carries scheduledEpochSeconds equal to the timetable call`
   - `cascaded arrival scheduled == timetable epoch (expected - delay)`
   - `static fallback arrival scheduled == expected`
   - `tripStopCalls include scheduledEpochSeconds`
-- [ ] **Step 2:** Run `cd dublin-bus-server && ./scripts/test.sh`. Expected: FAIL (missing field).
-- [ ] **Step 3:** Add `scheduledEpochSeconds: Long? = null` to `Arrival`, `ArrivalResponse`, `TripStopCall` and its response; populate where the timetable epoch is computed (`closestScheduledEpoch`/`scheduledEpochs`/`scheduledArrivalsForStop`); direct arrivals look up the closest timetable epoch to `expected - delay` (reuse `closestScheduledEpoch`).
-- [ ] **Step 4:** Run `./scripts/test.sh`. Expected: PASS.
-- [ ] **Step 5:** Commit in `dublin-bus-server`: `git commit -m "Expose scheduledEpochSeconds on arrivals and trip stop calls"`.
+- [x] **Step 2:** Run `cd dublin-bus-server && ./scripts/test.sh`. Expected: FAIL (missing field).
+- [x] **Step 3:** Add `scheduledEpochSeconds: Long? = null` to `Arrival`, `ArrivalResponse`, `TripStopCall` and its response; populate where the timetable epoch is computed (`closestScheduledEpoch`/`scheduledEpochs`/`scheduledArrivalsForStop`); direct arrivals look up the closest timetable epoch to `expected - delay` (reuse `closestScheduledEpoch`).
+- [x] **Step 4:** Run `./scripts/test.sh`. Expected: PASS.
+- [x] **Step 5:** Commit in `dublin-bus-server`: `git commit -m "Expose scheduledEpochSeconds on arrivals and trip stop calls"`.
 
 ### Task 1: Scaffold analytics service
 
