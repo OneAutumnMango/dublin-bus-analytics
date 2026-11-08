@@ -2,8 +2,9 @@ import sqlite3
 import threading
 
 import pytest
+from hypothesis import given, strategies as st
 
-from app.db import open_meta
+from app.db import open_meta, open_samples, samples_path
 
 
 def test_meta_schema_has_tables(tmp_path):
@@ -82,3 +83,57 @@ def test_concurrent_read_while_writing(tmp_path):
     t.join(5)
     assert out == [1]  # reader not blocked, sees only committed data
     w.commit()
+
+
+def test_samples_file_named_by_month(tmp_path):
+    ts = 1794096000  # 2026-11-08 UTC
+    assert samples_path(tmp_path, ts) == tmp_path / "samples-2026-11.db"
+    open_samples(tmp_path, ts)
+    assert (tmp_path / "samples-2026-11.db").exists()
+
+
+@pytest.mark.parametrize(
+    "ts,name",
+    [
+        (1793491199, "samples-2026-10.db"),  # 2026-10-31 23:59:59
+        (1793491200, "samples-2026-11.db"),  # 2026-11-01 00:00:00
+        (1796083199, "samples-2026-11.db"),  # 2026-11-30 23:59:59
+        (1796083200, "samples-2026-12.db"),  # 2026-12-01 00:00:00
+        (1798761599, "samples-2026-12.db"),  # 2026-12-31 23:59:59
+        (1798761600, "samples-2027-01.db"),  # 2027-01-01 00:00:00
+        (0, "samples-1970-01.db"),
+    ],
+)
+def test_month_boundaries_utc(tmp_path, ts, name):
+    assert samples_path(tmp_path, ts).name == name
+
+
+def test_samples_is_without_rowid_and_wal(tmp_path):
+    c = open_samples(tmp_path, 0)
+    assert "WITHOUT ROWID" in c.execute("select sql from sqlite_master where name='sample'").fetchone()[0].upper()
+    assert c.execute("pragma journal_mode").fetchone()[0] == "wal"
+
+
+def test_sample_pk_dedup_and_reopen(tmp_path):
+    c = open_samples(tmp_path, 0)
+    c.execute("insert into sample values (10,'t','s',1,5,100,1)")
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("insert into sample values (10,'t','s',1,4,99,0)")
+    c.execute("insert or ignore into sample values (10,'t','s',1,4,99,0)")
+    c.execute("insert into sample values (11,'t','s',1,5,100,1)")  # new ts ok
+    c.commit()
+    c.close()
+    c = open_samples(tmp_path, 0)
+    assert c.execute("select count(*) from sample").fetchone()[0] == 2
+    assert c.execute("select due_min from sample where ts=10").fetchone()[0] == 5
+
+
+@given(a=st.integers(0, 4_000_000_000), b=st.integers(0, 4_000_000_000))
+def test_samples_path_monotone_and_named(a, b):
+    from pathlib import Path
+    import re
+
+    pa, pb = samples_path(Path("d"), a), samples_path(Path("d"), b)
+    assert re.fullmatch(r"samples-\d{4}-(0[1-9]|1[0-2])\.db", pa.name)
+    if a <= b:
+        assert pa.name <= pb.name
