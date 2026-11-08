@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given, strategies as st
 from scipy.stats import t as student_t
 
-from app.stats import delay_summary
+from app.stats import delay_summary, on_time_pct, reliability_score
 
 delays_st = st.lists(st.integers(-10_000, 10_000), min_size=0, max_size=60)
 
@@ -105,3 +105,52 @@ def test_summary_invariants(d, ci):
     if len(d) > 1:
         assert s["ci_low"] <= s["mean"] + eps <= s["ci_high"] + 2 * eps
         assert s["std"] >= 0
+
+
+# ---- on_time_pct / reliability_score ----
+
+def test_on_time_window_edges_inclusive():
+    assert on_time_pct([-60, 300]) == {"n": 2, "pct": 100.0}
+    assert on_time_pct([-61, 301]) == {"n": 2, "pct": 0.0}
+    assert on_time_pct([-61, 0, 300, 301]) == {"n": 4, "pct": 50.0}
+
+
+def test_on_time_custom_window_and_degenerate():
+    assert on_time_pct([5], lo_s=5, hi_s=5)["pct"] == 100.0  # lo == hi allowed
+    with pytest.raises(ValueError):
+        on_time_pct([1], lo_s=10, hi_s=0)
+
+
+def test_on_time_empty_is_none():
+    assert on_time_pct([]) == {"n": 0, "pct": None}
+
+
+def test_reliability_none_when_empty():
+    assert reliability_score([]) is None
+
+
+def test_reliability_std_zero_equals_pct():
+    assert reliability_score([0, 0, 0]) == 100.0
+    assert reliability_score([1000]) == 0.0
+    assert reliability_score([0]) == 100.0  # n=1: std unknown -> no penalty
+
+
+def test_reliability_penalises_spread():
+    tight = [0, 10, 20, 30]
+    wide = [-60, 0, 150, 300]  # also 100% on time
+    assert on_time_pct(tight)["pct"] == on_time_pct(wide)["pct"] == 100.0
+    assert reliability_score(tight) > reliability_score(wide)
+    # exact: [0,60,120,180,240] all on time, std sqrt(9000) -> 100/(1+94.868/300)
+    assert reliability_score([0, 60, 120, 180, 240]) == pytest.approx(100 / (1 + math.sqrt(9000) / 300))
+
+
+@given(delays_st, st.integers(-600, 0), st.integers(0, 900))
+def test_on_time_invariants(d, lo, hi):
+    r = on_time_pct(d, lo, hi)
+    assert r["n"] == len(d)
+    if d:
+        assert 0 <= r["pct"] <= 100
+        assert 0 <= reliability_score(d, lo, hi) <= r["pct"] + 1e-9
+    else:
+        assert r["pct"] is None
+    json.dumps(r)

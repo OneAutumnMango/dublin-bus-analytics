@@ -41,3 +41,22 @@ def delay_summary(delays, ci: float = 0.95, pct: tuple[float, float] = (0.05, 0.
         half = _f(student_t.ppf((1 + ci) / 2, n - 1)) * std / n**0.5
         out.update(std=std, ci_low=mean - half, ci_high=mean + half)
     return out
+
+
+def on_time_pct(delays, lo_s: int = -60, hi_s: int = 300) -> dict:
+    """Share (0-100) of delays within [lo_s, hi_s], both edges inclusive."""
+    if lo_s > hi_s:
+        raise ValueError("lo_s must be <= hi_s")
+    n = len(delays)
+    if n == 0:
+        return {"n": 0, "pct": None}
+    return {"n": n, "pct": 100.0 * sum(lo_s <= d <= hi_s for d in delays) / n}
+
+
+def reliability_score(delays, lo_s: int = -60, hi_s: int = 300) -> float | None:
+    """on_time_pct / (1 + std/300); std of a single sample is treated as 0."""
+    pct = on_time_pct(delays, lo_s, hi_s)["pct"]
+    if pct is None:
+        return None
+    std = np.asarray(delays, dtype=float).std(ddof=1) if len(delays) > 1 else 0.0
+    return pct / (1 + _f(std) / 300)
