@@ -143,10 +143,12 @@
 
 **Interfaces:**
 - Consumes: `open_samples`, `arrivals` row (id, trip_id, stop_id, seq, actual)
-- Produces: `extract_forecasts(samples_conn, trip_id, stop_id, seq, actual: int) -> list[tuple[int, int, int]]` of `(horizon_min, predicted_epoch, error_s)` where, for each horizon H in 30/20/10/5/2, the sample used is the latest one with `ts <= actual - H*60`; `error_s = actual - predicted`; horizons with no sample omitted. Tracker writes them into `forecast` on finalise.
+- Produces: `extract_forecasts(samples_conns: Sequence[sqlite3.Connection], trip_id, stop_id, seq, actual: int) -> list[tuple[int, int, int]]` (searches every given connection, newest-month first; the tracker passes its own open current-month connection, so samples written earlier in the same uncommitted tick are visible) and `open_previous_month(data_dir: Path, ts: int) -> sqlite3.Connection | None` (read-only connection to the previous UTC month's samples file, or None if the file does not exist; never creates files) of `(horizon_min, predicted_epoch, error_s)` where, for each horizon H in 30/20/10/5/2, the sample used is the latest one with `ts <= actual - H*60`; `error_s = actual - predicted`; horizons with no sample omitted. Tracker writes them into `forecast` on finalise.
 
 **Security flag:** `none`
 **Does NOT cover:** cross-month sample reads beyond current and previous month.
+
+**Two phases (so it can start before Task 4 is approved):** Phase 5a creates `app/forecast.py` + `tests/test_forecast.py` only (no tracker edits). Phase 5b, after Task 4 is approved, fills the tracker's no-op `_on_finalised(arrival_id, row)` hook to call `extract_forecasts` and INSERT the `forecast` rows inside the same meta transaction, with tracker tests (forecast rows present after a finalise; rolled back with the tick on failure; none when no earlier samples).
 
 - [ ] **Step 1:** Tests: `test_picks_latest_sample_before_horizon`, `test_missing_horizon_omitted`, `test_error_sign_positive_when_late`, `test_reads_previous_month_file_at_boundary`.
 - [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add forecast extraction"`.
@@ -158,6 +160,8 @@
 **Interfaces:**
 - Consumes: `ServerClient`, `Tracker`, `open_meta`
 - Produces: `class Poller: __init__(settings, client, tracker)`, `async tick(now: int) -> None` (one pass over tracked routes), `async run() -> None` (loop every `poll_seconds`), `track(route: str)`, `untrack(route: str)`, `tracked() -> list[str]`. On `ServerUnavailable` it writes/extends a `gaps` row and keeps going; the first successful tick after closes the gap.
+
+**Wiring and threading rules (decided after Task 4 review):** `create_app(settings=None, *, start_background: bool = True)` builds `app.state.client` (ServerClient), `app.state.tracker` (Tracker), `app.state.poller` (Poller) eagerly in `create_app`; only the lifespan starts/cancels the poll loop, and only when `start_background` is true, so tests can use `TestClient` hermetically and swap `app.state.client`. `Poller.track/untrack/tracked` and gap writes open a short-lived `open_meta` connection per call and close it (callable from any thread). The Tracker keeps its own connections and is only used from the event-loop thread. `tick` ingests routes concurrently with `asyncio.gather`. On `ServerUnavailable` it records a gap and must NOT call `ingest` with an empty list (that would mass-finalise/drop buses). Any other exception for one route is logged and does not stop the other routes or the loop. `RouteNotFound` is non-retryable: log, keep the route tracked, do not record a gap. `seq_lookup` given to the Tracker: rank of `arrival.scheduled` among the trip's calls at that stop (from `client.trip_calls(trip_id)`, cached per trip with a bounded LRU; raises when scheduled is None or unmatched so the tracker skips it). Log `IngestResult` fields (`skipped`, `stale`).
 
 **Security flag:** `none`
 **Does NOT cover:** concurrent writers.
@@ -187,31 +191,47 @@
 
 ### Task 8: JSON API
 
-**Files:** Create `app/api.py`, `tests/test_api.py`; modify `app/main.py` (include router)
+**Files:** Create `app/api.py`, `tests/test_api.py`; modify `app/main.py` (one-line `include_router` inside `create_app`; re-read the file right before editing, other tasks edit it concurrently)
 
 **Interfaces:**
-- Consumes: `stats.*`, `Poller.track/untrack/tracked`, `ServerClient`, `open_meta`, `open_samples`
-- Produces (all under `/api`): `GET routes?q=`, `GET/PUT/DELETE routes/tracked[/{route}]`, `GET routes/{r}/stops`, `GET routes/{r}/summary?ci=&pct_lo=&pct_hi=&since=&until=&weekdays=&hours=&min_confidence=`, `GET stops/{s}/stats?route=&ci=&window_lo=&window_hi=` (+ arrival list), `GET trips/{id}/series?stop=` (samples; reads gz months transparently via Task 9 helper once it exists), `GET routes/{r}/heatmap`, `GET routes/{r}/accumulation?direction=`, `GET routes/{r}/forecast`. `ci` outside (0,1) or bad ints -> 422; unknown route/stop -> 404; no data -> 200 with `n: 0`.
+- Consumes: `stats.*`, `app.state.poller` (`track/untrack/tracked`), `app.state.client` (ServerClient), `open_meta` (a short-lived connection per request, closed after; `sqlite3.Row` converted to dicts for stats; forecast rows aliased `error_s`; heatmap via `heatmap_to_json`; accumulation grouped by route variant/direction; every stats response carries `n` and a `low_n: bool` (n < 10)). In tests use `create_app(settings, start_background=False)` and set `app.state.poller` / `app.state.client` to fakes (the real ones come from Task 6's `create_app`; until Task 6 lands, `create_app` has neither attribute and the tests set them)
+- Produces (all under `/api`): `GET routes?q=`, `GET/PUT/DELETE routes/tracked[/{route}]`, `GET routes/{r}/stops`, `GET routes/{r}/summary?ci=&pct_lo=&pct_hi=&since=&until=&weekdays=&hours=&min_confidence=`, `GET stops/{s}/stats?route=&ci=&window_lo=&window_hi=` (+ arrival list), `GET routes/{r}/heatmap`, `GET routes/{r}/accumulation?direction=`, `GET routes/{r}/forecast`. `ci` outside (0,1) or bad ints -> 422; unknown route/stop -> 404; no data -> 200 with `n: 0`.
 
 **Security flag:** `security` (query-param validation; all SQL parameterised)
 **Does NOT cover:** auth.
 
-- [ ] **Step 1:** Tests seeded via direct DB inserts: `test_track_untrack_roundtrip`, `test_route_summary_per_stop_in_route_order`, `test_stop_stats_ci_param_changes_interval`, `test_invalid_ci_422`, `test_stop_with_no_arrivals_returns_n0_not_500`, `test_trip_series_returns_due_reaching_zero`, `test_sql_injection_in_route_param_harmless`.
+- [ ] **Step 1:** Tests seeded via direct DB inserts: `test_track_untrack_roundtrip`, `test_route_summary_per_stop_in_route_order`, `test_stop_stats_ci_param_changes_interval`, `test_invalid_ci_422`, `test_stop_with_no_arrivals_returns_n0_not_500`, `test_sql_injection_in_route_param_harmless`.
 - [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add API"`.
 
 ### Task 9: Backup + monthly compaction
 
-**Files:** Create `app/backup.py`, `tests/test_backup.py`; modify `app/main.py` (`POST /api/backup`, `GET /api/backup/download`; the scheduled nightly run is Task 12); modify `app/db.py` samples opener to read `.db.gz` by decompressing to a temp file
+**Files:** Create `app/backup.py`, `tests/test_backup.py`; create `app/backup_api.py` (router with `POST /api/backup`, `GET /api/backup/download`; one-line `include_router` in `create_app` in `app/main.py`, re-read the file right before editing, other tasks edit it concurrently; the scheduled nightly run is Task 12); modify `app/db.py` (add `open_samples_readonly`; make `open_samples` refuse months that exist only as `.db.gz`)
 
 **Interfaces:**
 - Consumes: `open_meta`, `samples_path`
-- Produces: `snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> Path` (consistent copies of `meta.db` and every `samples-*.db` via `sqlite3.Connection.backup`, tarred into `<backup_dir>/analytics-<UTC stamp>.tar`, `backup_dir` defaulting to `<data_dir>/backups`; retains the newest `keep`); `compact_closed_months(data_dir: Path, now: int) -> list[Path]` (gzip + remove months strictly before the current UTC month; idempotent).
+- Produces: `open_samples_readonly(data_dir: Path, ts: int) -> sqlite3.Connection` (read-only; transparently decompresses a `.db.gz` month to a temp file that is removed when the connection is closed; raises `FileNotFoundError` if the month has neither file; never creates files); `open_samples` raises `RuntimeError` if the month exists only as `.db.gz` (closed months are immutable); `snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> Path` (consistent copies of `meta.db` and every `samples-*.db` via `sqlite3.Connection.backup`, tarred into `<backup_dir>/analytics-<UTC stamp>.tar`, `backup_dir` defaulting to `<data_dir>/backups`; retains the newest `keep`); `compact_closed_months(data_dir: Path, now: int) -> list[Path]` (gzip + remove months strictly before the current UTC month; idempotent).
 
 **Security flag:** `none`
 **Does NOT cover:** off-host backup (README says to copy the volume); scheduling (Task 12).
 
 - [ ] **Step 1:** Tests: `test_snapshot_restorable_and_consistent_while_writing`, `test_snapshot_retention_keeps_7`, `test_compact_gzips_only_closed_months`, `test_compact_idempotent`, `test_series_reads_gzipped_month`.
 - [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add backup and compaction"`.
+
+### Task 8b: Trip series endpoint
+
+Run after Tasks 8 and 9.
+
+**Files:** Modify `app/api.py`, `tests/test_api.py`
+
+**Interfaces:**
+- Consumes: `open_samples_readonly` (Task 9), `open_meta`
+- Produces: `GET /api/trips/{id}/series?stop=` -> `{"trip_id", "stop_id", "points": [{"ts", "due_min", "expected", "realtime"}...]}` ordered by ts, for the arrival's month (and the previous month if the trip spans the boundary); unknown trip/stop -> 404; no samples -> 200 with empty `points`.
+
+**Security flag:** `security` (path/query validated, SQL parameterised)
+**Does NOT cover:** auth.
+
+- [ ] **Step 1: Failing tests:** `test_trip_series_returns_due_reaching_zero`, `test_trip_series_reads_gzipped_month`, `test_trip_series_unknown_trip_404`, `test_trip_series_spans_month_boundary`.
+- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add trip series endpoint"`.
 
 ### Task 10: Web UI
 
