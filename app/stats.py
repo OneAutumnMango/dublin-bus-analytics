@@ -60,3 +60,44 @@ def reliability_score(delays, lo_s: int = -60, hi_s: int = 300) -> float | None:
         return None
     std = np.asarray(delays, dtype=float).std(ddof=1) if len(delays) > 1 else 0.0
     return pct / (1 + _f(std) / 300)
+
+
+def _local(epoch):
+    """Epoch seconds -> Europe/Dublin local datetime (DST-aware)."""
+    return datetime.fromtimestamp(epoch, DUBLIN)
+
+
+def heatmap(rows) -> dict:
+    """{(weekday, hour): {n, mean_delay}} by Dublin-local time of `scheduled`.
+
+    weekday: 0=Monday .. 6=Sunday. Rows lacking delay or scheduled are skipped.
+    Keys are tuples (not JSON-serialisable as-is; callers convert).
+    """
+    acc = defaultdict(list)
+    for r in rows:
+        if r.get("delay") is None or r.get("scheduled") is None:
+            continue
+        d = _local(r["scheduled"])
+        acc[(d.weekday(), d.hour)].append(r["delay"])
+    return {k: {"n": len(v), "mean_delay": _f(np.mean(v))} for k, v in acc.items()}
+
+
+def filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=None,
+                weekdays=None, hours=None) -> list:
+    """Keep rows passing all filters. since/until: inclusive epoch bounds on `scheduled`;
+    weekdays (0=Mon)/hours are Dublin-local. A row without `scheduled` fails any time filter."""
+    timed = not (since is None and until is None and weekdays is None and hours is None)
+    out = []
+    for r in rows:
+        if r.get("confidence", 0) < min_confidence or (realtime_only and not r.get("realtime")):
+            continue
+        if timed:
+            s = r.get("scheduled")
+            if s is None or (since is not None and s < since) or (until is not None and s > until):
+                continue
+            d = _local(s)
+            if (weekdays is not None and d.weekday() not in weekdays) or (
+                    hours is not None and d.hour not in hours):
+                continue
+        out.append(r)
+    return out

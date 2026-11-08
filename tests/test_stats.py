@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given, strategies as st
 from scipy.stats import t as student_t
 
-from app.stats import delay_summary, on_time_pct, reliability_score
+from app.stats import delay_summary, filter_rows, heatmap, on_time_pct, reliability_score
 
 delays_st = st.lists(st.integers(-10_000, 10_000), min_size=0, max_size=60)
 
@@ -154,3 +154,121 @@ def test_on_time_invariants(d, lo, hi):
     else:
         assert r["pct"] is None
     json.dumps(r)
+
+
+# ---- heatmap / filter_rows ----
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+DUB = ZoneInfo("Europe/Dublin")
+
+
+def local_epoch(y, mo, d, h=0, mi=0):
+    return int(datetime(y, mo, d, h, mi, tzinfo=DUB).timestamp())
+
+
+def utc_epoch(y, mo, d, h=0, mi=0):
+    return int(datetime(y, mo, d, h, mi, tzinfo=timezone.utc).timestamp())
+
+
+def row(delay=0, scheduled=0, confidence=1, realtime=1, **kw):
+    return {"delay": delay, "actual": None if delay is None else scheduled + delay, "scheduled": scheduled,
+            "confidence": confidence, "realtime": realtime, "stop_id": 1, "seq": 1, **kw}
+
+
+def test_heatmap_buckets_dublin_local_time():
+    # 2026-07-01 is a Wednesday (weekday 2), IST = UTC+1: 23:30 UTC -> 00:30 Thu (3, 0)
+    rows = [row(60, utc_epoch(2026, 7, 1, 10, 0)),      # 11:00 IST Wed
+            row(120, utc_epoch(2026, 7, 1, 10, 59)),    # 11:59 IST Wed, same bucket
+            row(30, utc_epoch(2026, 7, 1, 23, 30)),     # 00:30 IST Thu
+            row(-10, utc_epoch(2026, 1, 7, 23, 30))]    # winter GMT: 23:30 Wed (2, 23)
+    h = heatmap(rows)
+    assert h[(2, 11)] == {"n": 2, "mean_delay": 90.0}
+    assert h[(3, 0)] == {"n": 1, "mean_delay": 30.0}
+    assert h[(2, 23)] == {"n": 1, "mean_delay": -10.0}
+    assert len(h) == 3
+
+
+def test_heatmap_monday_is_zero_and_midnight_boundary():
+    assert (0, 0) in heatmap([row(1, local_epoch(2026, 7, 6, 0, 0))])      # Mon 00:00
+    h = heatmap([row(1, local_epoch(2026, 7, 5, 23, 59)), row(2, local_epoch(2026, 7, 6, 0, 0))])
+    assert set(h) == {(6, 23), (0, 0)}                                     # Sun 23:59 vs Mon 00:00
+
+
+def test_heatmap_dst_spring_forward():
+    # 2026-03-29: 01:00 UTC clocks jump GMT->IST. 00:59 UTC = 00:59 local; 01:00 UTC = 02:00 local.
+    h = heatmap([row(1, utc_epoch(2026, 3, 29, 0, 59)), row(2, utc_epoch(2026, 3, 29, 1, 0))])
+    assert set(h) == {(6, 0), (6, 2)}  # local hour 1 never exists; Sunday = 6
+
+
+def test_heatmap_dst_fall_back():
+    # 2026-10-25: 01:00 UTC clocks go IST->GMT; local hour 1 occurs twice (00:30 UTC and 01:30 UTC)
+    h = heatmap([row(10, utc_epoch(2026, 10, 25, 0, 30)), row(20, utc_epoch(2026, 10, 25, 1, 30))])
+    assert h == {(6, 1): {"n": 2, "mean_delay": 15.0}}
+
+
+def test_heatmap_skips_unusable_rows_and_empty():
+    assert heatmap([]) == {}
+    assert heatmap([row(None, 5), {"delay": 5, "scheduled": None}, {"delay": 5}]) == {}
+
+
+def test_filter_excludes_scheduled_only_and_low_confidence():
+    rows = [row(1, confidence=1, realtime=1), row(2, confidence=0, realtime=1),
+            row(3, confidence=1, realtime=0), row(4, confidence=0, realtime=0)]
+    assert [r["delay"] for r in filter_rows(rows, min_confidence=1)] == [1]
+    assert [r["delay"] for r in filter_rows(rows)] == [1, 2]  # realtime only, any confidence
+    assert [r["delay"] for r in filter_rows(rows, realtime_only=False)] == [1, 2, 3, 4]
+    assert filter_rows([]) == []
+
+
+def test_filter_since_until_inclusive_and_missing_scheduled():
+    rows = [row(1, 100), row(2, 200), row(3, 300), {"delay": 9, "realtime": 1, "confidence": 1}]
+    assert [r["delay"] for r in filter_rows(rows, since=200, until=300)] == [2, 3]
+    assert [r["delay"] for r in filter_rows(rows, since=201)] == [3]
+    assert len(filter_rows(rows)) == 4          # no time filter: missing scheduled kept
+    assert filter_rows(rows, since=301) == []   # time filter: missing scheduled dropped
+
+
+def test_filter_weekdays_hours_local_time():
+    mon9 = row(1, local_epoch(2026, 7, 6, 9, 0))
+    tue9 = row(2, local_epoch(2026, 7, 7, 9, 0))
+    mon17 = row(3, local_epoch(2026, 7, 6, 17, 0))
+    rows = [mon9, tue9, mon17]
+    assert filter_rows(rows, weekdays=[0]) == [mon9, mon17]
+    assert filter_rows(rows, hours=[9]) == [mon9, tue9]
+    assert filter_rows(rows, weekdays={0}, hours={9}) == [mon9]
+    assert filter_rows(rows, weekdays=[]) == []
+
+
+def _rows_st():
+    return st.lists(st.builds(
+        row, delay=st.integers(-500, 500), scheduled=st.integers(1_700_000_000, 1_800_000_000),
+        confidence=st.integers(0, 1), realtime=st.integers(0, 1)), max_size=40)
+
+
+@given(_rows_st(), st.integers(0, 1), st.booleans(),
+       st.one_of(st.none(), st.integers(1_700_000_000, 1_800_000_000)),
+       st.one_of(st.none(), st.integers(1_700_000_000, 1_800_000_000)),
+       st.one_of(st.none(), st.sets(st.integers(0, 6))),
+       st.one_of(st.none(), st.sets(st.integers(0, 23))))
+def test_filter_never_violates_and_idempotent(rows, mc, rt, since, until, wd, hrs):
+    kw = dict(min_confidence=mc, realtime_only=rt, since=since, until=until, weekdays=wd, hours=hrs)
+    out = filter_rows(rows, **kw)
+    for r in out:
+        assert r["confidence"] >= mc
+        assert not rt or r["realtime"]
+        assert since is None or r["scheduled"] >= since
+        assert until is None or r["scheduled"] <= until
+        loc = datetime.fromtimestamp(r["scheduled"], DUB)
+        assert wd is None or loc.weekday() in wd
+        assert hrs is None or loc.hour in hrs
+    assert filter_rows(out, **kw) == out
+
+
+@given(_rows_st())
+def test_heatmap_total_n_equals_rows(rows):
+    h = heatmap(rows)
+    assert sum(v["n"] for v in h.values()) == len(rows)
+    for (wd, hr), v in h.items():
+        assert 0 <= wd <= 6 and 0 <= hr <= 23
+    assert h == {} or all(math.isfinite(v["mean_delay"]) for v in h.values())
