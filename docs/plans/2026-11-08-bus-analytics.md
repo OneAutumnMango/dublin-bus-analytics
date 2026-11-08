@@ -205,7 +205,7 @@
 
 **Interfaces:**
 - Consumes: `open_meta`, `samples_path`
-- Produces: `snapshot(data_dir: Path) -> Path` (consistent copies of `meta.db` and every `samples-*.db` via `sqlite3.Connection.backup`, tarred into `/data/backups/analytics-<UTC stamp>.tar`; retains last 7); `compact_closed_months(data_dir: Path, now: int) -> list[Path]` (gzip + remove months strictly before the current UTC month; idempotent).
+- Produces: `snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> Path` (consistent copies of `meta.db` and every `samples-*.db` via `sqlite3.Connection.backup`, tarred into `<backup_dir>/analytics-<UTC stamp>.tar`, `backup_dir` defaulting to `<data_dir>/backups`; retains the newest `keep`); `compact_closed_months(data_dir: Path, now: int) -> list[Path]` (gzip + remove months strictly before the current UTC month; idempotent).
 
 **Security flag:** `none`
 **Does NOT cover:** off-host backup (README says to copy the volume); scheduling (Task 12).
@@ -248,6 +248,7 @@ Follow `superpowers-optimized:frontend-design` for visual quality and accessibil
       BACKUP_ENABLED: "${ANALYTICS_BACKUP_ENABLED:-true}"
       BACKUP_TIME: "${ANALYTICS_BACKUP_TIME:-03:00}"
       BACKUP_KEEP: "${ANALYTICS_BACKUP_KEEP:-7}"
+      BACKUP_DIR: "${ANALYTICS_BACKUP_DIR:-/data/backups}"
     volumes: [analytics-data:/data]
 ```
 plus `analytics-data:` under `volumes:`.
@@ -257,7 +258,7 @@ plus `analytics-data:` under `volumes:`.
 
 - [ ] **Step 1:** Add the compose service above to `dublin-bus-server/docker-compose.yml` (README is Task 13).
 - [ ] **Step 2:** `scripts/smoke.sh`: `docker compose up -d --build`, wait for `/api/health`, track one route via `PUT /api/routes/tracked/15`, wait 90s, assert `/api/routes/15/summary` shows `n >= 1` for some stop.
-- [ ] **Step 3:** Run `cd dublin-bus-server && docker compose config` (valid) then `../dublin-bus-analytics/scripts/smoke.sh` (needs `GTFSR_API_KEY` in `server.env`). Expected: exits 0.
+- [ ] **Step 3:** Run `cd dublin-bus-server && ANALYTICS_BACKUP_TIME=04:15 ANALYTICS_BACKUP_KEEP=3 ANALYTICS_BACKUP_ENABLED=false docker compose config` and confirm the rendered service shows `BACKUP_TIME: 04:15`, `BACKUP_KEEP: "3"`, `BACKUP_ENABLED: "false"`; then run `docker compose config` with no overrides and confirm the defaults (`03:00`, `7`, `true`, `/data/backups`). Then run then `../dublin-bus-analytics/scripts/smoke.sh` (needs `GTFSR_API_KEY` in `server.env`). Expected: exits 0.
 - [ ] **Step 4:** Verify `scheduledEpochSeconds` against live API on a known stop vs the published timetable once (spot check, record the result in `docs/verification.md`).
 - [ ] **Step 5:** Commit in both repos.
 
@@ -268,8 +269,8 @@ Run after Task 9 (execution order: ... 9, 12, 10, 11, 13). Task 9 only provides 
 **Files:** Create `app/scheduler.py`, `tests/test_scheduler.py`; modify `app/config.py` (Settings), `app/main.py` (lifespan starts/stops it), `tests/test_config.py` if present
 
 **Interfaces:**
-- Consumes: `backup.snapshot(data_dir) -> Path`, `backup.compact_closed_months(data_dir, now) -> list[Path]`, `Settings`
-- Produces: `Settings` gains `backup_enabled: bool = True`, `backup_time: str = "03:00"` (HH:MM, Europe/Dublin local), `backup_keep: int = 7` (env `BACKUP_ENABLED`, `BACKUP_TIME`, `BACKUP_KEEP`; invalid values raise ValueError naming the variable, like existing settings); `next_run(now: datetime, backup_time: str) -> datetime` (pure; next occurrence strictly after `now`, Europe/Dublin aware, DST-safe); `class BackupScheduler: __init__(settings, now_fn=...)`, `async run() -> None` (loop: sleep until `next_run`, run snapshot then compaction, log result, never die on error), `async run_once() -> Path | None`. On startup, if enabled and the newest backup in `/data/backups` is older than 24h (or none exists), one catch-up `run_once()` runs promptly. `snapshot` retention uses `backup_keep`.
+- Consumes: `backup.snapshot(data_dir, backup_dir, keep) -> Path`, `backup.compact_closed_months(data_dir, now) -> list[Path]`, `Settings`
+- Produces: `Settings` gains `backup_enabled: bool = True`, `backup_time: str = "03:00"` (HH:MM, Europe/Dublin local), `backup_keep: int = 7`, `backup_dir: Path = <data_dir>/backups` (env `BACKUP_ENABLED`, `BACKUP_TIME`, `BACKUP_KEEP`, `BACKUP_DIR`; all backup behavior is configured only through these env vars, which docker compose passes through; invalid values raise ValueError naming the variable, like existing settings); `next_run(now: datetime, backup_time: str) -> datetime` (pure; next occurrence strictly after `now`, Europe/Dublin aware, DST-safe); `class BackupScheduler: __init__(settings, now_fn=...)`, `async run() -> None` (loop: sleep until `next_run`, run snapshot then compaction, log result, never die on error), `async run_once() -> Path | None`. On startup, if enabled and the newest backup in `backup_dir` is older than 24h (or none exists), one catch-up `run_once()` runs promptly. `snapshot` retention uses `backup_keep`.
 
 **Security flag:** `none`
 **Does NOT cover:** off-host copies, backup encryption, multiple schedules.
@@ -283,6 +284,8 @@ Run after Task 9 (execution order: ... 9, 12, 10, 11, 13). Task 9 only provides 
   - `test_failure_in_snapshot_is_logged_and_loop_continues` (next iteration still runs)
   - `test_catch_up_runs_when_last_backup_older_than_24h`, `test_no_catch_up_when_recent_backup`
   - `test_retention_keeps_backup_keep_newest`
+  - `test_backup_dir_env_respected` (snapshot lands in `BACKUP_DIR`, created if missing; a `BACKUP_DIR` inside `DATA_DIR` must not be re-backed-up recursively into the next snapshot), `test_backup_dir_unwritable_is_logged_not_fatal`
+  - `test_env_roundtrip_all_backup_vars` (set `BACKUP_ENABLED/TIME/KEEP/DIR` env, `Settings.from_env()` reflects every one)
   - hypothesis: for any `now` and any valid HH:MM, `next_run(now, t) > now` and `next_run(now, t) - now <= 25h`
 - [ ] **Step 2:** `.venv/bin/python -m pytest tests/test_scheduler.py` -> FAIL (no module).
 - [ ] **Step 3:** Implement `app/scheduler.py` and the Settings fields; lifespan in `app/main.py` creates the task on startup and cancels it cleanly on shutdown (test: app startup/shutdown with the scheduler enabled leaves no pending tasks).
@@ -297,7 +300,7 @@ Run last (execution order: ... 11, 13).
 
 **Interfaces:**
 - Consumes: `Settings` env names, the compose service from Task 11, `open_meta`/`open_samples`
-- Produces: `scripts/seed_demo.py DATA_DIR [--routes 15,46A] [--days 14]` writes synthetic but plausible arrivals/forecast/sample rows into DATA_DIR (via the real `open_meta`/`open_samples`) so the UI can be tried without waiting for live data; `README.md` (short, for developers, not users); `docker-compose.example.yml` (standalone sample with both `dublin-bus-server` and `dublin-bus-analytics` services, image/build placeholders, volumes, `env_file`s); `analytics.env.example` listing every setting with its default and a one-line comment: `SERVER_URL`, `DATA_DIR`, `POLL_SECONDS`, `PORT`, `ANALYTICS_PORT`, `BACKUP_ENABLED`, `BACKUP_TIME`, `BACKUP_KEEP`.
+- Produces: `scripts/seed_demo.py DATA_DIR [--routes 15,46A] [--days 14]` writes synthetic but plausible arrivals/forecast/sample rows into DATA_DIR (via the real `open_meta`/`open_samples`) so the UI can be tried without waiting for live data; `README.md` (short, for developers, not users); `docker-compose.example.yml` (standalone sample with both `dublin-bus-server` and `dublin-bus-analytics` services, image/build placeholders, volumes, `env_file`s); `analytics.env.example` listing every setting with its default and a one-line comment: `SERVER_URL`, `DATA_DIR`, `POLL_SECONDS`, `PORT`, `ANALYTICS_PORT`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR` (the container-side names `BACKUP_*` are set by compose from these). The sample compose passes all of them through with the same defaults as Task 11 and shows, commented out, a host bind mount (`./backups:/backups` with `ANALYTICS_BACKUP_DIR=/backups`) for keeping backups off the data volume.
 
 **Security flag:** `none`
 **Does NOT cover:** end-user docs, API reference, deployment hardening beyond "bind to 127.0.0.1, never expose publicly".
