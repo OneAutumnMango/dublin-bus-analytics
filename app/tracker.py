@@ -40,7 +40,7 @@ NEG_TTL_S = 60  # failed trip lookups are not retried for this long (in ingest `
 INT64 = 2**63 - 1
 LOOKUP_CONCURRENCY = 8
 EPOCH_WINDOW_S = 86400  # expected/scheduled must be within this of the ingest `now`
-FALLBACK_SCHED_S = 600
+SHIELD_SCHED_S = 600  # a skipped arrival shields live keys scheduled within this of it
 
 
 @dataclass
@@ -229,23 +229,10 @@ class Tracker:
         for k in [k for k, t in self._neg.items() if now - t >= NEG_TTL_S]:
             del self._neg[k]
 
-    def _live_fallback(self, route: str, a: Arrival, claimed: set) -> int | None:
-        """seq of an unclaimed live key of this route/(trip, stop) with a scheduled time within
-        FALLBACK_SCHED_S of the arrival's, for when the seq lookup failed (never mis-assigns loop visits)."""
-        if a.scheduled is None:
-            return None
-        cands = [k for k, s in self._live.items()
-                 if k[:2] == (a.trip_id, a.stop_id) and s.route == route and s.gone_at is None
-                 and k not in claimed and s.scheduled is not None
-                 and abs(a.scheduled - s.scheduled) <= FALLBACK_SCHED_S]
-        if not cands:
-            return None
-        return min(cands, key=lambda k: abs(self._live[k].last_due - a.due_min))[2]
-
     @staticmethod
     def _shielded(key: tuple, st: _State, unkeyed: set) -> bool:
         return any(u[:2] == key[:2] and (u[2] is None or st.scheduled is None
-                                         or abs(u[2] - st.scheduled) <= FALLBACK_SCHED_S) for u in unkeyed)
+                                         or abs(u[2] - st.scheduled) <= SHIELD_SCHED_S) for u in unkeyed)
 
     async def _ingest(self, route: str, valid: list[Arrival], invalid: list[Arrival], now: int,
                       resolved: dict) -> IngestResult:
@@ -257,28 +244,21 @@ class Tracker:
         skipped = len(invalid)
         seen: set[tuple] = set()
         # (trip, stop) of skipped arrivals: never treated as vanished
-        # scheduled None = wildcard (untrusted arrival); else only live keys scheduled within FALLBACK_SCHED_S
+        # scheduled None = wildcard (untrusted arrival); else only live keys scheduled within SHIELD_SCHED_S
         unkeyed = {(a.trip_id, a.stop_id, None) for a in invalid
                    if isinstance(a.trip_id, str) and isinstance(a.stop_id, str)}
         keyed: dict[tuple, Arrival] = {}
-        failed: list[Arrival] = []
         for a in valid:
             ck = (a.trip_id, a.stop_id, a.scheduled)
             hit = self._seq.get(ck)
             seq = hit[0] if hit else resolved.get(ck)
-            if seq is None:
-                failed.append(a)
+            if seq is None:  # lookup failed: skip, and shield live keys from a false vanish
+                skipped += 1
+                unkeyed.add((a.trip_id, a.stop_id, a.scheduled))
                 continue
             self._mark("_seq", ck)
             self._seq[ck] = (seq, now)  # also refreshes last-used
             keyed[(a.trip_id, a.stop_id, seq)] = a
-        for a in failed:  # second pass: only now do we know which live keys are claimed
-            seq = self._live_fallback(route, a, set(keyed))
-            if seq is None:
-                skipped += 1
-                unkeyed.add((a.trip_id, a.stop_id, a.scheduled))
-            else:
-                keyed[(a.trip_id, a.stop_id, seq)] = a
         plan = []
         for key, a in keyed.items():
             seen.add(key)

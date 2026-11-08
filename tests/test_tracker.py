@@ -333,7 +333,7 @@ async def test_skipped_arrival_does_not_cause_false_vanish(tmp_path):
     fail["on"] = True
     res = await t.ingest("15", [arr(1, scheduled=T0 + 301)], T0 + 30)  # same trip/stop, lookup fails
     t.close()
-    assert (res.skipped, res.finalised, res.dropped) == (0, 0, 0)  # observed with the live key's seq
+    assert (res.skipped, res.finalised, res.dropped, res.samples_written) == (1, 0, 0, 0)  # shielded
 
 
 async def test_negative_due_treated_as_arrived(tr, tmp_path):
@@ -579,40 +579,6 @@ async def test_failed_trip_looked_up_once_per_tick_and_once_per_minute(tmp_path)
     t.close()
 
 
-async def test_persistent_lookup_failure_for_live_bus_keeps_old_seq(tmp_path):
-    fail = {"on": False}
-
-    async def lookup(a):
-        if fail["on"]:
-            raise RuntimeError
-        return 0
-    t = Tracker(tmp_path, lookup)
-    await t.ingest("15", [arr(2, expected=T0 + 400, scheduled=T0 + 300)], T0)
-    fail["on"] = True
-    r1 = await t.ingest("15", [arr(1, expected=T0 + 410, scheduled=T0 + 310)], T0 + 70)
-    r2 = await t.ingest("15", [arr(0, expected=T0 + 420, scheduled=T0 + 320)], T0 + 140)
-    assert (r1.skipped, r2.skipped, r2.finalised) == (0, 0, 1)
-    (r,) = rows(tmp_path)
-    assert (r[6], r[8]) == (T0 + 420, 1)
-    t.close()
-
-
-async def test_persistent_failure_then_vanish_uses_latest_expected(tmp_path):
-    fail = {"on": False}
-
-    async def lookup(a):
-        if fail["on"]:
-            raise RuntimeError
-        return 0
-    t = Tracker(tmp_path, lookup)
-    await t.ingest("15", [arr(2, expected=T0 + 400, scheduled=T0 + 300)], T0)
-    fail["on"] = True
-    await t.ingest("15", [arr(1, expected=T0 + 410, scheduled=T0 + 310)], T0 + 70)
-    await t.ingest("15", [], T0 + 140)
-    assert rows(tmp_path)[0][6] == T0 + 410
-    t.close()
-
-
 async def test_duplicate_keys_in_tick_last_wins(tr, tmp_path):
     res = await tr.ingest("15", [arr(5, expected=T0 + 1), arr(4, expected=T0 + 2)], T0)
     assert res.samples_written == 1
@@ -730,53 +696,6 @@ async def test_loop_fallback_does_not_misassign_second_visit(tmp_path):
     t.close()
 
 
-async def test_fallback_picks_closest_due_and_same_route_only(tmp_path):
-    fail = {"on": False}
-    S = T0 + 300
-    t = Tracker(tmp_path, table_lookup({S: 0, S + 500: 1}, fail))
-    await t.ingest("15", [arr(10, scheduled=S), arr(3, scheduled=S + 500, expected=T0 + 181)], T0)
-    await t.ingest("16", [arr(3, scheduled=S + 500, expected=T0 + 181, route="16")], T0)  # other route, seq 1
-    fail["on"] = True
-    await t.ingest("15", [arr(4, scheduled=S + 400, expected=T0 + 242)], T0 + 30)
-    ss = [x for x in samples(tmp_path) if x[0] == T0 + 30]
-    assert [(x[3], x[4]) for x in ss] == [(1, 4)]  # min |due diff| -> seq 1
-    # other route's live key is never used as a fallback
-    r = await t.ingest("16", [arr(4, scheduled=S + 400, expected=T0 + 242, route="16", stop="zz")], T0 + 60)
-    assert r.skipped == 1
-    t.close()
-
-
-async def test_fallback_other_route_key_not_used(tmp_path):
-    fail = {"on": False}
-    S = T0 + 300
-    t = Tracker(tmp_path, table_lookup({S: 0}, fail))
-    await t.ingest("16", [arr(5, scheduled=S, route="16")], T0)
-    fail["on"] = True
-    r = await t.ingest("15", [arr(5, scheduled=S + 1, route="15")], T0 + 30)
-    assert r.skipped == 1
-    t.close()
-
-
-async def test_fallback_claimed_key_not_reused_in_same_tick(tmp_path):
-    fail = {"on": False}
-    S = T0 + 300
-    t = Tracker(tmp_path, table_lookup({S: 0}, fail))
-    await t.ingest("15", [arr(5, scheduled=S)], T0)
-    fail["on"] = True
-    r = await t.ingest("15", [arr(4, scheduled=S + 1), arr(4, scheduled=S + 2)], T0 + 30)
-    assert r.skipped == 1  # one claims the live key, the other is skipped
-
-
-async def test_fallback_requires_scheduled(tmp_path):
-    fail = {"on": False}
-    t = Tracker(tmp_path, table_lookup({T0 + 300: 0}, fail))
-    await t.ingest("15", [arr(5)], T0)
-    fail["on"] = True
-    r = await t.ingest("15", [arr(4, scheduled=None)], T0 + 30)
-    assert r.skipped == 1
-    t.close()
-
-
 async def test_resolve_before_lock_four_routes_one_slow_key_each(tmp_path):
     T = 0.3
 
@@ -831,4 +750,30 @@ async def test_neg_cache_entries_swept(tmp_path):
     assert "t1" in t._neg
     await t.ingest("15", [], T0 + NEG_TTL_S)  # age == TTL: swept (>=)
     assert t._neg == {}
+    t.close()
+
+
+async def test_persistent_lookup_failure_never_borrows_another_visit(tmp_path):
+    fail = {"on": False}
+    S = T0 + 300
+    t = Tracker(tmp_path, table_lookup({S: 0}, fail))
+    await t.ingest("15", [arr(2, expected=T0 + 400, scheduled=S)], T0)
+    fail["on"] = True
+    for i, due in enumerate((1, 0)):  # new scheduled each tick -> uncached -> lookup raises
+        r = await t.ingest("15", [arr(due, expected=T0 + 500 + i, scheduled=S + 1 + i)], T0 + 30 * (i + 1))
+        assert (r.skipped, r.samples_written, r.finalised, r.dropped) == (1, 0, 0, 0)
+    r = await t.ingest("15", [], T0 + 200)  # bus gone: finalised late from its own data only
+    assert r.finalised == 1
+    (row,) = rows(tmp_path)
+    assert (row[6], row[8]) == (T0 + 400, 0)
+    t.close()
+
+
+async def test_invalid_arrival_shields_live_key_from_vanish(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(1)], T0)
+    r = await t.ingest("15", [arr(1, realtime=None)], T0 + 30)
+    assert (r.skipped, r.finalised, r.dropped) == (1, 0, 0)
+    r = await t.ingest("15", [], T0 + 60)
+    assert r.finalised == 1
     t.close()
