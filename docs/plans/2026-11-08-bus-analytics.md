@@ -180,8 +180,8 @@
 **Security flag:** `none`
 **Does NOT cover:** bootstrap CIs (YAGNI per spec).
 
-- [ ] **Step 1:** Tests with hand-computed fixtures: `test_delay_summary_known_values` (delays [0,60,120,180,240]: mean 120, sample std 94.868, ci via t(0.975,4)=2.776 -> 120±117.8), `test_summary_n0_all_none`, `test_summary_n1_ci_none`, `test_on_time_window_edges_inclusive`, `test_reliability_penalises_spread`, `test_heatmap_buckets_dublin_local_time` (DST case), `test_accumulation_segment_delta`, `test_forecast_accuracy_by_horizon`, `test_filter_excludes_scheduled_only_and_low_confidence`.
-- [ ] **Step 2-4:** fail, implement with numpy/scipy.stats.t, pass. **Step 5:** Commit `"Add stats"`.
+- [x] **Step 1:** Tests with hand-computed fixtures: `test_delay_summary_known_values` (delays [0,60,120,180,240]: mean 120, sample std 94.868, ci via t(0.975,4)=2.776 -> 120±117.8), `test_summary_n0_all_none`, `test_summary_n1_ci_none`, `test_on_time_window_edges_inclusive`, `test_reliability_penalises_spread`, `test_heatmap_buckets_dublin_local_time` (DST case), `test_accumulation_segment_delta`, `test_forecast_accuracy_by_horizon`, `test_filter_excludes_scheduled_only_and_low_confidence`.
+- [x] **Step 2-4:** fail, implement with numpy/scipy.stats.t, pass. **Step 5:** Commit `"Add stats"`.
 
 ### Task 8: JSON API
 
