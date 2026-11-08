@@ -110,8 +110,8 @@
 **Security flag:** `none`
 **Does NOT cover:** retry/backoff (Task 6).
 
-- [ ] **Step 1:** Tests: `test_route_arrivals_flattens_by_stop`, `test_missing_scheduled_is_none`, `test_server_500_raises_unavailable`, `test_connection_refused_raises_unavailable`.
-- [ ] **Step 2-4:** fail, implement with httpx, pass. **Step 5:** Commit `"Add server client"`.
+- [x] **Step 1:** Tests: `test_route_arrivals_flattens_by_stop`, `test_missing_scheduled_is_none`, `test_server_500_raises_unavailable`, `test_connection_refused_raises_unavailable`.
+- [x] **Step 2-4:** fail, implement with httpx, pass. **Step 5:** Commit `"Add server client"`.
 
 ### Task 4: Tracker (change-only samples + finalisation)
 
@@ -174,13 +174,13 @@
   - `on_time_pct(delays, lo_s=-60, hi_s=300) -> dict(n, pct)`; `reliability_score(delays, lo_s=-60, hi_s=300) -> float | None` = on_time share penalised by spread: `on_time_pct * (1 / (1 + std/300))`
   - `heatmap(rows) -> dict[(weekday, hour)] -> dict(n, mean_delay)` (Europe/Dublin local time of scheduled)
   - `accumulation(rows_by_trip_ordered) -> list[dict(stop_id, seq, mean_delay, segment_delta)]` mean over trips of delay change between consecutive stops
-  - `forecast_accuracy(forecast_rows) -> dict[horizon_min] -> dict(n, mean_error, mae, p_low, p_high)`
+  - `forecast_accuracy(forecast_rows) -> dict[horizon_min] -> dict(n, mean_error, mae, p_low, p_high)` (rows: dicts with `horizon_min`, `error` where error = actual - predicted seconds, positive = bus later than predicted)
   - `filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=None, weekdays=None, hours=None) -> list`
 
 **Security flag:** `none`
 **Does NOT cover:** bootstrap CIs (YAGNI per spec).
 
-- [ ] **Step 1:** Tests with hand-computed fixtures: `test_delay_summary_known_values` (delays [0,60,120,180,240]: mean 120, std 100 (sample), ci via t(0.975,4)=2.776 -> 120±124.2), `test_summary_n0_all_none`, `test_summary_n1_ci_none`, `test_on_time_window_edges_inclusive`, `test_reliability_penalises_spread`, `test_heatmap_buckets_dublin_local_time` (DST case), `test_accumulation_segment_delta`, `test_forecast_accuracy_by_horizon`, `test_filter_excludes_scheduled_only_and_low_confidence`.
+- [ ] **Step 1:** Tests with hand-computed fixtures: `test_delay_summary_known_values` (delays [0,60,120,180,240]: mean 120, sample std 94.868, ci via t(0.975,4)=2.776 -> 120±117.8), `test_summary_n0_all_none`, `test_summary_n1_ci_none`, `test_on_time_window_edges_inclusive`, `test_reliability_penalises_spread`, `test_heatmap_buckets_dublin_local_time` (DST case), `test_accumulation_segment_delta`, `test_forecast_accuracy_by_horizon`, `test_filter_excludes_scheduled_only_and_low_confidence`.
 - [ ] **Step 2-4:** fail, implement with numpy/scipy.stats.t, pass. **Step 5:** Commit `"Add stats"`.
 
 ### Task 8: JSON API
