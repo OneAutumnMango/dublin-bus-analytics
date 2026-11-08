@@ -1,5 +1,7 @@
 import asyncio
+import copy
 import sqlite3
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -331,7 +333,7 @@ async def test_skipped_arrival_does_not_cause_false_vanish(tmp_path):
     fail["on"] = True
     res = await t.ingest("15", [arr(1, scheduled=T0 + 301)], T0 + 30)  # same trip/stop, lookup fails
     t.close()
-    assert (res.skipped, res.finalised, res.dropped) == (1, 0, 0)
+    assert (res.skipped, res.finalised, res.dropped) == (0, 0, 0)  # observed with the live key's seq
 
 
 async def test_negative_due_treated_as_arrived(tr, tmp_path):
@@ -469,3 +471,177 @@ async def test_property_invariants(tmp_path_factory, ticks):
         assert delay == actual - sched
         assert actual == mk["actual"]  # last expected seen with due <= 2
         assert conf == int(mk["zero"])
+
+
+# ---- fix round 2 -----------------------------------------------------------------------
+import app.tracker as trk  # noqa: E402
+
+
+@pytest.mark.parametrize("kw", [dict(trip=["a"]), dict(trip={"a": 1}), dict(stop=["s"]), dict(stop=""),
+                                dict(due=10**30), dict(due=True), dict(expected=0), dict(scheduled=True),
+                                dict(scheduled=0), dict(expected=10**30)])
+async def test_full_validation_skips_and_counts(tr, tmp_path, kw):
+    a = arr(0)
+    for k, v in kw.items():
+        setattr(a, {"trip": "trip_id", "stop": "stop_id", "due": "due_min", "expected": "expected",
+                    "scheduled": "scheduled"}[k], v)
+    res = await tr.ingest("15", [a, arr(0, trip="ok")], T0)
+    assert (res.skipped, res.finalised) == (1, 1)
+    assert [r[1] for r in rows(tmp_path)] == ["ok"]
+
+
+async def test_open_samples_failure_at_rollover_is_clean(tmp_path, monkeypatch):
+    E = int(datetime(2025, 10, 31, 23, 59, 40, tzinfo=ZoneInfo("UTC")).timestamp())
+    real = trk.open_samples
+    fail = {"on": False}
+
+    def op(d, ts):
+        if fail["on"] and ts > E + 15:
+            raise OSError("ENOSPC")
+        return real(d, ts)
+    monkeypatch.setattr(trk, "open_samples", op)
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(5, trip="x")], E)
+    await t.ingest("16", [arr(5, trip="y", route="16")], E)
+    before = (copy.deepcopy((t._live, t._finalised, t._seq, t._last_now)))
+    fail["on"] = True
+    with pytest.raises(OSError):
+        await t.ingest("15", [arr(4, trip="x", expected=T0)], E + 30)
+    assert before == copy.deepcopy((t._live, t._finalised, t._seq, t._last_now))
+    fail["on"] = False
+    res = await t.ingest("15", [arr(4, trip="x", expected=T0)], E + 30)  # same now: not stale
+    assert res.stale is False and res.samples_written == 1
+    assert (await t.ingest("16", [arr(5, trip="y", route="16")], E + 40)).stale is False
+    t.close()
+
+
+async def test_rollback_failure_does_not_hide_original_or_skip_undo(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(5)], T0)
+
+    class Bad:
+        def __init__(self, c): self.c = c
+        def rollback(self): raise sqlite3.OperationalError("rollback failed")
+        def __getattr__(self, k): return getattr(self.c, k)
+    real = t.meta
+    t.meta = Bad(real)
+    t._on_finalised = lambda i, r: 1 / 0
+    with pytest.raises(ZeroDivisionError):
+        await t.ingest("15", [arr(0, trip="n")], T0 + 30)
+    assert t._last_now["15"] == T0 and "n" not in {k[0] for k in t._live}
+    t.meta = real
+    t.close()
+
+
+async def test_lookups_resolve_concurrently_outside_lock(tmp_path):
+    async def slow(a):
+        await asyncio.sleep(0.05)
+        return 0
+    t = Tracker(tmp_path, slow)
+    work = [t.ingest(str(r), [arr(5, trip=f"{r}-{i}", route=str(r)) for i in range(5)], T0) for r in range(4)]
+    t0 = time.perf_counter()
+    await asyncio.gather(*work)
+    elapsed = time.perf_counter() - t0
+    t.close()
+    assert elapsed < 20 * 0.05 / 2
+
+
+async def test_hung_lookup_times_out_and_does_not_block_other_route(tmp_path):
+    async def lookup(a):
+        if a.route == "A":
+            await asyncio.Event().wait()
+        return 0
+    t = Tracker(tmp_path, lookup, lookup_timeout=0.2)
+    t0 = time.perf_counter()
+    ra, rb = await asyncio.gather(t.ingest("A", [arr(0, route="A", trip="a")], T0),
+                                  t.ingest("B", [arr(0, route="B", trip="b")], T0))
+    assert time.perf_counter() - t0 < 1.0
+    assert (ra.skipped, ra.finalised, rb.finalised) == (1, 0, 1)
+    assert "A" in t._last_now and t._live == {}
+    t.close()
+
+
+async def test_failed_trip_looked_up_once_per_tick_and_once_per_minute(tmp_path):
+    calls = []
+
+    async def lookup(a):
+        calls.append((a.trip_id, a.stop_id))
+        raise RuntimeError("down")
+    t = Tracker(tmp_path, lookup)
+    al = [arr(5, trip="x", stop=f"s{i}") for i in range(4)]
+    res = await t.ingest("15", al, T0)
+    assert (len(calls), res.skipped) == (1, 4)
+    await t.ingest("15", al, T0 + 30)  # within negative-cache window
+    assert len(calls) == 1
+    await t.ingest("15", al, T0 + 60)  # window over: one more attempt
+    assert len(calls) == 2
+    t.close()
+
+
+async def test_persistent_lookup_failure_for_live_bus_keeps_old_seq(tmp_path):
+    fail = {"on": False}
+
+    async def lookup(a):
+        if fail["on"]:
+            raise RuntimeError
+        return 0
+    t = Tracker(tmp_path, lookup)
+    await t.ingest("15", [arr(2, expected=T0 + 400, scheduled=T0 + 300)], T0)
+    fail["on"] = True
+    r1 = await t.ingest("15", [arr(1, expected=T0 + 410, scheduled=T0 + 310)], T0 + 70)
+    r2 = await t.ingest("15", [arr(0, expected=T0 + 420, scheduled=T0 + 320)], T0 + 140)
+    assert (r1.skipped, r2.skipped, r2.finalised) == (0, 0, 1)
+    (r,) = rows(tmp_path)
+    assert (r[6], r[8]) == (T0 + 420, 1)
+    t.close()
+
+
+async def test_persistent_failure_then_vanish_uses_latest_expected(tmp_path):
+    fail = {"on": False}
+
+    async def lookup(a):
+        if fail["on"]:
+            raise RuntimeError
+        return 0
+    t = Tracker(tmp_path, lookup)
+    await t.ingest("15", [arr(2, expected=T0 + 400, scheduled=T0 + 300)], T0)
+    fail["on"] = True
+    await t.ingest("15", [arr(1, expected=T0 + 410, scheduled=T0 + 310)], T0 + 70)
+    await t.ingest("15", [], T0 + 140)
+    assert rows(tmp_path)[0][6] == T0 + 410
+    t.close()
+
+
+async def test_duplicate_keys_in_tick_last_wins(tr, tmp_path):
+    res = await tr.ingest("15", [arr(5, expected=T0 + 1), arr(4, expected=T0 + 2)], T0)
+    assert res.samples_written == 1
+    assert samples(tmp_path)[0][4:6] == (4, T0 + 2)
+
+
+async def test_seq_last_used_refresh_keeps_entry_alive(tr):
+    await tr.ingest("15", [arr(5)], T0)
+    await tr.ingest("15", [arr(5)], T0 + FINALISED_TTL_S - 10)
+    await tr.ingest("15", [], T0 + FINALISED_TTL_S + 10)  # age 20 since last use
+    assert len(tr._seq) == 1
+
+
+async def test_ttl_boundary_exactly_ttl_kept_one_over_evicted(tr):
+    await tr.ingest("15", [arr(0)], T0)  # finalised and seq cached at T0
+    await tr.ingest("15", [], T0 + FINALISED_TTL_S)
+    assert (len(tr._finalised), len(tr._seq)) == (1, 1)
+    await tr.ingest("15", [], T0 + FINALISED_TTL_S + 1)
+    assert (len(tr._finalised), len(tr._seq)) == (0, 0)
+
+
+async def test_stale_precheck_skips_lookups(tmp_path):
+    calls = []
+    t = Tracker(tmp_path, make_lookup(calls))
+    await t.ingest("15", [], T0)
+    res = await t.ingest("15", [arr(5)], T0)
+    assert res.stale and calls == []
+    t.close()
+
+
+async def test_concurrent_same_route_same_now_second_is_stale(tr):
+    r1, r2 = await asyncio.gather(tr.ingest("15", [arr(5)], T0), tr.ingest("15", [arr(5)], T0))
+    assert sorted([r1.stale, r2.stale]) == [False, True]

@@ -1,5 +1,10 @@
 """Tracker: turns per-tick route arrivals into change-only samples and finalised arrivals.
 
+Seq lookups (possibly slow I/O) are resolved before the lock is taken, concurrently (max 8 in
+flight, each bounded by lookup_timeout); the lock then covers only state mutation and DB writes.
+A trip whose lookup fails is skipped for the rest of the tick and not retried for NEG_TTL_S.
+TTL rule: cached state is evicted when its age is strictly greater than the TTL.
+
 Threading: owns one meta connection and one cached samples connection (current UTC month);
 safe for concurrent calls from the single event-loop thread (ingest is serialised by a lock, so
 routes may be ingested with asyncio.gather); never use from other threads (see app/db.py).
@@ -31,6 +36,9 @@ DUBLIN = ZoneInfo("Europe/Dublin")
 FINALISED_TTL_S = 6 * 3600  # finalised keys are remembered this long; UNIQUE covers older ones
 FINALISE_DUE_MAX = 2
 _MISSING = object()
+NEG_TTL_S = 60  # failed trip lookups are not retried for this long (in ingest `now` time)
+INT64 = 2**63 - 1
+LOOKUP_CONCURRENCY = 8
 
 
 @dataclass
@@ -55,9 +63,13 @@ class _State:
 
 
 class Tracker:
-    def __init__(self, data_dir: Path, seq_lookup: Callable[[Arrival], Awaitable[int]]):
+    def __init__(self, data_dir: Path, seq_lookup: Callable[[Arrival], Awaitable[int]],
+                 lookup_timeout: float = 15.0):
         self.data_dir = Path(data_dir)
         self.seq_lookup = seq_lookup
+        self.lookup_timeout = lookup_timeout
+        self._neg: dict[str, int] = {}  # trip -> now of last failed lookup
+        self._sem: asyncio.Semaphore | None = None
         self.meta = open_meta(self.data_dir)
         self._samples: sqlite3.Connection | None = None
         self._samples_path: Path | None = None
@@ -78,7 +90,8 @@ class Tracker:
         path = samples_path(self.data_dir, now)
         if self._samples is None or path != self._samples_path:
             if self._samples is not None:
-                self._samples.close()
+                old, self._samples, self._samples_path = self._samples, None, None
+                old.close()  # state is consistent even if opening the new month fails
             self._samples = open_samples(self.data_dir, now)
             self._samples_path = path
         return self._samples
@@ -92,14 +105,6 @@ class Tracker:
         if key not in d:
             src = getattr(self, store)
             d[key] = copy.deepcopy(src[key]) if key in src else _MISSING
-
-    async def _seq_of(self, a: Arrival, now: int) -> int:
-        ck = (a.trip_id, a.stop_id, a.scheduled)
-        self._mark("_seq", ck)
-        hit = self._seq.get(ck)
-        seq = hit[0] if hit else await self.seq_lookup(a)
-        self._seq[ck] = (seq, now)
-        return seq
 
     def _finalise(self, key: tuple, st: _State, now: int) -> int:
         trip, stop, seq = key
@@ -120,30 +125,79 @@ class Tracker:
         self._on_finalised(cur.lastrowid, row)
         return 1
 
+    @staticmethod
+    def _valid(a: Arrival) -> bool:
+        def num(x, lo):
+            return type(x) is int and lo <= x <= INT64
+        return (isinstance(a.trip_id, str) and bool(a.trip_id) and isinstance(a.stop_id, str) and bool(a.stop_id)
+                and num(a.due_min, -INT64) and num(a.expected, 1) and (a.scheduled is None or num(a.scheduled, 1)))
+
+    async def _resolve(self, valid: list[Arrival], now: int) -> tuple[dict, set, set]:
+        """Look up uncached seqs outside the lock. Returns (ck -> seq, failed trips, newly failed). Mutates nothing."""
+        by_trip: dict[str, dict[tuple, Arrival]] = {}
+        for a in valid:
+            ck = (a.trip_id, a.stop_id, a.scheduled)
+            if ck not in self._seq:
+                by_trip.setdefault(a.trip_id, {})[ck] = a
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(LOOKUP_CONCURRENCY)
+        resolved: dict[tuple, int] = {}
+        failed: set[str] = set()
+        fresh: set[str] = set()
+
+        async def one_trip(trip: str, cks: dict[tuple, Arrival]) -> None:
+            if now - self._neg.get(trip, -10**18) < NEG_TTL_S:
+                failed.add(trip)
+                return
+            for ck, a in cks.items():
+                try:
+                    async with self._sem:
+                        resolved[ck] = await asyncio.wait_for(self.seq_lookup(a), self.lookup_timeout)
+                except Exception:
+                    failed.add(trip)
+                    fresh.add(trip)
+                    return
+
+        await asyncio.gather(*(one_trip(t, c) for t, c in by_trip.items()))
+        return resolved, failed, fresh
+
     async def ingest(self, route: str, arrivals: list[Arrival], now: int) -> IngestResult:
+        if now <= self._last_now.get(route, -1):
+            return IngestResult(0, 0, 0, stale=True)
+        valid = [a for a in arrivals if self._valid(a)]
+        invalid = [a for a in arrivals if not self._valid(a)]
+        resolved, failed, fresh = await self._resolve(valid, now)
         async with self._lock_():
             if now <= self._last_now.get(route, -1):
                 return IngestResult(0, 0, 0, stale=True)
             self._undo = {"_live": {}, "_finalised": {}, "_seq": {}, "_last_now": {}}
             try:
-                res = await self._ingest(route, arrivals, now)
+                res = await self._ingest(route, valid, invalid, now, resolved)
                 # shortcut: commit order meta then samples; a crash between leaves a finalised row
                 # without its last sample, so sample-to-arrival joins may miss the last tick.
                 self.meta.commit()
                 self._samples_conn(now).commit()
-                return res
             except BaseException:
-                self.meta.rollback()
-                if self._samples is not None:
-                    self._samples.rollback()
-                for store, d in self._undo.items():
-                    cur = getattr(self, store)
-                    for k, v in d.items():
-                        if v is _MISSING:
-                            cur.pop(k, None)
-                        else:
-                            cur[k] = v
-                raise
+                self._undo_all()  # first: in-memory state must be right whatever the rollbacks do
+                for conn in (self.meta, self._samples):
+                    if conn is not None:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                raise  # the original exception
+            for trip in fresh:
+                self._neg[trip] = now
+            return res
+
+    def _undo_all(self) -> None:
+        for store, d in self._undo.items():
+            cur = getattr(self, store)
+            for k, v in d.items():
+                if v is _MISSING:
+                    cur.pop(k, None)
+                else:
+                    cur[k] = v
 
     def _lock_(self) -> asyncio.Lock:
         if self._lock is None:
@@ -158,25 +212,47 @@ class Tracker:
             for k in [k for k, v in d.items() if (t := ok(v)) is not None and now - t > FINALISED_TTL_S]:
                 self._mark(store, k)
                 del d[k]
+        for k in [k for k, t in self._neg.items() if now - t >= NEG_TTL_S]:
+            del self._neg[k]
 
-    async def _ingest(self, route: str, arrivals: list[Arrival], now: int) -> IngestResult:
+    def _live_fallback(self, route: str, a: Arrival) -> int | None:
+        """seq of an already-live (trip, stop) of this route whose lookup failed this tick."""
+        cands = [k for k, s in self._live.items()
+                 if k[:2] == (a.trip_id, a.stop_id) and s.route == route and s.gone_at is None]
+        if not cands:
+            return None
+        return min(cands, key=lambda k: abs(self._live[k].last_due - a.due_min))[2]
+
+    async def _ingest(self, route: str, valid: list[Arrival], invalid: list[Arrival], now: int,
+                      resolved: dict) -> IngestResult:
         self._mark("_last_now", route)
         self._last_now[route] = now
         self._sweep(now)
         samples = self._samples_conn(now)
-        written = finalised = dropped = skipped = 0
+        written = finalised = dropped = 0
+        skipped = len(invalid)
         seen: set[tuple] = set()
-        unkeyed: set[tuple] = set()  # (trip, stop) of skipped arrivals: never treated as vanished
+        # (trip, stop) of skipped arrivals: never treated as vanished
+        unkeyed = {(a.trip_id, a.stop_id) for a in invalid
+                   if isinstance(a.trip_id, str) and isinstance(a.stop_id, str)}
         keyed: dict[tuple, Arrival] = {}
-        for a in arrivals:
-            try:
-                if not (isinstance(a.trip_id, str) and a.trip_id and isinstance(a.due_min, int)
-                        and isinstance(a.expected, int) and (a.scheduled is None or isinstance(a.scheduled, int))):
-                    raise ValueError("invalid arrival")
-                keyed[(a.trip_id, a.stop_id, await self._seq_of(a, now))] = a
-            except Exception:
-                skipped += 1
-                unkeyed.add((a.trip_id, a.stop_id))
+        for a in valid:
+            ck = (a.trip_id, a.stop_id, a.scheduled)
+            self._mark("_seq", ck)
+            if ck in self._seq:
+                seq = self._seq[ck][0]
+            elif ck in resolved:
+                seq = resolved[ck]
+            else:
+                seq = self._live_fallback(route, a)  # lookup failed: keep the live key's seq
+                if seq is None:
+                    skipped += 1
+                    unkeyed.add((a.trip_id, a.stop_id))
+                else:
+                    keyed[(a.trip_id, a.stop_id, seq)] = a
+                continue
+            self._seq[ck] = (seq, now)  # also refreshes last-used
+            keyed[(a.trip_id, a.stop_id, seq)] = a
         for key, a in keyed.items():
             seen.add(key)
             if key in self._finalised:
