@@ -4,7 +4,37 @@ import threading
 import pytest
 from hypothesis import given, strategies as st
 
-from app.db import open_meta, open_samples, samples_path
+from app import db as _db
+from app.db import samples_path
+
+
+@pytest.fixture(autouse=True)
+def _close_all(monkeypatch):
+    opened = []
+
+    def wrap(fn):
+        def f(*a, **k):
+            c = fn(*a, **k)
+            opened.append(c)
+            return c
+        return f
+
+    monkeypatch.setattr(_db, "open_meta", wrap(_db.open_meta))
+    monkeypatch.setattr(_db, "open_samples", wrap(_db.open_samples))
+    yield
+    for c in opened:
+        try:
+            c.close()
+        except sqlite3.Error:
+            pass
+
+
+def open_meta(*a, **k):
+    return _db.open_meta(*a, **k)
+
+
+def open_samples(*a, **k):
+    return _db.open_samples(*a, **k)
 
 
 def test_meta_schema_has_tables(tmp_path):
@@ -77,6 +107,7 @@ def test_concurrent_read_while_writing(tmp_path):
     def read():
         r = open_meta(tmp_path)
         out.append(r.execute("select count(*) from meta_kv").fetchone()[0])
+        r.close()
 
     t = threading.Thread(target=read)
     t.start()
@@ -137,3 +168,78 @@ def test_samples_path_monotone_and_named(a, b):
     assert re.fullmatch(r"samples-\d{4}-(0[1-9]|1[0-2])\.db", pa.name)
     if a <= b:
         assert pa.name <= pb.name
+
+
+def test_indexes_exist_and_used(tmp_path):
+    c = open_meta(tmp_path)
+    names = {r[1] for r in c.execute("pragma index_list('arrivals')")}
+    assert {"ix_arr_route_sched", "ix_arr_stop_sched"} <= names
+    for col, ix in (("route", "ix_arr_route_sched"), ("stop_id", "ix_arr_stop_sched")):
+        plan = " ".join(
+            r[3] for r in c.execute(
+                f"explain query plan select * from arrivals where {col}=? and scheduled between ? and ?",
+                ("x", 1, 2))
+        )
+        assert ix in plan
+    open_meta(tmp_path).close()  # idempotent index creation
+
+
+def _cols(c, t):
+    return [(r[1], r[2].lower()) for r in c.execute(f"pragma table_info({t})")]
+
+
+def test_column_names_and_types(tmp_path):
+    m = open_meta(tmp_path)
+    assert _cols(m, "routes_tracked") == [("route", "text"), ("added", "int")]
+    assert _cols(m, "arrivals") == [
+        ("id", "integer"), ("trip_id", "text"), ("stop_id", "text"), ("seq", "int"),
+        ("service_date", "text"), ("scheduled", "int"), ("actual", "int"), ("delay", "int"),
+        ("confidence", "int"), ("realtime", "int"), ("route", "text")]
+    assert _cols(m, "forecast") == [
+        ("arrival_id", "int"), ("horizon_min", "int"), ("predicted", "int"), ("error_s", "int")]
+    assert _cols(m, "gaps") == [("start", "int"), ("end", "int")]
+    assert _cols(m, "meta_kv") == [("k", "text"), ("v", "text")]
+    assert _cols(open_samples(tmp_path, 0), "sample") == [
+        ("ts", "int"), ("trip_id", "text"), ("stop_id", "text"), ("seq", "int"),
+        ("due_min", "int"), ("expected", "int"), ("realtime", "int")]
+
+
+@pytest.mark.parametrize("opener", [lambda d: open_meta(d), lambda d: open_samples(d, 0)])
+def test_connection_is_thread_bound(tmp_path, opener):
+    c = opener(tmp_path)
+    errs = []
+
+    def use():
+        try:
+            c.execute("select 1")
+        except sqlite3.ProgrammingError as e:
+            errs.append(e)
+
+    t = threading.Thread(target=use)
+    t.start()
+    t.join(5)
+    assert len(errs) == 1
+
+
+def test_samples_reopen_idempotent_and_concurrent_read(tmp_path):
+    w = open_samples(tmp_path, 0)
+    w.execute("insert into sample values (1,'t','s',1,5,100,1)")
+    w.commit()
+    w.close()
+    w = open_samples(tmp_path, 0)
+    assert w.execute("select count(*) from sample").fetchone()[0] == 1
+    w.execute("begin")
+    w.execute("insert into sample values (2,'t','s',1,5,100,1)")
+    r = open_samples(tmp_path, 0)
+    assert r.execute("select count(*) from sample").fetchone()[0] == 1
+    w.commit()
+    assert r.execute("select count(*) from sample").fetchone()[0] == 2
+
+
+def test_meta_two_connections_read_while_writing(tmp_path):
+    w, r = open_meta(tmp_path), open_meta(tmp_path)
+    w.execute("begin")
+    w.execute("insert into meta_kv values ('a','1')")
+    assert r.execute("select count(*) from meta_kv").fetchone()[0] == 0
+    w.commit()
+    assert r.execute("select count(*) from meta_kv").fetchone()[0] == 1
