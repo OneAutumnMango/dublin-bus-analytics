@@ -1,6 +1,11 @@
 """Nightly backup scheduling: snapshot then compaction at BACKUP_TIME (Europe/Dublin local time)."""
+import asyncio
+import logging
 from datetime import datetime, time as dtime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from app import backup
 
 TZ = ZoneInfo("Europe/Dublin")
 UTC = timezone.utc
@@ -33,3 +38,71 @@ def next_run(now: datetime, backup_time: str) -> datetime:
         if cand.astimezone(UTC) > now.astimezone(UTC):
             return cand
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+log = logging.getLogger(__name__)
+CATCH_UP_AFTER_S = 24 * 3600
+MIN_SLEEP_S = 1.0  # a backwards clock jump must never turn the loop into a spin
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class BackupScheduler:
+    """Runs snapshot then compaction nightly. Both are blocking, so they run in worker threads; cancelling
+    run() cancels only the awaiting task: a snapshot already running in its thread finishes in the background
+    (it is atomic: temp dir then link), so shutdown never hangs on it."""
+
+    def __init__(self, settings, *, now_fn=_utcnow, sleep_fn=asyncio.sleep,
+                 snapshot_fn=backup.snapshot, compact_fn=backup.compact_closed_months):
+        self.settings, self.now_fn, self.sleep_fn = settings, now_fn, sleep_fn
+        self.snapshot_fn, self.compact_fn = snapshot_fn, compact_fn
+
+    async def run_once(self) -> Path | None:
+        """Snapshot, then compact. If the snapshot fails nothing is compacted (never delete originals
+        without a fresh backup). A compaction failure keeps the new backup. Never raises (except cancel)."""
+        s = self.settings
+        try:
+            path = await asyncio.to_thread(self.snapshot_fn, s.data_dir, s.backup_path, s.backup_keep)
+        except Exception:
+            log.exception("backup snapshot failed; compaction skipped")
+            return None
+        log.info("backup written: %s", path)
+        skipped: list[Path] = []
+        try:
+            done = await asyncio.to_thread(
+                self.compact_fn, s.data_dir, int(self.now_fn().timestamp()), skipped=skipped)
+            log.info("compacted %d month file(s)", len(done))
+        except Exception:
+            log.exception("compaction failed; backup %s kept", path)
+        if skipped:
+            log.warning("compaction skipped months: %s", ", ".join(p.name for p in skipped))
+        return path
+
+    def _needs_catch_up(self) -> bool:
+        now = self.now_fn().timestamp()
+        try:
+            stamps = [backup._stamp(p) for p in backup.list_backups(self.settings.backup_path)]
+        except OSError:
+            log.exception("cannot list backups in %s", self.settings.backup_path)
+            stamps = []
+        valid = [t for t in stamps if t <= now + backup.FUTURE_SLACK_S]  # future-dated files don't count
+        return not valid or now - max(valid) > CATCH_UP_AFTER_S
+
+    async def run(self) -> None:
+        if not self.settings.backup_enabled:
+            log.info("backups disabled (BACKUP_ENABLED=false)")
+            return
+        if self._needs_catch_up():
+            log.info("no backup in the last 24h; running catch-up backup")
+            await self.run_once()
+        while True:
+            nxt = next_run(self.now_fn(), self.settings.backup_time)
+            await self.sleep_fn(max(MIN_SLEEP_S, (nxt - self.now_fn()).total_seconds()))
+            if self.now_fn() < nxt:  # clock went backwards while sleeping: not due yet
+                continue
+            try:
+                await self.run_once()
+            except Exception:  # run_once handles its own errors; this keeps the loop alive whatever happens
+                log.exception("backup run failed")
