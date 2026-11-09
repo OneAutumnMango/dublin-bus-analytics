@@ -602,3 +602,48 @@ async def test_default_backup_dir_no_warning(tmp_path, caplog):
     with pytest.raises(Stop):
         await sc.run()
     assert not [r for r in caplog.records if "BACKUP_DIR" in r.message]
+
+
+# ---------------------------------------------------------------- lifespan cleanup (fix round 1)
+class _Closer:
+    def __init__(self, fail=False):
+        self.closed, self.fail = 0, fail
+
+    def close(self):
+        self.closed += 1
+        if self.fail:
+            raise OSError("close failed")
+
+    async def aclose(self):
+        self.closed += 1
+
+
+class _DyingPoller:
+    async def run(self):
+        raise RuntimeError("poller died")
+
+
+def _wired(tmp_path, monkeypatch, tracker, client):
+    async def idle(self):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(BackupScheduler, "run", idle)
+    app = _app(tmp_path, True)
+    app.state.poller, app.state.tracker, app.state.client = _DyingPoller(), tracker, client
+    return app
+
+
+def test_lifespan_dead_task_still_closes_tracker_and_client(tmp_path, monkeypatch, caplog):
+    tr, cl = _Closer(), _Closer()
+    with TestClient(_wired(tmp_path, monkeypatch, tr, cl)):
+        pass  # must not raise RuntimeError on exit
+    assert (tr.closed, cl.closed) == (1, 1)
+    assert any(r.exc_info and "background task failed" in r.message for r in caplog.records)
+
+
+def test_lifespan_failing_tracker_close_does_not_skip_client_close(tmp_path, monkeypatch):
+    tr, cl = _Closer(fail=True), _Closer()
+    with pytest.raises(OSError):
+        with TestClient(_wired(tmp_path, monkeypatch, tr, cl)):
+            pass
+    assert (tr.closed, cl.closed) == (1, 1)

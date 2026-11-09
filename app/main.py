@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,8 @@ from app.config import Settings
 from app.poller import LazyTracker, Poller, seq_lookup
 from app.scheduler import BackupScheduler
 from app.serverclient import ServerClient
+
+log = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None, *, start_background: bool = True,
@@ -27,11 +30,19 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
         finally:
             for task in tasks:  # a snapshot already running in a worker thread finishes in the background
                 task.cancel()
-            for task in tasks:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-            app.state.tracker.close()
-            await app.state.client.aclose()
+            try:
+                for task in tasks:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:  # a task that died earlier must not skip the cleanup below
+                        log.exception("background task failed")
+            finally:
+                try:
+                    app.state.tracker.close()
+                finally:
+                    await app.state.client.aclose()
 
     app = FastAPI(title="dublin-bus-analytics", lifespan=lifespan)
     app.state.settings = settings
