@@ -161,8 +161,8 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
 
 **Two phases (so it can start before Task 4 is approved):** Phase 5a creates `app/forecast.py` + `tests/test_forecast.py` only (no tracker edits). Phase 5b, after Task 4 is approved, fills the tracker's no-op `_on_finalised(arrival_id, row)` hook to call `extract_forecasts` and INSERT the `forecast` rows inside the same meta transaction, with tracker tests (forecast rows present after a finalise; rolled back with the tick on failure; none when no earlier samples).
 
-- [ ] **Step 1:** Tests: `test_picks_latest_sample_before_horizon`, `test_missing_horizon_omitted`, `test_error_sign_positive_when_late`, `test_reads_previous_month_file_at_boundary`.
-- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add forecast extraction"`.
+- [x] **Step 1:** Tests: `test_picks_latest_sample_before_horizon`, `test_missing_horizon_omitted`, `test_error_sign_positive_when_late`, `test_reads_previous_month_file_at_boundary`.
+- [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add forecast extraction"`.
 
 ### Task 6: Poller loop, tracked routes, gaps
 
