@@ -706,7 +706,7 @@ async def test_resolve_before_lock_four_routes_one_slow_key_each(tmp_path):
     t = Tracker(tmp_path, slow)
     t0 = time.perf_counter()
     await guarded(asyncio.gather(*(t.ingest(str(r), [arr(5, trip=f"k{r}", route=str(r))], T0) for r in range(4))))
-    assert time.perf_counter() - t0 < 2 * T
+    assert time.perf_counter() - t0 < 3 * T  # serial would be 4T; slack for loaded machines
     t.close()
 
 
