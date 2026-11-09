@@ -136,8 +136,13 @@ def _filters(p):
     return {**p, "realtime_only": True}
 
 
+# Concurrent sqlite readers in the threadpool slow each other 10-1000x on this host, so ALL sqlite
+# work in this module runs under one lock (released on any error by `with`).
+_DB_LOCK = threading.Lock()
+
+
 def _fetch(request: Request, sql: str, args: list) -> list[tuple]:
-    with closing(open_meta(request.app.state.settings.data_dir)) as c:
+    with _DB_LOCK, closing(open_meta(request.app.state.settings.data_dir)) as c:
         return c.execute(sql, args).fetchall()
 
 

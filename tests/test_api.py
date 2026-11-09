@@ -1125,3 +1125,90 @@ def test_hung_server_times_out_fast(env, monkeypatch):
     assert env.get("/api/routes/15/summary").json()["order_source"] == "none"
     assert env.get("/api/routes/15/stops").status_code == 502
     assert time.perf_counter() - t < 1.5
+
+
+# ---------- fix round 2: N2 serialised sqlite reads ----------
+
+BURST = ["/api/routes/15/summary", "/api/stops/s3/stats", "/api/routes/15/heatmap",
+         "/api/routes/15/forecast", "/api/routes/15/accumulation"]
+
+
+async def test_concurrent_requests_bounded_by_serialised_time(tmp_path):
+    env = Env(tmp_path)
+    bulk(env, 6000)
+    env.fake.set_route_stops("15", {"out": [{"id": f"s{i}"} for i in range(20)]})
+    db = open_meta(env.s.data_dir)
+    with db:
+        db.executemany("insert into forecast values(?,?,?,?)", [(i, 10, 0, i % 50) for i in range(1, 6001)])
+    db.close()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=env.app), base_url="http://t") as c:
+        for u in BURST:  # warm-up (imports, route_stops cache)
+            assert (await c.get(u)).status_code == 200
+        serial = []
+        for _ in range(3):
+            t = time.perf_counter()
+            for u in BURST:
+                assert (await c.get(u)).status_code == 200
+            serial.append(time.perf_counter() - t)
+        conc = []
+        for _ in range(3):
+            t = time.perf_counter()
+            rs = await asyncio.gather(*(c.get(u) for u in BURST))
+            conc.append(time.perf_counter() - t)
+            assert all(r.status_code == 200 for r in rs)
+    assert min(conc) < 3 * min(serial), (conc, serial)
+
+
+def test_lock_released_after_error_inside_locked_section(env, monkeypatch):
+    import app.api as api
+    env.add(delay=1)
+    real = api.open_meta
+    calls = []
+
+    def boom(d):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("disk on fire")
+        return real(d)
+
+    monkeypatch.setattr(api, "open_meta", boom)
+    with pytest.raises(RuntimeError):
+        env.get("/api/stops/s1/stats")
+    assert api._DB_LOCK.acquire(timeout=1)  # not left held
+    api._DB_LOCK.release()
+    assert env.get("/api/stops/s1/stats").json()["n"] == 1
+
+
+def test_lock_released_after_sql_error(env, monkeypatch):
+    import app.api as api
+    env.add(delay=1)
+    monkeypatch.setattr(api, "_cond", lambda p, a="": ("nosuchcolumn = 1", []))
+    with pytest.raises(sqlite3.OperationalError):
+        env.get("/api/routes/15/heatmap")
+    monkeypatch.undo()
+    assert api._DB_LOCK.acquire(timeout=1)
+    api._DB_LOCK.release()
+    assert env.get("/api/routes/15/heatmap").json()["n"] == 1
+
+
+def test_db_work_is_mutually_exclusive(env, monkeypatch):
+    import threading
+    import app.api as api
+    env.add(delay=1)
+    inside, worst = [0], [0]
+    real = api.open_meta
+
+    def spy(d):
+        inside[0] += 1
+        worst[0] = max(worst[0], inside[0])
+        time.sleep(0.01)
+        try:
+            return real(d)
+        finally:
+            inside[0] -= 1
+
+    monkeypatch.setattr(api, "open_meta", spy)
+    ts = [threading.Thread(target=lambda: env.c.get("/api/stops/s1/stats")) for _ in range(6)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert worst[0] == 1
