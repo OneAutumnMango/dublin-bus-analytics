@@ -211,8 +211,8 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
 **Security flag:** `security` (query-param validation; all SQL parameterised)
 **Does NOT cover:** auth.
 
-- [ ] **Step 1:** Tests seeded via direct DB inserts: `test_track_untrack_roundtrip`, `test_route_summary_per_stop_in_route_order`, `test_stop_stats_ci_param_changes_interval`, `test_invalid_ci_422`, `test_stop_with_no_arrivals_returns_n0_not_500`, `test_sql_injection_in_route_param_harmless`.
-- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add API"`.
+- [x] **Step 1:** Tests seeded via direct DB inserts: `test_track_untrack_roundtrip`, `test_route_summary_per_stop_in_route_order`, `test_stop_stats_ci_param_changes_interval`, `test_invalid_ci_422`, `test_stop_with_no_arrivals_returns_n0_not_500`, `test_sql_injection_in_route_param_harmless`.
+- [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add API"`.
 
 ### Task 9: Backup + monthly compaction
 
