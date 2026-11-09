@@ -177,8 +177,8 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
 **Security flag:** `none`
 **Does NOT cover:** concurrent writers.
 
-- [ ] **Step 1:** Tests against `FakeServer`: `test_tick_polls_only_tracked_routes`, `test_unavailable_records_gap_and_no_arrivals`, `test_gap_closed_on_recovery`, `test_untrack_stops_polling`, `test_tracked_survives_restart` (persisted in `routes_tracked`).
-- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add poller"`.
+- [x] **Step 1:** Tests against `FakeServer`: `test_tick_polls_only_tracked_routes`, `test_unavailable_records_gap_and_no_arrivals`, `test_gap_closed_on_recovery`, `test_untrack_stops_polling`, `test_tracked_survives_restart` (persisted in `routes_tracked`).
+- [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add poller"`.
 
 ### Task 7: Stats functions
 
