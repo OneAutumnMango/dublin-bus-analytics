@@ -73,7 +73,11 @@ class Env:
             db.execute("insert into forecast values(?,?,?,?)", (arrival_id, horizon, 0, err))
         db.close()
 
+    keep_cache = False
+
     def get(self, url, **q):
+        if not self.keep_cache and hasattr(self.app.state, "stops_cache"):
+            del self.app.state.stops_cache  # server-state changes between requests must be visible
         return self.c.get(url, params=q)
 
 
@@ -962,3 +966,114 @@ def test_non_finite_in_stats_becomes_null_not_500(env, monkeypatch):
         j = r.json()
         d = j["delay"] if "delay" in j else j["stops"][0]
         assert d["ci_high"] is None and d["mean"] is None
+
+
+# ---------- fix round 2: N8 route_stops cache + timeout ----------
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def stops_hits(env, route="15"):
+    return env.fake.requests.count(f"/v1/routes/{route}/stops")
+
+
+def test_route_stops_cached_between_requests(env):
+    import app.api as api
+    clock = Clock()
+    env.app.state.stops_cache = api._TTLCache(clock=clock)
+    env.keep_cache = True
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
+    env.add(stop="a", delay=1)
+    for url in ("/api/routes/15/summary", "/api/routes/15/accumulation", "/api/routes/15/stops"):
+        assert env.get(url).status_code == 200
+    assert stops_hits(env) == 1
+    env.get("/api/routes/16/summary")  # other route: separate entry (404 on server, not cached)
+    assert stops_hits(env, "16") == 1
+    env.get("/api/routes/16/summary")
+    assert stops_hits(env, "16") == 2
+
+
+def test_route_stops_cache_expires_after_5_min(env):
+    import app.api as api
+    clock = Clock()
+    env.app.state.stops_cache = api._TTLCache(clock=clock)
+    env.keep_cache = True
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
+    env.get("/api/routes/15/stops")
+    clock.t += 299
+    env.get("/api/routes/15/stops")
+    assert stops_hits(env) == 1
+    env.fake.set_route_stops("15", {"out": [{"id": "b"}]})
+    clock.t += 2  # 301 s old
+    assert env.get("/api/routes/15/stops").json()["directions"] == {"out": [{"id": "b"}]}
+    assert stops_hits(env) == 2
+
+
+def test_route_stops_failure_not_cached(env):
+    env.keep_cache = True
+    env.add(stop="a", delay=1)
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
+    env.fake.set_down(True)
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "none"
+    env.fake.set_down(False)
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "server"
+    env.fake.set_route_stops("15", {"out": ["bad"]})  # malformed: not cached either
+    env.app.state.stops_cache.clear()
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "none"
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "server"
+
+
+def test_ttl_cache_unit_bounds_and_eviction():
+    import app.api as api
+    clock = Clock()
+    c = api._TTLCache(ttl=10, maxsize=3, clock=clock)
+    for k in "abc":
+        c.put(k, k.upper())
+    c.put("d", "D")  # full: oldest ("a") evicted
+    assert [c.get(k) for k in "abcd"] == [None, "B", "C", "D"]
+    clock.t += 11
+    assert c.get("b") is None  # expired
+    c.put("e", "E")  # c, d expired but not yet purged: cache not full yet
+    assert len(c._d) == 3
+    c.put("f", "F")  # full: expired entries purged first, nothing live evicted
+    assert sorted(c._d) == ["e", "f"]
+    c.clear()
+    assert c.get("e") is None
+
+
+def test_ttl_cache_thread_safe():
+    import threading
+    import app.api as api
+    c = api._TTLCache(maxsize=50)
+
+    def work(i):
+        for j in range(500):
+            c.put(f"{i}-{j}", j)
+            c.get(f"{i}-{j - 1}")
+
+    ts = [threading.Thread(target=work, args=(i,)) for i in range(6)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert len(c._d) <= 50
+
+
+def test_hung_server_times_out_fast(env, monkeypatch):
+    import app.api as api
+
+    class Hung:
+        async def route_stops(self, r):
+            await asyncio.sleep(5)
+
+    monkeypatch.setattr(api, "STOPS_TIMEOUT", 0.05)
+    env.app.state.client = Hung()
+    env.add(delay=1)
+    t = time.perf_counter()
+    assert env.get("/api/routes/15/summary").json()["order_source"] == "none"
+    assert env.get("/api/routes/15/stops").status_code == 502
+    assert time.perf_counter() - t < 1.5

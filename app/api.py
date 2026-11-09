@@ -13,9 +13,12 @@ A route/stop with no stored data gives 200 with n=0 and null stats; only the ser
 can 404 (unknown route). `arrivals.seq` is a per-visit key (the scheduled epoch), never a stop position:
 stop order comes only from the server's route_stops (`order_source` 'server' | 'none'). low_n is true when n < 10.
 """
+import asyncio
 import math
 import re
 import sqlite3
+import threading
+import time
 from bisect import bisect_right
 from collections import defaultdict
 from contextlib import closing
@@ -53,6 +56,7 @@ class RawPathRoute(APIRoute):
 router = APIRouter(prefix="/api", route_class=RawPathRoute)
 
 LOW_N = 10
+STOPS_TTL, STOPS_CACHE_MAX, STOPS_TIMEOUT = 300, 256, 3.0  # route_stops cache seconds / entries / call timeout
 CI_MAX = 0.9999
 HORIZONS = (30, 20, 10, 5, 2)
 RECENT = 20
@@ -189,20 +193,66 @@ def _sid(x):
     return x.get("id", x.get("stopId"))
 
 
+class _TTLCache:
+    """Small thread-safe cache with expiry and a max size (oldest entry evicted). Clock injectable."""
+
+    def __init__(self, ttl=STOPS_TTL, maxsize=STOPS_CACHE_MAX, clock=time.monotonic):
+        self.ttl, self.maxsize, self.clock = ttl, maxsize, clock
+        self._d: dict = {}
+        self._lock = threading.Lock()
+
+    def get(self, k):
+        with self._lock:
+            e = self._d.get(k)
+            if e is None:
+                return None
+            if e[0] <= self.clock():
+                del self._d[k]
+                return None
+            return e[1]
+
+    def put(self, k, v):
+        with self._lock:
+            now = self.clock()
+            if k not in self._d and len(self._d) >= self.maxsize:
+                for key in [key for key, e in self._d.items() if e[0] <= now]:
+                    del self._d[key]
+                if len(self._d) >= self.maxsize:
+                    del self._d[next(iter(self._d))]
+            self._d[k] = (now + self.ttl, v)
+
+    def clear(self):
+        with self._lock:
+            self._d.clear()
+
+
+def _cache(request) -> _TTLCache:
+    st = request.app.state
+    if getattr(st, "stops_cache", None) is None:
+        st.stops_cache = _TTLCache()
+    return st.stops_cache
+
+
 async def _directions(request, r) -> dict[str, list[dict]]:
-    """Server's {direction: [stop dicts in order]}, validated. Raises _NoOrder (404 unknown
-    route, 502 unavailable or malformed shape)."""
+    """Server's {direction: [stop dicts in order]}, validated, cached 5 min per route (failures are
+    never cached; the call has a 3 s timeout). Raises _NoOrder (404 unknown route, 502
+    unavailable/timeout/malformed shape)."""
+    cache = _cache(request)
+    hit = cache.get(r)
+    if hit is not None:
+        return hit
     try:
-        raw = await request.app.state.client.route_stops(r)
+        raw = await asyncio.wait_for(request.app.state.client.route_stops(r), STOPS_TIMEOUT)
     except RouteNotFound:
         raise _NoOrder(404, "route not found on server") from None
-    except (ServerUnavailable, KeyError, TypeError, AttributeError, ValueError) as e:
-        raise _NoOrder(502, f"server unavailable or malformed: {e}") from None
+    except (ServerUnavailable, KeyError, TypeError, AttributeError, ValueError, asyncio.TimeoutError) as e:
+        raise _NoOrder(502, f"server unavailable or malformed: {e!r}") from None
     if not (isinstance(raw, dict) and all(
             isinstance(k, str) and isinstance(v, list)
             and all(isinstance(x, dict) and isinstance(_sid(x), str) for x in v)
             for k, v in raw.items())):
         raise _NoOrder(502, "malformed stops response from server")
+    cache.put(r, raw)
     return raw
 
 
