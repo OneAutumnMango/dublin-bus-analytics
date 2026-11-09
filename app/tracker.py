@@ -28,16 +28,19 @@ both; an exception before commit rolls both back and restores in-memory state.
 """
 import asyncio
 import copy
+import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+from .forecast import HORIZONS, extract_forecasts, open_previous_month
 from .db import open_meta, open_samples, samples_path
 from .models import Arrival
 
+log = logging.getLogger(__name__)
 DUBLIN = ZoneInfo("Europe/Dublin")
 FINALISED_TTL_S = 6 * 3600  # finalised keys are remembered this long; UNIQUE covers older ones
 FINALISE_DUE_MAX = 2
@@ -87,6 +90,9 @@ class Tracker:
         self._undo: dict[str, dict] = {}
         self._lock: asyncio.Lock | None = None
         self._last_now: dict[str, int] = {}
+        self._tick_now = 0
+        self._prev: sqlite3.Connection | None = None  # previous-month reader, per tick only
+        self._prev_tried = False
 
     def close(self) -> None:
         if self._samples is not None:
@@ -104,8 +110,27 @@ class Tracker:
             self._samples_path = path
         return self._samples
 
+    def _prev_conn(self) -> sqlite3.Connection | None:
+        if not self._prev_tried:
+            self._prev_tried = True
+            self._prev = open_previous_month(self.data_dir, self._tick_now)
+        return self._prev
+
     def _on_finalised(self, arrival_id: int, row: dict) -> None:
-        """Hook run inside the tick transaction for each newly inserted arrival (Task 5: forecasts)."""
+        """Runs inside the tick transaction for each newly inserted arrival: writes its forecast rows."""
+        key = (row["trip_id"], row["stop_id"], row["seq"])
+        try:  # extraction trouble (corrupt previous month, ...) must not lose the arrival
+            conns = [self._samples_conn(self._tick_now)]  # holds this tick's uncommitted samples
+            d = datetime.fromtimestamp(self._tick_now, timezone.utc)
+            month_start = int(d.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+            if row["actual"] - max(HORIZONS) * 60 < month_start and (prev := self._prev_conn()) is not None:
+                conns.append(prev)
+            fc = extract_forecasts(conns, *key, row["actual"])
+        except Exception:
+            log.warning("forecast extraction failed for %s", key, exc_info=True)
+            return
+        self.meta.executemany("insert or ignore into forecast(arrival_id,horizon_min,predicted,error_s) values(?,?,?,?)",
+                              [(arrival_id, *f) for f in fc])  # meta errors roll back the tick
 
     def _mark(self, store: str, key) -> None:
         """Undo log: remember the pre-tick value of a key the first time this tick touches it."""
@@ -191,6 +216,7 @@ class Tracker:
             if now <= self._last_now.get(route, -1):
                 return IngestResult(0, 0, 0, stale=True)
             self._undo = {"_live": {}, "_finalised": {}, "_seq": {}, "_last_now": {}}
+            self._tick_now, self._prev_tried = now, False
             try:
                 res = await self._ingest(route, valid, invalid, now, resolved)
                 # shortcut: commit order meta then samples; a crash between leaves a finalised row
@@ -206,6 +232,10 @@ class Tracker:
                         except Exception:
                             pass
                 raise  # the original exception
+            finally:
+                if self._prev is not None:
+                    self._prev.close()
+                    self._prev = None
             for trip in fresh:
                 self._neg[trip] = now
             return res

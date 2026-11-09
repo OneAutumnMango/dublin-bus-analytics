@@ -10,6 +10,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from app.db import open_meta, open_samples
 from app.models import Arrival
+from app.forecast import extract_forecasts
 from app.tracker import FINALISED_TTL_S, NEG_TTL_S, Tracker
 
 T0 = 1_760_000_000  # Oct 2025
@@ -467,6 +468,18 @@ async def test_property_invariants(tmp_path_factory, ticks):
     finally:
         sc.close()
     assert {(r[0], r[1], r[2]) for r in arrivals} == {k for k, v in model.items() if v["done"]}
+    sc = open_samples(d, T0)  # independent recomputation of every forecast row
+    m = sqlite3.connect(d / "meta.db")
+    try:
+        got = m.execute("select a.trip_id,a.stop_id,a.seq,f.horizon_min,f.predicted,f.error_s from forecast f "
+                        "join arrivals a on a.id=f.arrival_id").fetchall()
+        want = [(tr_, st_, sq, *f) for tr_, st_, sq, act, *_ in arrivals
+                for f in extract_forecasts([sc], tr_, st_, sq, act)]
+    finally:
+        m.close()
+        sc.close()
+    assert sorted(got) == sorted(want)
+    assert len(got) <= 5 * len(arrivals)
     for trip, stop, seq, actual, delay, sched, conf in arrivals:
         mk = model[(trip, stop, seq)]
         assert delay == actual - sched
@@ -823,9 +836,14 @@ class _Proxy:
     def __init__(self, c, tag, inj):
         self._c, self._tag, self._inj = c, tag, inj
 
-    def execute(self, *a):
+    def execute(self, sql, *a):
+        if not sql.lstrip().startswith("select"):  # reads (forecast extraction) are not tick-write failure points
+            self._inj.hit(self._tag + ".execute")
+        return self._c.execute(sql, *a)
+
+    def executemany(self, *a):
         self._inj.hit(self._tag + ".execute")
-        return self._c.execute(*a)
+        return self._c.executemany(*a)
 
     def commit(self):
         self._inj.hit(self._tag + ".commit")
@@ -847,6 +865,10 @@ def dbdump(d):
         c.close()
         if r:  # a freshly created empty month file is not a state change
             out.append((f.name, r))
+    c = sqlite3.connect(Path(d) / "meta.db")
+    out.insert(1, c.execute("select a.trip_id,a.stop_id,a.seq,f.horizon_min,f.predicted,f.error_s from forecast f "
+                            "join arrivals a on a.id=f.arrival_id order by 1,2,3,4").fetchall())
+    c.close()
     return out
 
 
@@ -884,7 +906,12 @@ async def test_failure_injection_oracle(seed):
         t = Tracker(d1, lookup)
         t.meta = _Proxy(t.meta, "meta", inj)
         ref = Tracker(d2, plain)
-        t._on_finalised = lambda i, r: inj.hit("hook")
+        real_hook = t._on_finalised
+
+        def hook(i, r):
+            real_hook(i, r)  # forecast rows are inserted before the injected failure
+            inj.hit("hook")
+        t._on_finalised = hook
         keys = [(f"t{i}", f"s{j}", k) for i in range(3) for j in range(2) for k in range(2)]
         now = base
         sc_failed = False
@@ -916,7 +943,7 @@ async def test_failure_injection_oracle(seed):
         t.close()
         ref.close()
         if not sc_failed:
-            assert dbdump(d1)[0] == dbdump(d2)[0]
+            assert dbdump(d1)[:2] == dbdump(d2)[:2]
     finally:
         trk.open_samples = real_open
 
@@ -999,3 +1026,197 @@ async def test_realtime_unchanged_expected_countdown_confidence_1_two_rows(tr, t
     (r,) = rows(tmp_path)
     assert (r[6], r[8]) == (T0 + 700, 1)
     assert len(samples(tmp_path)) == 2
+
+
+# ---- phase 5b: forecast rows ---------------------------------------------------------------
+import logging  # noqa: E402
+
+M = int(datetime(2025, 11, 1, tzinfo=ZoneInfo("UTC")).timestamp())
+
+
+async def zero_lookup(a):
+    return 0
+
+
+def fc(tmp_path, sql="select a.trip_id,f.horizon_min,f.predicted,f.error_s from forecast f "
+                     "join arrivals a on a.id=f.arrival_id order by 1,2 desc"):
+    return rows(tmp_path, sql)
+
+
+async def run(t, steps, trip="t1", base=T0, **kw):
+    """steps: (ts offset, expected offset, due, realtime) fed in order for one bus."""
+    for off, exp, due, rt in steps:
+        await t.ingest("15", [arr(due, expected=base + exp, scheduled=base + 300, trip=trip, realtime=rt, **kw)], base + off)
+
+
+async def test_forecast_rows_hand_computed(tr, tmp_path):
+    await run(tr, [(0, 1300, 21, True), (700, 1250, 9, True), (1000, 1210, 3, True), (1190, 1200, 0, True)])
+    # actual = T0+1200; h30 has no sample; h20/h10 -> sample@T0; h5 -> @T0+700; h2 -> @T0+1000
+    assert fc(tmp_path) == [("t1", 20, T0 + 1300, -100), ("t1", 10, T0 + 1300, -100),
+                            ("t1", 5, T0 + 1250, -50), ("t1", 2, T0 + 1210, -10)]
+
+
+async def test_forecast_late_bus_positive_error(tr, tmp_path):
+    await run(tr, [(0, 400, 7, True), (400, 460, 0, True)])  # predicted 400, actual 460
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(5, T0 + 400, 60), (2, T0 + 400, 60)]
+
+
+async def test_forecast_first_seen_due_7_only_h5_h2(tr, tmp_path):
+    await run(tr, [(0, 420, 7, True), (400, 400, 0, True)])
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(5, T0 + 420, -20), (2, T0 + 420, -20)]
+
+
+async def test_scheduled_only_gets_arrival_but_no_forecast(tr, tmp_path):
+    await run(tr, [(0, 1300, 21, False), (1190, 1200, 0, False)])
+    assert len(rows(tmp_path)) == 1 and fc(tmp_path) == []
+
+
+async def test_vanish_finalised_gets_forecast(tr, tmp_path):
+    await run(tr, [(0, 540, 9, True), (400, 520, 2, True)])
+    res = await tr.ingest("15", [], T0 + 430)
+    assert res.finalised == 1 and rows(tmp_path, "select confidence from arrivals") == [(0,)]
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(5, T0 + 540, -20), (2, T0 + 520, 0)]
+
+
+def prev_month_file(tmp_path, samples):
+    c = open_samples(tmp_path, M - 3600)
+    c.executemany("insert into sample values(?,?,?,?,?,?,?)", samples)
+    c.commit()
+    c.close()
+
+
+async def test_month_boundary_uses_previous_month(tmp_path):
+    prev_month_file(tmp_path, [(M - 1200, "t1", "s1", 0, 30, M + 700, 1), (M - 100, "t1", "s1", 0, 12, M + 650, 1)])
+    t = Tracker(tmp_path, zero_lookup)
+    await run(t, [(60, 600, 9, True), (590, 600, 0, True)], base=M)
+    t.close()
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [
+        (30, M + 700, -100), (20, M + 700, -100), (10, M + 650, -50), (5, M + 600, 0), (2, M + 600, 0)]
+
+
+async def test_previous_month_missing_is_fine_and_creates_nothing(tmp_path):
+    t = Tracker(tmp_path, zero_lookup)
+    await run(t, [(60, 600, 9, True), (590, 600, 0, True)], base=M)
+    t.close()
+    assert [h for _, h, _, _ in fc(tmp_path)] == [5, 2]
+    assert not (tmp_path / "samples-2025-10.db").exists()
+
+
+async def test_previous_month_not_needed_is_not_opened(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(trk, "open_previous_month", lambda *a: calls.append(a))
+    t = Tracker(tmp_path, zero_lookup)
+    await run(t, [(0, 3000, 50, True), (2990, 3000, 0, True)], base=M)  # actual - 30 min == month start
+    t.close()
+    assert calls == []
+
+
+async def test_previous_month_needed_at_exact_edge(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(trk, "open_previous_month", lambda *a: calls.append(a))
+    t = Tracker(tmp_path, zero_lookup)
+    await run(t, [(0, 1799, 30, True), (1790, 1799, 0, True)], base=M)  # actual - 1800 = M-1 < M
+    t.close()
+    assert len(calls) == 1
+
+
+async def test_corrupt_previous_month_keeps_arrivals_and_other_forecasts(tmp_path, caplog):
+    (tmp_path / "samples-2025-10.db").write_bytes(b"garbage" * 500)
+    t = Tracker(tmp_path, zero_lookup)
+    steps = [(60, 600, 9, True), (590, 600, 0, True)]
+    await run(t, steps[:1], base=M)
+    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="t1"),
+                          arr(9, expected=M + 4000, scheduled=M + 300, trip="far")], M + 590)
+    await t.ingest("15", [arr(0, expected=M + 4000, scheduled=M + 300, trip="far")], M + 3990)
+    t.close()
+    assert len(rows(tmp_path)) == 2
+    assert {r[0] for r in fc(tmp_path)} == {"far"}  # t1 skipped (corrupt prev month), far unaffected
+    assert any("forecast extraction failed" in r.message and "t1" in r.message for r in caplog.records
+               if r.levelno == logging.WARNING)
+
+
+async def test_extraction_error_for_one_arrival_only(tmp_path, monkeypatch, caplog):
+    orig = trk.extract_forecasts
+
+    def flaky(conns, trip, *a):
+        if trip == "bad":
+            raise ValueError("x")
+        return orig(conns, trip, *a)
+
+    monkeypatch.setattr(trk, "extract_forecasts", flaky)
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(9, expected=T0 + 540, trip=x) for x in ("bad", "good")], T0)
+    res = await t.ingest("15", [arr(0, expected=T0 + 540, trip=x) for x in ("bad", "good")], T0 + 540)
+    t.close()
+    assert res.finalised == 2 and len(rows(tmp_path)) == 2
+    assert {r[0] for r in fc(tmp_path)} == {"good"}
+    assert "bad" in caplog.text
+
+
+async def test_duplicate_arrival_ignored_no_forecast_duplicates(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await run(t, [(0, 540, 9, True), (540, 540, 0, True)])
+    t.close()
+    before = fc(tmp_path)
+    assert before
+    t = Tracker(tmp_path, make_lookup())  # restart: same arrival again, ignored by UNIQUE
+    res = await t.ingest("15", [arr(0, expected=T0 + 540)], T0 + 600)
+    t.close()
+    assert res.finalised == 0 and fc(tmp_path) == before and len(rows(tmp_path)) == 1
+
+
+async def test_forecast_rows_roll_back_with_tick(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(9, expected=T0 + 540, trip=x) for x in ("x", "y")], T0)
+    real, n = t._on_finalised, [0]
+
+    def hook(i, r):
+        real(i, r)
+        n[0] += 1
+        if n[0] == 2:
+            raise RuntimeError("boom")
+
+    t._on_finalised = hook
+    with pytest.raises(RuntimeError):
+        await t.ingest("15", [arr(0, expected=T0 + 540, trip=x) for x in ("x", "y")], T0 + 540)
+    assert n[0] == 2 and rows(tmp_path) == [] and fc(tmp_path, "select * from forecast") == []
+    t._on_finalised = real
+    await t.ingest("15", [arr(0, expected=T0 + 540, trip=x) for x in ("x", "y")], T0 + 540)
+    t.close()
+    assert len(fc(tmp_path, "select * from forecast")) == 4  # 2 horizons x 2 arrivals, no leftovers
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_previous_month_connection_closed_after_tick(tmp_path, monkeypatch, fail):
+    prev_month_file(tmp_path, [(M - 1200, "t1", "s1", 0, 30, M + 700, 1)])
+    opened = []
+    real = trk.open_previous_month
+    monkeypatch.setattr(trk, "open_previous_month", lambda *a: opened.append(real(*a)) or opened[-1])
+    t = Tracker(tmp_path, zero_lookup)
+    await run(t, [(60, 600, 9, True)], base=M)
+    if fail:
+        real_hook = t._on_finalised
+
+        def hook(i, r):
+            real_hook(i, r)
+            raise RuntimeError("boom")
+
+        t._on_finalised = hook
+        with pytest.raises(RuntimeError):
+            await run(t, [(590, 600, 0, True)], base=M)
+    else:
+        await run(t, [(590, 600, 0, True)], base=M)
+    t.close()
+    assert len(opened) == 1 and t._prev is None
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("select 1")
+
+
+async def test_previous_month_opened_once_per_tick(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(trk, "open_previous_month", lambda *a: opened.append(a))
+    t = Tracker(tmp_path, zero_lookup)
+    await t.ingest("15", [arr(9, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 60)
+    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 590)
+    t.close()
+    assert len(opened) == 1
