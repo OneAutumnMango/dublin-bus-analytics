@@ -8,6 +8,7 @@ from app.api import router as api_router
 from app.backup_api import router as backup_router
 from app.config import Settings
 from app.poller import LazyTracker, Poller, seq_lookup
+from app.scheduler import BackupScheduler
 from app.serverclient import ServerClient
 
 
@@ -19,12 +20,14 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        task = asyncio.create_task(app.state.poller.run()) if start_background else None
+        tasks = ([asyncio.create_task(app.state.poller.run()),
+                  asyncio.create_task(app.state.scheduler.run())] if start_background else [])
         try:
             yield
         finally:
-            if task:
+            for task in tasks:  # a snapshot already running in a worker thread finishes in the background
                 task.cancel()
+            for task in tasks:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             app.state.tracker.close()
@@ -37,6 +40,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.state.client = client or ServerClient(settings.server_url)
     app.state.tracker = LazyTracker(settings.data_dir, seq_lookup)
     app.state.poller = Poller(settings, app.state.client, app.state.tracker)
+    app.state.scheduler = BackupScheduler(settings)
 
     app.include_router(backup_router)
 

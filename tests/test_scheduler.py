@@ -99,3 +99,371 @@ def test_next_run_property(now, h, m):
         assert local.month == 3 and local.day >= 25
     # nothing earlier qualifies: running again from r gives a later day
     assert next_run(r, t).astimezone(UTC) > r.astimezone(UTC)
+
+
+# ---------------------------------------------------------------- BackupScheduler
+import asyncio
+import logging
+import sqlite3
+import tarfile
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app import backup
+from app.config import Settings
+from app.db import open_meta, open_samples
+from app.main import create_app
+from app.scheduler import BackupScheduler
+
+
+class Stop(Exception):
+    pass
+
+
+class Clock:
+    """Fake clock + fake sleep: sleeping advances the clock; raises Stop after `limit` sleeps."""
+
+    def __init__(self, now, limit=3, drift=None):
+        self.now, self.limit, self.sleeps, self.drift = now, limit, [], drift
+
+    def __call__(self):
+        return self.now
+
+    async def sleep(self, secs):
+        self.sleeps.append(secs)
+        if len(self.sleeps) > self.limit:
+            raise Stop
+        self.now += timedelta(seconds=self.drift if self.drift is not None else secs)
+
+
+def S(tmp_path, **kw):
+    kw.setdefault("backup_dir", tmp_path / "bk")
+    return Settings("http://x", tmp_path / "data", **kw)
+
+
+def stamp_name(dt):
+    return f"analytics-{dt.astimezone(UTC):%Y%m%dT%H%M%SZ}.tar"
+
+
+def put_backup(settings, dt, suffix=""):
+    settings.backup_path.mkdir(parents=True, exist_ok=True)
+    p = settings.backup_path / stamp_name(dt)
+    p.write_bytes(b"x")
+    return p
+
+
+NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+
+
+class Spy:
+    def __init__(self, fail_snapshot=False, fail_compact=False, skip=()):
+        self.calls, self.fail_snapshot, self.fail_compact, self.skip = [], fail_snapshot, fail_compact, skip
+
+    def snap(self, data_dir, backup_dir, keep):
+        self.calls.append(("snapshot", data_dir, backup_dir, keep))
+        if self.fail_snapshot:
+            raise OSError("disk full")
+        return Path(backup_dir) / "analytics-x.tar"
+
+    def compact(self, data_dir, now, skipped=None):
+        self.calls.append(("compact", data_dir, now, skipped))
+        skipped.extend(self.skip)
+        if self.fail_compact:
+            raise RuntimeError("boom")
+        return [Path("a.gz")]
+
+
+def sched(tmp_path, spy, clock=None, **kw):
+    clock = clock or Clock(NOW)
+    return BackupScheduler(S(tmp_path, **kw), now_fn=clock, sleep_fn=clock.sleep,
+                           snapshot_fn=spy.snap, compact_fn=spy.compact), clock
+
+
+async def test_run_once_snapshot_then_compaction_order(tmp_path, caplog):
+    spy = Spy(skip=[Path("samples-2020-01.db")])
+    sc, _ = sched(tmp_path, spy, backup_keep=4)
+    with caplog.at_level(logging.INFO):
+        path = await sc.run_once()
+    assert [c[0] for c in spy.calls] == ["snapshot", "compact"]
+    assert spy.calls[0][1:] == (tmp_path / "data", tmp_path / "bk", 4)
+    assert spy.calls[1][2] == int(NOW.timestamp())
+    assert path == tmp_path / "bk" / "analytics-x.tar"
+    assert any(r.levelno == logging.WARNING and "samples-2020-01.db" in r.message for r in caplog.records)
+
+
+async def test_run_once_no_skipped_no_warning(tmp_path, caplog):
+    sc, _ = sched(tmp_path, Spy())
+    with caplog.at_level(logging.INFO):
+        await sc.run_once()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+async def test_snapshot_failure_skips_compaction_and_loop_continues(tmp_path, caplog):
+    spy = Spy(fail_snapshot=True)
+    sc, clock = sched(tmp_path, spy, Clock(NOW, limit=3))
+    put_backup(sc.settings, NOW)  # recent: no catch-up, only scheduled runs
+    with pytest.raises(Stop):
+        await sc.run()
+    assert [c[0] for c in spy.calls] == ["snapshot"] * 3  # each night retried, never compacted
+    assert any(r.exc_info and "snapshot failed" in r.message for r in caplog.records)
+
+
+async def test_compaction_failure_is_logged_backup_kept(tmp_path, caplog):
+    spy = Spy(fail_compact=True)
+    sc, _ = sched(tmp_path, spy)
+    path = await sc.run_once()
+    assert path is not None
+    assert any(r.exc_info and "compaction failed" in r.message for r in caplog.records)
+
+
+async def test_run_survives_unexpected_exception_from_run_once(tmp_path, caplog):
+    sc, _ = sched(tmp_path, Spy(), Clock(NOW, limit=2))
+    put_backup(sc.settings, NOW)
+    n = []
+
+    async def boom():
+        n.append(1)
+        raise RuntimeError("unexpected")
+
+    sc.run_once = boom
+    with pytest.raises(Stop):
+        await sc.run()
+    assert len(n) == 2 and any("backup run failed" in r.message for r in caplog.records)
+
+
+async def test_disabled_scheduler_never_runs(tmp_path, caplog):
+    spy = Spy()
+    sc, clock = sched(tmp_path, spy, backup_enabled=False)
+    with caplog.at_level(logging.INFO):
+        await sc.run()
+    assert spy.calls == [] and clock.sleeps == []
+    assert [r for r in caplog.records if "disabled" in r.message]
+
+
+async def test_scheduled_runs_happen_at_backup_time(tmp_path):
+    spy = Spy()
+    clock = Clock(d(2026, 6, 10, 12, 0), limit=2)
+    sc, _ = sched(tmp_path, spy, clock, backup_time="03:00")
+    put_backup(sc.settings, clock.now)
+    ran_at = []
+    orig = sc.run_once
+
+    async def rec():
+        ran_at.append(clock.now.astimezone(DUB))
+        return await orig()
+
+    sc.run_once = rec
+    with pytest.raises(Stop):
+        await sc.run()
+    assert [(r.day, r.hour, r.minute) for r in ran_at] == [(11, 3, 0), (12, 3, 0)]
+    assert clock.sleeps[0] == 15 * 3600
+
+
+async def test_catch_up_when_last_backup_older_than_24h(tmp_path):
+    spy = Spy()
+    sc, clock = sched(tmp_path, spy, Clock(NOW, limit=0))
+    put_backup(sc.settings, NOW - timedelta(hours=24, seconds=1))
+    with pytest.raises(Stop):
+        await sc.run()
+    assert [c[0] for c in spy.calls] == ["snapshot", "compact"]  # ran before the first sleep
+
+
+async def test_no_catch_up_when_recent_backup(tmp_path):
+    spy = Spy()
+    sc, _ = sched(tmp_path, spy, Clock(NOW, limit=0))
+    put_backup(sc.settings, NOW - timedelta(hours=24))  # exactly 24h: not older
+    with pytest.raises(Stop):
+        await sc.run()
+    assert spy.calls == []
+
+
+async def test_catch_up_ignores_future_dated_backups(tmp_path):
+    spy = Spy()
+    sc, _ = sched(tmp_path, spy, Clock(NOW, limit=0))
+    put_backup(sc.settings, NOW + timedelta(days=30))
+    with pytest.raises(Stop):
+        await sc.run()
+    assert len(spy.calls) == 2
+
+
+async def test_catch_up_when_no_backups(tmp_path):
+    spy = Spy()
+    sc, _ = sched(tmp_path, spy, Clock(NOW, limit=0))
+    with pytest.raises(Stop):
+        await sc.run()
+    assert len(spy.calls) == 2
+
+
+async def test_catch_up_when_backup_dir_unlistable(tmp_path, monkeypatch, caplog):
+    spy = Spy()
+    sc, _ = sched(tmp_path, spy, Clock(NOW, limit=0))
+
+    def bad(_):
+        raise PermissionError("no")
+
+    monkeypatch.setattr(backup, "list_backups", bad)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert len(spy.calls) == 2 and any("cannot list" in r.message for r in caplog.records)
+
+
+async def test_clock_jump_backwards_does_not_spin(tmp_path):
+    spy = Spy()
+    # every sleep moves the clock BACK an hour: the loop must still sleep >= 1s and never run early
+    clock = Clock(d(2026, 6, 10, 2, 59, 59), limit=5, drift=-3600)
+    sc, _ = sched(tmp_path, spy, clock, backup_time="03:00")
+    put_backup(sc.settings, clock.now)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert min(clock.sleeps) >= 1.0 and len(clock.sleeps) == 6
+    assert spy.calls == []  # never due, never ran early
+
+
+async def test_sleep_never_below_one_second_when_due_now(tmp_path):
+    clock = Clock(d(2026, 6, 10, 2, 59, 59, ), limit=0)
+    clock.now += timedelta(microseconds=999_999)
+    sc, _ = sched(tmp_path, Spy(), clock, backup_time="03:00")
+    put_backup(sc.settings, clock.now)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert clock.sleeps == [1.0]
+
+
+async def test_run_cancellation_is_clean(tmp_path):
+    started = asyncio.Event()
+
+    async def slow(_):
+        started.set()
+        await asyncio.sleep(3600)
+
+    spy = Spy()
+    sc = BackupScheduler(S(tmp_path), now_fn=lambda: NOW, sleep_fn=slow, snapshot_fn=spy.snap,
+                         compact_fn=spy.compact)
+    put_backup(sc.settings, NOW)
+    t = asyncio.create_task(sc.run())
+    await started.wait()
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    assert [x for x in asyncio.all_tasks() if x is not asyncio.current_task()] == []
+
+
+async def test_cancel_during_blocking_snapshot_returns_promptly(tmp_path):
+    import threading
+    release, entered = threading.Event(), threading.Event()
+
+    def blocking(data_dir, backup_dir, keep):
+        entered.set()
+        release.wait(5)
+        return Path("x")
+
+    sc = BackupScheduler(S(tmp_path), now_fn=lambda: NOW, snapshot_fn=blocking, compact_fn=Spy().compact)
+    t = asyncio.create_task(sc.run())  # no backups -> catch-up -> blocks in the worker thread
+    await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(t, 2)  # does not wait for the thread
+    release.set()
+
+
+# ------------------------------------------------------------- real snapshot / compaction
+def mk_data(data_dir, month=(2020, 1)):
+    data_dir.mkdir(parents=True, exist_ok=True)
+    c = open_meta(data_dir)
+    c.execute("insert into routes_tracked values('15', 1)")
+    c.commit()
+    c.close()
+    ts = int(datetime(*month, 5, tzinfo=UTC).timestamp())
+    c = open_samples(data_dir, ts)
+    c.execute("insert into sample values(?,?,?,?,?,?,?)", (ts, "t", "s", 1, 3, 100, 1))
+    c.commit()
+    c.close()
+
+
+async def test_retention_uses_backup_keep_and_backup_dir(tmp_path):
+    mk_data(tmp_path / "data")
+    sc = BackupScheduler(S(tmp_path, backup_keep=3))
+    paths = [await sc.run_once() for _ in range(6)]
+    assert all(p is not None and p.parent == tmp_path / "bk" for p in paths)
+    kept = backup.list_backups(tmp_path / "bk")
+    assert len(kept) == 3 and kept == sorted(paths)[-3:]
+    assert not (tmp_path / "data" / "backups").exists()
+
+
+async def test_end_to_end_real_run_once_tar_and_gz(tmp_path):
+    data = tmp_path / "data"
+    mk_data(data)
+    clock = Clock(datetime(2026, 6, 10, tzinfo=UTC))  # 2020-01 ended years ago: past the grace
+    sc = BackupScheduler(S(tmp_path), now_fn=clock)
+    path = await sc.run_once()
+    assert path.suffix == ".tar"
+    with tarfile.open(path) as t:
+        assert sorted(t.getnames()) == ["meta.db", "samples-2020-01.db"]  # snapshot taken BEFORE compaction
+    assert (data / "samples-2020-01.db.gz").exists() and not (data / "samples-2020-01.db").exists()
+    assert (data / "meta.db").exists()
+
+
+async def test_end_to_end_month_inside_grace_not_compacted(tmp_path):
+    data = tmp_path / "data"
+    mk_data(data, (2026, 6))
+    sc = BackupScheduler(S(tmp_path), now_fn=Clock(datetime(2026, 7, 2, 23, tzinfo=UTC)))  # < 2 days after
+    await sc.run_once()
+    assert (data / "samples-2026-06.db").exists()
+
+
+async def test_backup_dir_unwritable_logged_not_fatal(tmp_path, caplog):
+    mk_data(tmp_path / "data")
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    sc = BackupScheduler(S(tmp_path, backup_dir=blocker / "sub"), now_fn=Clock(datetime(2026, 6, 10, tzinfo=UTC)))
+    assert await sc.run_once() is None
+    assert any(r.exc_info and "snapshot failed" in r.message for r in caplog.records)
+    assert (tmp_path / "data" / "samples-2020-01.db").exists()  # originals untouched without a backup
+
+
+async def test_backup_dir_inside_data_dir_not_recursively_backed_up(tmp_path):
+    mk_data(tmp_path / "data")
+    sc = BackupScheduler(S(tmp_path, backup_dir=tmp_path / "data" / "backups"),
+                         now_fn=Clock(datetime(2020, 1, 6, tzinfo=UTC)))
+    await sc.run_once()
+    p2 = await sc.run_once()
+    with tarfile.open(p2) as t:
+        assert all("/" not in n and not n.startswith("analytics-") for n in t.getnames())
+
+
+# ---------------------------------------------------------------- lifespan
+def _app(tmp_path, bg, **kw):
+    from app.serverclient import ServerClient
+    return create_app(S(tmp_path, **kw), start_background=bg, client=ServerClient("http://fake"))
+
+
+def test_lifespan_starts_and_cancels_scheduler_cleanly(tmp_path, monkeypatch):
+    ran = []
+
+    async def fake_run(self):
+        ran.append("start")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            ran.append("cancelled")
+            raise
+
+    monkeypatch.setattr(BackupScheduler, "run", fake_run)
+    app = _app(tmp_path, True)
+    with TestClient(app) as c:
+        assert c.get("/api/health").status_code == 200
+    assert ran == ["start", "cancelled"]
+
+
+def test_lifespan_real_scheduler_disabled_exits_without_error(tmp_path):
+    with TestClient(_app(tmp_path, True, backup_enabled=False)) as c:
+        assert c.get("/api/health").status_code == 200
+
+
+def test_lifespan_no_scheduler_without_background(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(BackupScheduler, "run", lambda self: called.append(1))
+    with TestClient(_app(tmp_path, False)):
+        pass
+    assert called == []
