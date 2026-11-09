@@ -61,8 +61,8 @@ async def test_unchanged_sample_not_rewritten(tr, tmp_path):
     r3 = await tr.ingest("15", [arr(5, expected=T0 + 400)], T0 + 60)  # expected changed
     r4 = await tr.ingest("15", [arr(4, expected=T0 + 400)], T0 + 90)  # due changed
     r5 = await tr.ingest("15", [arr(4, expected=T0 + 400, realtime=False)], T0 + 120)  # realtime changed
-    assert [r.samples_written for r in (r1, r2, r3, r4, r5)] == [1, 0, 1, 1, 1]
-    assert [s[0] for s in samples(tmp_path)] == [T0, T0 + 60, T0 + 90, T0 + 120]
+    assert [r.samples_written for r in (r1, r2, r3, r4, r5)] == [1, 0, 1, 0, 1]  # due alone never writes
+    assert [s[0] for s in samples(tmp_path)] == [T0, T0 + 60, T0 + 120]
 
 
 async def test_due_zero_finalises_with_confidence_1_and_delay_actual_minus_scheduled(tr, tmp_path):
@@ -462,7 +462,8 @@ async def test_property_invariants(tmp_path_factory, ticks):
     try:
         for key in sc.execute("select distinct trip_id,stop_id,seq from sample").fetchall():
             seq_rows = sc.execute("select due_min,expected,realtime from sample where trip_id=? and stop_id=? and seq=? order by ts", key).fetchall()
-            assert all(x != y for x, y in zip(seq_rows, seq_rows[1:]))  # change-only
+            # change-only: consecutive rows differ in (expected, realtime), except the due<=0 row
+            assert all(x[1:] != y[1:] or y[0] <= 0 for x, y in zip(seq_rows, seq_rows[1:]))
     finally:
         sc.close()
     assert {(r[0], r[1], r[2]) for r in arrivals} == {k for k, v in model.items() if v["done"]}
@@ -776,4 +777,196 @@ async def test_invalid_arrival_shields_live_key_from_vanish(tmp_path):
     assert (r.skipped, r.finalised, r.dropped) == (1, 0, 0)
     r = await t.ingest("15", [], T0 + 60)
     assert r.finalised == 1
+    t.close()
+
+
+def snapshot(t):
+    return copy.deepcopy(({k: v.__dict__ for k, v in t._live.items()}, t._finalised, t._seq, t._last_now))
+
+
+async def test_failed_tick_restores_every_live_state(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(5, trip="A"), arr(5, trip="C"), arr(2, trip="B")], T0)
+    before = snapshot(t)
+    calls = []
+
+    def hook(i, row):
+        calls.append(i)
+        if len(calls) == 2:
+            raise RuntimeError("later key")
+    t._on_finalised = hook
+    # A updated; D finalised (hook 1); C dropped; B vanish-finalised (hook 2 raises)
+    with pytest.raises(RuntimeError):
+        await t.ingest("15", [arr(4, trip="A", expected=T0 + 9), arr(0, trip="D")], T0 + 30)
+    assert before == snapshot(t)
+    assert rows(tmp_path) == []
+    t.close()
+
+
+class Boom(Exception):
+    pass
+
+
+class _Inj:
+    point = None
+    n = 0
+
+    def hit(self, p):
+        if self.point == p:
+            self.n -= 1
+            if self.n <= 0:
+                self.point = None
+                raise Boom(p)
+
+
+class _Proxy:
+    def __init__(self, c, tag, inj):
+        self._c, self._tag, self._inj = c, tag, inj
+
+    def execute(self, *a):
+        self._inj.hit(self._tag + ".execute")
+        return self._c.execute(*a)
+
+    def commit(self):
+        self._inj.hit(self._tag + ".commit")
+        return self._c.commit()
+
+    def __getattr__(self, k):
+        return getattr(self._c, k)
+
+
+def dbdump(d):
+    from pathlib import Path
+    out = []
+    c = sqlite3.connect(Path(d) / "meta.db")
+    out.append(c.execute("select trip_id,stop_id,seq,actual,confidence from arrivals order by 1,2,3").fetchall())
+    c.close()
+    for f in sorted(Path(d).glob("samples-*.db")):
+        c = sqlite3.connect(f)
+        r = c.execute("select * from sample order by 1,2,3,4").fetchall()
+        c.close()
+        if r:  # a freshly created empty month file is not a state change
+            out.append((f.name, r))
+    return out
+
+
+POINTS = ["meta.execute", "meta.commit", "samples.execute", "samples.commit", "open_samples", "hook", "lookup_cancel"]
+
+
+@given(st.integers(0, 10**6))
+@settings(max_examples=40, deadline=None)
+async def test_failure_injection_oracle(seed):
+    import random
+    import tempfile
+    rnd = random.Random(seed)
+    inj = _Inj()
+    base = int(datetime(2025, 10, 31, 23, 50, tzinfo=ZoneInfo("UTC")).timestamp())  # month rollover inside
+    d1, d2 = tempfile.mkdtemp(), tempfile.mkdtemp()
+    real_open = trk.open_samples
+
+    def open_samples(d, ts):
+        inj.hit("open_samples")
+        return _Proxy(real_open(d, ts), "samples", inj)
+
+    async def lookup(a):
+        if inj.point == "lookup_cancel":
+            inj.n -= 1
+            if inj.n <= 0:
+                inj.point = None
+                raise asyncio.CancelledError()
+        return max(0, (a.scheduled - base - 300) // 3600)
+
+    async def plain(a):
+        return max(0, (a.scheduled - base - 300) // 3600)
+
+    trk.open_samples = open_samples
+    try:
+        t = Tracker(d1, lookup)
+        t.meta = _Proxy(t.meta, "meta", inj)
+        ref = Tracker(d2, plain)
+        t._on_finalised = lambda i, r: inj.hit("hook")
+        keys = [(f"t{i}", f"s{j}", k) for i in range(3) for j in range(2) for k in range(2)]
+        now = base
+        sc_failed = False
+        for _ in range(15):
+            now += rnd.choice([15, 30, 30, 45, 600])
+            al = [Arrival(stop_id=k[1], trip_id=k[0], route="r", due_min=(due := rnd.randint(-1, 6)),
+                          expected=now + due * 60 + rnd.randint(-5, 5), scheduled=base + 300 + k[2] * 3600,
+                          delay=0, realtime=rnd.random() < .8, vehicle_id=None, possibly_passed=False)
+                  for k in rnd.sample(keys, rnd.randint(0, len(keys)))]
+            before, dbb = snapshot(t), dbdump(d1)
+            point = None
+            if rnd.random() < 0.4:
+                point = inj.point = rnd.choice(POINTS)
+                inj.n = rnd.randint(1, 4)
+            try:
+                await t.ingest("r", al, now)
+                failed = False
+            except (Boom, asyncio.CancelledError):
+                failed = True
+            inj.point = None
+            if failed:
+                assert snapshot(t) == before, point
+                if point == "samples.commit":
+                    sc_failed = True  # meta commit already happened: documented non-atomic window
+                else:
+                    assert dbdump(d1) == dbb, point
+            else:
+                await ref.ingest("r", al, now)
+        t.close()
+        ref.close()
+        if not sc_failed:
+            assert dbdump(d1)[0] == dbdump(d2)[0]
+    finally:
+        trk.open_samples = real_open
+
+
+async def countdown(t, start, exp_at=lambda due: T0 + 1800, rt=lambda due: True, trip="t1"):
+    n = 0
+    for i, due in enumerate(range(start, -1, -1)):
+        r = await t.ingest("15", [arr(due, expected=exp_at(due), realtime=rt(due), trip=trip,
+                                      scheduled=T0 + 1800)], T0 + 60 * i)
+        n += r.samples_written
+    return n
+
+
+async def test_countdown_unchanged_expected_writes_two_rows(tr, tmp_path):
+    assert await countdown(tr, 30) == 2
+    assert [s[4] for s in samples(tmp_path)] == [30, 0]
+    (row,) = rows(tmp_path)
+    assert (row[8], row[6]) == (1, T0 + 1800)
+
+
+async def test_expected_change_writes_row_each_change(tr):
+    assert await countdown(tr, 30, exp_at=lambda due: T0 + 1800 + (due // 10) * 5) == 1 + 3 + 1  # 30->20->10->0 changes + zero row
+
+
+async def test_realtime_flip_writes_row(tr):
+    assert await countdown(tr, 10, rt=lambda due: due > 5) == 1 + 1 + 1  # first, flip, zero row
+
+
+async def test_scheduled_only_countdown_two_rows(tr, tmp_path):
+    assert await countdown(tr, 30, rt=lambda due: False) == 2
+    assert {s[6] for s in samples(tmp_path)} == {0}
+    assert rows(tmp_path)[0][9] == 0
+
+
+async def test_bus_60_to_0_prediction_change_every_5_min(tr):
+    n = await countdown(tr, 60, exp_at=lambda due: T0 + 3600 + (due // 5) * 7)
+    # before the storage rule: one row per minute (61); after: first + 12 prediction changes + zero row
+    assert n == 14
+
+
+async def test_pure_phase_failure_shields_same_trip_stop_live_keys(tmp_path, monkeypatch):
+    orig = Tracker._row
+
+    def row(key, st):
+        if key[2] == 1:
+            raise RuntimeError("unexpected")
+        return orig(key, st)
+    monkeypatch.setattr(Tracker, "_row", staticmethod(row))
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(1, trip="x", scheduled=T0 + 300)], T0)
+    r = await t.ingest("15", [arr(0, trip="x", scheduled=T0 + 300 + 3600)], T0 + 30)  # seq 1 raises
+    assert (r.skipped, r.finalised, r.dropped) == (1, 0, 0)  # seq 0 not falsely vanished
     t.close()

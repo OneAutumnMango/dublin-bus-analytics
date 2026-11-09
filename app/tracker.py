@@ -1,5 +1,11 @@
 """Tracker: turns per-tick route arrivals into change-only samples and finalised arrivals.
 
+Storage rule: a sample row is written only when the key is first seen, when (expected, realtime)
+changed versus its last written row, or on the first observation with due_min <= 0 (so the series
+visibly reaches 0). A change in due_min alone is not stored (it is derivable from expected - ts).
+In-memory state (last due, saw_zero, actual, ...) still updates every tick, so finalise, vanish,
+actual and confidence behave independently of what was written.
+
 Seq lookups (possibly slow I/O) are resolved before the lock is taken, concurrently (max 8 in
 flight, each bounded by lookup_timeout); the lock then covers only state mutation and DB writes.
 A trip whose lookup fails is skipped for the rest of the tick and not retried for NEG_TTL_S.
@@ -268,8 +274,12 @@ class Tracker:
                 old = self._live.get(key)
                 st = copy.copy(old) if old else _State(route, a.scheduled, (), a.due_min, None, False, False)
                 sample = (a.due_min, a.expected, int(a.realtime))
-                write = sample != st.last_sample
-                st.last_sample = sample
+                # storage rule: row only on first sight, a change of (expected, realtime), or the
+                # first due<=0 observation; a due_min change alone is derivable and not stored
+                write = (not st.last_sample or sample[1:] != st.last_sample[1:]
+                         or (a.due_min <= 0 and not st.saw_zero))
+                if write:
+                    st.last_sample = sample
                 st.gone_at = None
                 st.last_due = a.due_min
                 st.ever_realtime |= a.realtime
