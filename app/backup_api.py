@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.backup import list_backups, snapshot
+from app.backup import list_backups, newest_backup, snapshot
 
 router = APIRouter()
 
@@ -19,8 +19,12 @@ def create_backup(request: Request):
 
 
 @router.get("/api/backup/download")
-def download_backup(request: Request):
-    tars = list_backups(_dir(request))
-    if not tars:
-        raise HTTPException(404, "no backups")
-    return FileResponse(tars[-1], media_type="application/x-tar", filename=tars[-1].name)
+def download_backup(request: Request, file: str | None = None):
+    # `file` must exactly equal a listed backup name; it is never used as a path
+    if file is None:
+        p = newest_backup(_dir(request))
+    else:
+        p = next((t for t in list_backups(_dir(request)) if t.name == file), None)
+    if p is None:
+        raise HTTPException(404, "no such backup")
+    return FileResponse(p, media_type="application/x-tar", filename=p.name)

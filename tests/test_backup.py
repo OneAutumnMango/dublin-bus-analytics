@@ -1,8 +1,14 @@
 import gc
+import logging
+import os
+import subprocess
+import sys
+import tempfile
 import gzip
 import hashlib
 import sqlite3
 import tarfile
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -139,11 +145,11 @@ def test_snapshot_retention_keeps_7(data, tmp_path):
     bk = tmp_path / "bk"
     for i in range(10):
         (bk).mkdir(exist_ok=True)
-        (bk / f"analytics-2020010{i}T000000Z.tar").write_bytes(b"x")
+        (bk / f"analytics-202001{i + 1:02d}T000000Z.tar").write_bytes(b"x")
     new = snapshot(data, bk)
     kept = list_backups(bk)
     assert len(kept) == 7 and kept[-1] == new
-    assert [p.name for p in kept[:-1]] == [f"analytics-2020010{i}T000000Z.tar" for i in range(4, 10)]
+    assert [p.name for p in kept[:-1]] == [f"analytics-202001{i + 1:02d}T000000Z.tar" for i in range(4, 10)]
 
 
 def test_retention_keep1_keep0_and_fewer(data, tmp_path):
@@ -379,6 +385,24 @@ def test_readonly_plain_month_is_readonly(data):
     c.close()
 
 
+@pytest.fixture
+def private_tmp(tmp_path, monkeypatch):
+    d = tmp_path / "tmpdir"
+    d.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(d))
+    monkeypatch.setenv("TMPDIR", str(d))
+    return d
+
+
+@pytest.fixture
+def private_tmp(tmp_path, monkeypatch):
+    d = tmp_path / "tmpdir"
+    d.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(d))
+    monkeypatch.setenv("TMPDIR", str(d))
+    return d
+
+
 def _tmp_left(before):
     import tempfile
     return set(Path(tempfile.gettempdir()).glob("samples-ro-*")) - before
@@ -389,7 +413,7 @@ def _tmp_before():
     return set(Path(tempfile.gettempdir()).glob("samples-ro-*"))
 
 
-def test_readonly_gz_tempfile_removed_on_close(data):
+def test_readonly_gz_tempfile_removed_on_close(data, private_tmp):
     compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
@@ -400,7 +424,7 @@ def test_readonly_gz_tempfile_removed_on_close(data):
     assert not (data / "samples-2026-09.db").exists()  # never created in data_dir
 
 
-def test_readonly_gz_tempfile_removed_on_gc(data):
+def test_readonly_gz_tempfile_removed_on_gc(data, private_tmp):
     compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
@@ -409,7 +433,7 @@ def test_readonly_gz_tempfile_removed_on_gc(data):
     assert _tmp_left(before) == set()
 
 
-def test_readonly_gz_tempfile_removed_on_exception(data):
+def test_readonly_gz_tempfile_removed_on_exception(data, private_tmp):
     compact_closed_months(data, ts(2026, 10, 3))
     before = _tmp_before()
     c = open_samples_readonly(data, ts(2026, 9, 7))
@@ -421,7 +445,7 @@ def test_readonly_gz_tempfile_removed_on_exception(data):
     assert _tmp_left(before) == set()
 
 
-def test_readonly_bad_gz_cleans_up(tmp_path):
+def test_readonly_bad_gz_cleans_up(tmp_path, private_tmp):
     (tmp_path / "samples-2026-01.db.gz").write_bytes(b"not gzip")
     before = _tmp_before()
     with pytest.raises(OSError):
@@ -464,46 +488,11 @@ def test_api_download_404_without_backups(client):
     assert client.get("/api/backup/download").status_code == 404
 
 
-def test_api_download_returns_newest_and_no_filename_param(client, data):
+def test_api_download_returns_newest(client, data):
     client.post("/api/backup")
     last = client.post("/api/backup").json()["file"]
-    d = client.get("/api/backup/download", params={"file": "../../meta.db"})
+    d = client.get("/api/backup/download")
     assert d.content == (data / "backups" / last).read_bytes()
-    assert client.get("/api/backup/download/../../meta.db").status_code in (404, 405)
-
-
-def test_readonly_close_tolerates_missing_tempfile(data):
-    compact_closed_months(data, ts(2026, 10, 3))
-    before = _tmp_before()
-    c = open_samples_readonly(data, ts(2026, 9, 7))
-    for f in _tmp_left(before):
-        f.unlink()
-    c.close()
-
-
-def test_too_many_same_second_snapshots(data, tmp_path, monkeypatch):
-    def exists(a, b):
-        raise FileExistsError
-
-    monkeypatch.setattr(backup.os, "link", exists)
-    with pytest.raises(RuntimeError):
-        snapshot(data, tmp_path / "bk")
-    assert [p.name for p in (tmp_path / "bk").iterdir()] == []
-
-
-def test_verify_rejects_integrity_failure(tmp_path):
-    c = sqlite3.connect(tmp_path / "a.db")
-    c.execute("create table t(x int primary key)")
-    c.execute("insert into t values(1)")
-    c.commit()
-    c.close()
-    raw = bytearray((tmp_path / "a.db").read_bytes())
-    raw[4096:8192] = b"\xff" * 4096  # destroy the table root page
-    gz = tmp_path / "bad.db.gz"
-    gz.write_bytes(gzip.compress(bytes(raw)))
-    with pytest.raises(sqlite3.DatabaseError):
-        backup._verify_gz(gz, hashlib.sha256(bytes(raw)).hexdigest())
-    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("verify")] == []
 
 
 # ---- fix round 1 ----
@@ -663,14 +652,13 @@ def test_api_download_ignores_directory_named_like_backup(client, data):
 
 
 def test_clock_behind_newest_backup_keeps_final(data, tmp_path):
-    import os
     bk = tmp_path / "bk"
     bk.mkdir()
     future = bk / "analytics-20990101T000000Z.tar"
     future.write_bytes(b"x")
-    os.utime(future, (time.time() + 1000, time.time() + 1000))
     p = snapshot(data, bk, keep=1)
-    assert p.exists() and list_backups(bk) == [p]
+    assert p.exists() and future.exists()  # final kept; future-dated file is neither counted nor deleted
+    assert list_backups(bk) == [p, future]
 
 
 def test_link_unsupported_falls_back(data, tmp_path, monkeypatch):
@@ -723,11 +711,229 @@ def test_snapshot_cleans_only_stale_own_leftovers(data, tmp_path):
 
 
 def test_compaction_cleans_only_stale_own_leftovers(data):
-    for n in ("verify-old.db", "verify-old.db-wal", "samples-2020-01.db.gz.tmp", "notes.txt", "verify-new.db"):
+    for n in ("verify-abcd1234.db", "verify-abcd1234.db-wal", "samples-2020-01.db.gz.tmp", "notes.txt", "verify-new12345.db"):
         (data / n).write_text("x")
-    for n in ("verify-old.db", "verify-old.db-wal", "samples-2020-01.db.gz.tmp", "notes.txt"):
+    for n in ("verify-abcd1234.db", "verify-abcd1234.db-wal", "samples-2020-01.db.gz.tmp", "notes.txt"):
         _age(data / n, 7200)
     compact_closed_months(data, ts(2026, 10, 3))
-    assert sorted(p.name for p in data.glob("verify-*")) == ["verify-new.db"]
+    assert sorted(p.name for p in data.glob("verify-*")) == ["verify-new12345.db"]
     assert not (data / "samples-2020-01.db.gz.tmp").exists()
     assert (data / "notes.txt").exists()
+
+
+# ---- fix round 2 ----
+
+def test_crash_wal_compaction_keeps_all_rows(tmp_path):
+    d = tmp_path / "data"
+    d.mkdir()
+    code = (
+        "import os,sys\nfrom pathlib import Path\nfrom app.db import open_samples\n"
+        "c = open_samples(Path(sys.argv[1]), int(sys.argv[2]))\n"
+        "c.execute('pragma wal_autocheckpoint=0')\n"
+        "c.executemany('insert into sample values(?,?,?,?,?,?,?)', [(i,'t','s',i,1,i,1) for i in range(500)])\n"
+        "c.commit()\nos._exit(0)\n")
+    root = Path(__file__).resolve().parent.parent
+    subprocess.run([sys.executable, "-c", code, str(d), str(ts(2026, 1, 5))], check=True, cwd=root,
+                   env={**os.environ, "PYTHONPATH": str(root)})
+    db = d / "samples-2026-01.db"
+    assert (d / "samples-2026-01.db-wal").stat().st_size > 4 * db.stat().st_size  # data only in the WAL
+    assert compact_closed_months(d, ts(2026, 6, 1)) == [d / "samples-2026-01.db.gz"]
+    assert not db.exists() and not (d / "samples-2026-01.db-wal").exists()
+    c = open_samples_readonly(d, ts(2026, 1, 5))
+    assert c.execute("select count(*) from sample").fetchone() == (500,)
+    c.close()
+    raw = tmp_path / "raw.db"
+    raw.write_bytes(gzip.open(d / "samples-2026-01.db.gz").read())
+    assert rows(raw, "select count(*) from sample") == [(500,)]
+
+
+def test_non_wal_month_with_reserved_writer_skipped(tmp_path, caplog):
+    f = tmp_path / "samples-2026-01.db"
+    c = sqlite3.connect(f, isolation_level=None)
+    c.execute("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, expected int, realtime int)")
+    c.execute("begin")
+    c.executemany("insert into sample values(?,?,?,?,?,?,?)", [(i, "t", "s", i, 1, i, 1) for i in range(50)])
+    c.execute("commit")
+    c.execute("begin immediate")
+    c.execute("insert into sample values(99,'t','s',99,1,1,1)")
+    sk = []
+    try:
+        assert compact_closed_months(tmp_path, ts(2026, 6, 1), skipped=sk) == []
+    finally:
+        c.execute("commit")
+        c.close()
+    assert sk == [f] and not (tmp_path / "samples-2026-01.db.gz").exists()
+    assert "skipped" in caplog.text
+    assert rows(f, "select count(*) from sample") == [(51,)]
+
+
+def test_stale_cleanup_exact_shapes(data):
+    keep = ["foo.tmp", "verify-x.txt", "verify-important.db", "my.db.gz.tmp", "verify-abcd1234.txt"]
+    gone = ["verify-abcd1234.db", "verify-abcd1234.db-journal", "samples-2020-01.db.gz.tmp"]
+    for n in keep + gone:
+        (data / n).write_text("x")
+        _age(data / n, 7200)
+    compact_closed_months(data, ts(2026, 10, 3))
+    assert all((data / n).exists() for n in keep)
+    assert not any((data / n).exists() for n in gone)
+
+
+def test_existing_gz_appearing_midway_is_not_overwritten(data, monkeypatch):
+    gz = data / "samples-2026-09.db.gz"
+    orig = backup._verify_gz
+
+    def appear(g, sha):
+        orig(g, sha)
+        gz.write_bytes(b"precious")
+
+    monkeypatch.setattr(backup, "_verify_gz", appear)
+    sk = []
+    assert compact_closed_months(data, ts(2026, 10, 3), skipped=sk) == []
+    assert gz.read_bytes() == b"precious" and sk == [data / "samples-2026-09.db"]
+    assert (data / "samples-2026-09.db").exists() and not list(data.glob("*.tmp"))
+
+
+def test_skipped_differing_plain_and_gz(data):
+    compact_closed_months(data, ts(2026, 10, 3))
+    other = sqlite3.connect(data / "samples-2026-09.db")
+    other.execute("create table z(x)")
+    other.commit()
+    other.close()
+    sk = []
+    assert compact_closed_months(data, ts(2026, 10, 3), skipped=sk) == []
+    assert sk == [data / "samples-2026-09.db"]  # the not-yet-eligible October is not reported
+
+
+def test_skipped_verification_failure_and_readonly(data, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(backup, "_integrity", lambda p: [("bad",)])
+        sk = []
+        assert compact_closed_months(data, ts(2026, 12, 3), skipped=sk) == []
+        assert sk == [data / "samples-2026-09.db", data / "samples-2026-10.db"]
+    real_open = open
+
+    def ro(file, mode="r", *a, **k):
+        if "w" in mode and str(file).endswith(".gz.tmp"):
+            raise PermissionError("read-only fs")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr("builtins.open", ro)
+    sk = []
+    assert compact_closed_months(data, ts(2026, 12, 3), skipped=sk) == []
+    assert len(sk) == 2
+
+
+def test_fallback_unlinks_placeholder_when_replace_fails(data, tmp_path, monkeypatch):
+    monkeypatch.setattr(backup.os, "link", lambda a, b: (_ for _ in ()).throw(PermissionError()))
+    monkeypatch.setattr(backup.os, "replace", lambda a, b: (_ for _ in ()).throw(OSError("replace boom")))
+    bk = tmp_path / "bk"
+    with pytest.raises(OSError, match="replace boom"):
+        snapshot(data, bk)
+    assert list(bk.iterdir()) == []
+
+
+def test_zero_byte_and_impossible_date_backups_ignored(tmp_path):
+    (tmp_path / "analytics-20200101T000000Z.tar").write_bytes(b"")
+    (tmp_path / "analytics-20201301T000000Z.tar").write_bytes(b"x")
+    (tmp_path / "analytics-20200102T000000Z.tar").write_bytes(b"x")
+    assert [p.name for p in list_backups(tmp_path)] == ["analytics-20200102T000000Z.tar"]
+
+
+def _mk(bk, name, mtime=None, body=b"x"):
+    bk.mkdir(exist_ok=True)
+    (bk / name).write_bytes(body)
+    if mtime:
+        os.utime(bk / name, (mtime, mtime))
+
+
+def test_order_by_name_not_mtime(tmp_path):
+    _mk(tmp_path, "analytics-20200101T000000Z.tar", mtime=time.time() + 5000)
+    _mk(tmp_path, "analytics-20200102T000000Z.tar", mtime=1)
+    assert [p.name[10:18] for p in list_backups(tmp_path)] == ["20200101", "20200102"]
+    assert backup.newest_backup(tmp_path).name == "analytics-20200102T000000Z.tar"
+
+
+def test_newest_backup_none_when_empty(tmp_path):
+    assert backup.newest_backup(tmp_path) is None
+
+
+def test_future_dated_never_default_and_warned(client, data, caplog):
+    client.post("/api/backup")
+    last = client.post("/api/backup").json()["file"]
+    _mk(data / "backups", "analytics-20990101T000000Z.tar", body=b"FUTURE")
+    with caplog.at_level(logging.WARNING):
+        d = client.get("/api/backup/download")
+    assert d.content == (data / "backups" / last).read_bytes()
+    assert "future-dated" in caplog.text
+
+
+def test_only_future_dated_falls_back(client, data):
+    _mk(data / "backups", "analytics-20990101T000000Z.tar", body=b"FUTURE")
+    assert client.get("/api/backup/download").content == b"FUTURE"
+
+
+def test_future_dated_not_counted_in_retention(data, tmp_path):
+    bk = tmp_path / "bk"
+    _mk(bk, "analytics-20200101T000000Z.tar")
+    _mk(bk, "analytics-20200102T000000Z.tar")
+    _mk(bk, "analytics-20990101T000000Z.tar")
+    p = snapshot(data, bk, keep=2)
+    names = [x.name for x in list_backups(bk)]
+    assert "analytics-20200101T000000Z.tar" not in names  # oldest real one retired
+    assert "analytics-20200102T000000Z.tar" in names and p.name in names
+    assert "analytics-20990101T000000Z.tar" in names  # untouched
+
+
+def test_touching_old_tar_changes_nothing(data, tmp_path):
+    bk = tmp_path / "bk"
+    for i in (1, 2, 3):
+        _mk(bk, f"analytics-2020010{i}T000000Z.tar")
+    os.utime(bk / "analytics-20200101T000000Z.tar", (time.time() + 99, time.time() + 99))
+    p = snapshot(data, bk, keep=2)
+    assert [x.name[10:18] for x in list_backups(bk)] == ["20200103", p.name[10:18]]
+
+
+def test_api_file_param_exact_match(client, data):
+    a = client.post("/api/backup").json()["file"]
+    _mk(data / "backups", "analytics-20200101T000000Z.tar", body=b"OLD")
+    assert client.get("/api/backup/download", params={"file": "analytics-20200101T000000Z.tar"}).content == b"OLD"
+    assert client.get("/api/backup/download", params={"file": a}).status_code == 200
+    for bad in ("nope.tar", "../meta.db", "../../etc/passwd", "/etc/passwd", a + "x", a[:-1], "", "meta.db"):
+        assert client.get("/api/backup/download", params={"file": bad}).status_code == 404, bad
+
+
+def test_readonly_close_tolerates_missing_tempfile(data, private_tmp):
+    compact_closed_months(data, ts(2026, 10, 3))
+    before = _tmp_before()
+    c = open_samples_readonly(data, ts(2026, 9, 7))
+    for f in _tmp_left(before):
+        f.unlink()
+    c.close()
+
+
+def test_too_many_same_second_snapshots(data, tmp_path, monkeypatch):
+    def exists(a, b):
+        raise FileExistsError
+
+    monkeypatch.setattr(backup.os, "link", exists)
+    with pytest.raises(RuntimeError):
+        snapshot(data, tmp_path / "bk")
+    assert [p.name for p in (tmp_path / "bk").iterdir()] == []
+
+
+def test_verify_rejects_integrity_failure(tmp_path):
+    c = sqlite3.connect(tmp_path / "a.db")
+    c.execute("create table t(x int primary key)")
+    c.execute("insert into t values(1)")
+    c.commit()
+    c.close()
+    raw = bytearray((tmp_path / "a.db").read_bytes())
+    raw[4096:8192] = b"\xff" * 4096  # destroy the table root page
+    gz = tmp_path / "bad.db.gz"
+    gz.write_bytes(gzip.compress(bytes(raw)))
+    with pytest.raises(sqlite3.DatabaseError):
+        backup._verify_gz(gz, hashlib.sha256(bytes(raw)).hexdigest())
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("verify")] == []
+
+
+

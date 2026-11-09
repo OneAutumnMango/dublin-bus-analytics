@@ -24,7 +24,8 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 _lock = threading.Lock()  # serialises snapshot vs compaction
 _MONTH = re.compile(r"^samples-(\d{4})-(\d{2})\.db$")
-_TAR = re.compile(r"^analytics-\d{8}T\d{6}Z(_\d{3})?\.tar$")
+_TAR = re.compile(r"^analytics-(\d{8}T\d{6}Z)(_\d{3})?\.tar$")
+FUTURE_SLACK_S = 300
 COMPACT_GRACE_S = 2 * 86400
 STALE_S = 3600
 
@@ -53,8 +54,14 @@ def _clean_stale(d: Path, patterns: tuple[str, ...]) -> None:
                 pass
 
 
+def _stamp(p: Path) -> int:
+    m = _TAR.match(p.name)
+    return int(datetime.strptime(m[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).timestamp())
+
+
 def list_backups(backup_dir: Path) -> list[Path]:
-    """Backup tars (regular files with the exact name pattern), oldest first by mtime then name."""
+    """Backup tars (non-empty regular files with the exact name pattern), oldest first. Order is by the
+    UTC stamp in the app-generated name (+ _NNN counter), never by mtime (touching a file changes nothing)."""
     d = Path(backup_dir)
     if not d.is_dir():
         return []
@@ -62,10 +69,30 @@ def list_backups(backup_dir: Path) -> list[Path]:
     for p in d.iterdir():
         if _TAR.match(p.name) and p.is_file():
             try:
-                found.append((p.stat().st_mtime_ns, p.name, p))
+                if p.stat().st_size:
+                    _stamp(p)  # impossible dates (month 13...) are not ours
+                    found.append(p)
+            except ValueError:
+                pass
             except FileNotFoundError:  # pragma: no cover
                 pass
-    return [p for _, _, p in sorted(found)]
+    return sorted(found, key=lambda p: p.name)
+
+
+def _is_future(p: Path, now: float) -> bool:
+    return _stamp(p) > now + FUTURE_SLACK_S
+
+
+def newest_backup(backup_dir: Path) -> Path | None:
+    """Newest by name stamp, ignoring files dated more than 5 min in the future (logged); falls back to the
+    newest overall if every file is future-dated."""
+    tars = list_backups(backup_dir)
+    now = time.time()
+    for p in tars:
+        if _is_future(p, now):
+            log.warning("backup %s is future-dated; ignored for download/retention", p.name)
+    ok = [p for p in tars if not _is_future(p, now)]
+    return (ok or tars or [None])[-1]
 
 
 def _copy_db(src: Path, dst: Path) -> None:
@@ -84,7 +111,11 @@ def _reserve(tmp_tar: Path, backup_dir: Path, stamp: str) -> Path:
                 raise
             except OSError:  # filesystem without hard links (some bind mounts)
                 os.close(os.open(cand, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-                os.replace(tmp_tar, cand)
+                try:
+                    os.replace(tmp_tar, cand)
+                except BaseException:
+                    cand.unlink(missing_ok=True)  # don't leave the empty placeholder behind
+                    raise
         except FileExistsError:
             continue
         return cand
@@ -121,8 +152,9 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> P
                 os.close(fd)
             final = _reserve(tmp_tar, backup_dir, stamp)
         _fsync_dir(backup_dir)
-        # never delete the tar just made, even if the wall clock is behind older backups
-        others = [p for p in list_backups(backup_dir) if p != final]
+        # never delete the tar just made (clock behind) nor future-dated files (they would crowd out real ones)
+        now = time.time()
+        others = [p for p in list_backups(backup_dir) if p != final and not _is_future(p, now)]
         for old in others[:max(0, len(others) - (keep - 1))]:
             old.unlink()
         return final
@@ -174,6 +206,7 @@ def _exclusive(db: Path):
         c.execute("select count(*) from sqlite_master").fetchall()
         if c.execute("pragma wal_checkpoint(truncate)").fetchone()[0]:  # pragma: no cover - defensive; unreachable under the exclusive lock
             raise sqlite3.OperationalError("checkpoint busy")
+        c.execute("begin exclusive")  # also blocks/detects a RESERVED writer on a non-WAL month
         yield
     finally:
         c.close()
@@ -204,7 +237,7 @@ def _compact_one(db: Path) -> Path | None:
                 raw.flush()
                 os.fsync(raw.fileno())
             _verify_gz(tmp, src_sha)
-            os.rename(tmp, gz)  # gz did not exist (checked above, lock held, one compactor at a time)
+            os.link(tmp, gz)  # raises FileExistsError if a gz appeared meanwhile; tmp is unlinked in finally
             _fsync_dir(gz.parent)
             if _sha(db) != src_sha:
                 gz.unlink()
@@ -215,13 +248,17 @@ def _compact_one(db: Path) -> Path | None:
         tmp.unlink(missing_ok=True)
 
 
-def compact_closed_months(data_dir: Path, now: int) -> list[Path]:
-    """Gzip months that ended at least COMPACT_GRACE_S before `now` (UTC). A failing month is logged
-    and left as is; returns the gz paths produced."""
+def compact_closed_months(data_dir: Path, now: int, skipped: list[Path] | None = None) -> list[Path]:
+    """Gzip months that ended at least COMPACT_GRACE_S before `now` (UTC). Returns the gz paths
+    created/confirmed. A month that is eligible but left uncompacted (busy lock, read-only dir,
+    verification failure, plain+gz that differ) is logged and, if `skipped` is given, its plain-file
+    Path is appended to it; months not yet eligible are not reported."""
     data_dir = Path(data_dir)
-    done, skipped = [], []
+    done, skipped_names = [], []
+    if skipped is None:
+        skipped = []
     with _lock:
-        _clean_stale(data_dir, ("verify-*.db*", "*.gz.tmp"))
+        _clean_stale(data_dir, ("verify-????????.db", "verify-????????.db-*", "samples-????-??.db.gz.tmp"))
         for p in sorted(data_dir.glob("samples-*.db")):
             m = _MONTH.match(p.name)
             if not m:
@@ -234,13 +271,15 @@ def compact_closed_months(data_dir: Path, now: int) -> list[Path]:
                 gz = _compact_one(p)
             except sqlite3.OperationalError as e:
                 log.warning("compaction of %s skipped: %s", p.name, e)
-                skipped.append(p.name)
+                skipped.append(p)
+                skipped_names.append(p.name)
                 continue
             except Exception:
                 log.exception("compaction of %s failed; original kept", p.name)
-                skipped.append(p.name)
+                skipped.append(p)
+                skipped_names.append(p.name)
                 continue
             done.append(gz)
-        if skipped:
-            log.error("compaction skipped months: %s", ", ".join(skipped))
+        if skipped_names:
+            log.error("compaction skipped months: %s", ", ".join(skipped_names))
     return done
