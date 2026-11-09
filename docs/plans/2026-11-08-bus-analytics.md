@@ -245,7 +245,7 @@ Run after Tasks 8 and 9.
 - [x] **Step 1: Failing tests:** `test_trip_series_returns_due_reaching_zero`, `test_trip_series_reads_gzipped_month`, `test_trip_series_unknown_trip_404`, `test_trip_series_spans_month_boundary`.
 - [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add trip series endpoint"`.
 
-### Task 10: Web UI
+### Task 10: Web UI (+ `scripts/seed_demo.py`, moved here from Task 13)
 
 **Files:** Create `web/index.html`, `web/app.js`, `web/style.css`, `web/chart.umd.min.js` (vendored Chart.js, pinned version); modify `app/main.py` to mount `/`
 
@@ -307,7 +307,7 @@ Run after Task 9 (execution order: ... 9, 12, 10, 11, 13). Task 9 only provides 
 **Security flag:** `none`
 **Does NOT cover:** off-host copies, backup encryption, multiple schedules.
 
-- [ ] **Step 1: Failing tests** (inject a fake clock and fake sleep; no real waiting):
+- [x] **Step 1: Failing tests** (inject a fake clock and fake sleep; no real waiting):
   - `test_next_run_later_today_when_before_time`, `test_next_run_tomorrow_when_after_time`, `test_next_run_exactly_at_time_is_tomorrow`
   - `test_next_run_dst_spring_forward_and_fall_back` (Europe/Dublin; time 01:30 on the transition days is still exactly one run per day, never skipped or doubled)
   - `test_invalid_backup_time_rejected` (`25:00`, `3:00`, `""`, `abc`), `test_invalid_backup_keep_rejected` (`0`, `-1`, `x`), `test_backup_enabled_parsing` (`true/false/1/0`, anything else rejected)
@@ -319,12 +319,14 @@ Run after Task 9 (execution order: ... 9, 12, 10, 11, 13). Task 9 only provides 
   - `test_backup_dir_env_respected` (snapshot lands in `BACKUP_DIR`, created if missing; a `BACKUP_DIR` inside `DATA_DIR` must not be re-backed-up recursively into the next snapshot), `test_backup_dir_unwritable_is_logged_not_fatal`
   - `test_env_roundtrip_all_backup_vars` (set `BACKUP_ENABLED/TIME/KEEP/DIR` env, `Settings.from_env()` reflects every one)
   - hypothesis: for any `now` and any valid HH:MM, `next_run(now, t) > now` and `next_run(now, t) - now <= 25h`
-- [ ] **Step 2:** `.venv/bin/python -m pytest tests/test_scheduler.py` -> FAIL (no module).
-- [ ] **Step 3:** Implement `app/scheduler.py` and the Settings fields; lifespan in `app/main.py` creates the task on startup and cancels it cleanly on shutdown (test: app startup/shutdown with the scheduler enabled leaves no pending tasks).
-- [ ] **Step 4:** pytest -> PASS; full suite green.
-- [ ] **Step 5:** Commit (small commits per sub-step).
+- [x] **Step 2:** `.venv/bin/python -m pytest tests/test_scheduler.py` -> FAIL (no module).
+- [x] **Step 3:** Implement `app/scheduler.py` and the Settings fields; lifespan in `app/main.py` creates the task on startup and cancels it cleanly on shutdown (test: app startup/shutdown with the scheduler enabled leaves no pending tasks).
+- [x] **Step 4:** pytest -> PASS; full suite green.
+- [x] **Step 5:** Commit (small commits per sub-step).
 
 ### Task 13: Developer README, sample compose, example env
+
+(`scripts/seed_demo.py` moved into Task 10 so the UI can be developed against realistic data; Task 13 documents it in the README and keeps its tests if not already present.)
 
 Run last (execution order: ... 11, 13).
 
