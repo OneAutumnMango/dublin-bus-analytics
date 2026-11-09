@@ -59,3 +59,55 @@ def test_invalid_int_raises(clean_env, name, bad):
     clean_env.setenv(name, bad)
     with pytest.raises(ValueError, match=name):
         Settings.from_env()
+
+
+BENV = ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR")
+
+
+@pytest.fixture
+def benv(clean_env):
+    for k in BENV:
+        clean_env.delenv(k, raising=False)
+    return clean_env
+
+
+def test_backup_defaults(benv):
+    s = Settings.from_env()
+    assert (s.backup_enabled, s.backup_time, s.backup_keep, s.backup_dir) == (True, "03:00", 7, None)
+    assert s.backup_path == Path("/data/backups")
+
+
+def test_env_roundtrip_all_backup_vars(benv):
+    benv.setenv("BACKUP_ENABLED", "No")
+    benv.setenv("BACKUP_TIME", "23:59")
+    benv.setenv("BACKUP_KEEP", "1")
+    benv.setenv("BACKUP_DIR", "rel/b")
+    s = Settings.from_env()
+    assert (s.backup_enabled, s.backup_time, s.backup_keep, s.backup_dir) == (False, "23:59", 1, Path("rel/b"))
+    assert s.backup_path == Path("rel/b")
+
+
+@pytest.mark.parametrize("v,exp", [("true", True), ("TRUE", True), ("1", True), ("yes", True),
+                                   ("false", False), ("False", False), ("0", False), ("no", False)])
+def test_backup_enabled_parsing(benv, v, exp):
+    benv.setenv("BACKUP_ENABLED", v)
+    assert Settings.from_env().backup_enabled is exp
+
+
+@pytest.mark.parametrize("name,bad", [
+    ("BACKUP_ENABLED", "maybe"), ("BACKUP_ENABLED", ""), ("BACKUP_ENABLED", "2"),
+    ("BACKUP_TIME", "25:00"), ("BACKUP_TIME", "3:00"), ("BACKUP_TIME", "03:60"), ("BACKUP_TIME", ""),
+    ("BACKUP_TIME", "abc"), ("BACKUP_TIME", "03:00\n"), ("BACKUP_TIME", "24:00"),
+    ("BACKUP_KEEP", "0"), ("BACKUP_KEEP", "-1"), ("BACKUP_KEEP", "x"), ("BACKUP_KEEP", "1.5"), ("BACKUP_KEEP", ""),
+    ("BACKUP_DIR", ""), ("BACKUP_DIR", "   "),
+])
+def test_invalid_backup_values_rejected(benv, name, bad):
+    benv.setenv(name, bad)
+    with pytest.raises(ValueError, match=name):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("t", ["00:00", "03:00", "19:59", "23:59"])
+def test_valid_backup_time_boundaries(benv, t):
+    benv.setenv("BACKUP_TIME", t)
+    assert Settings.from_env().backup_time == t
