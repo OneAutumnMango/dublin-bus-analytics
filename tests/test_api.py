@@ -4,6 +4,7 @@ import math
 import time
 import types
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -1427,3 +1428,176 @@ def test_open_failure_inside_scan_releases_lock_and_connection(env, monkeypatch)
         env.get("/api/stops/s1/stats")
     assert not api._DB_LOCK.locked()
     assert env.get("/api/stops/s1/stats").json()["n"] == 1
+
+
+# ---------- H3: previously surviving mutants ----------
+
+def test_heatmap_multi_chunk_equals_unchunked(env, monkeypatch):
+    import app.api as api
+    for i in range(30):  # 10-minute steps: every hour cell gets 6 rows spread across several chunks
+        env.add(delay=i * 10, scheduled=T0 + i * 600)
+    whole = env.get("/api/routes/15/heatmap").json()
+    assert whole["n"] == 30 and sum(c["n"] for c in whole["cells"]) == 30
+    monkeypatch.setattr(api, "CHUNK", 7)
+    assert env.get("/api/routes/15/heatmap").json() == whole
+    exp = {}
+    for i in range(30):
+        d = datetime.fromtimestamp(T0 + i * 600, ZoneInfo("Europe/Dublin"))
+        exp.setdefault((d.weekday(), d.hour), []).append(i * 10)
+    assert {(c["weekday"], c["hour"]): (c["n"], c["mean_delay"]) for c in whole["cells"]} == {
+        k: (len(v), sum(v) / len(v)) for k, v in exp.items()}
+
+
+def _utc(*a):
+    return int(datetime(*a, tzinfo=timezone.utc).timestamp())
+
+
+def test_forecast_weekday_hour_filters_incl_dst_edge(env):
+    # Dublin clocks go 01:00Z -> 02:00 local on Sun 2026-03-29
+    rows = {"sat23": _utc(2026, 3, 28, 23, 30),   # Sat 23h
+            "sun0": _utc(2026, 3, 29, 0, 30),     # Sun 0h (GMT)
+            "sun2": _utc(2026, 3, 29, 1, 30),     # Sun 2h (BST; hour 1 does not exist)
+            "mon0": _utc(2026, 3, 29, 23, 30)}    # Mon 0h (BST)
+    for sch in rows.values():
+        env.fc(env.add(delay=0, scheduled=sch), 5, 10)
+    n = lambda **q: env.get("/api/routes/15/forecast", **q).json()["horizons"][3]["n"]
+    assert n() == 4
+    assert n(hours="2") == 1 and n(hours="1") == 0 and n(hours="0") == 2 and n(hours="23") == 1
+    assert n(weekdays="6") == 2 and n(weekdays="0") == 1 and n(weekdays="5") == 1 and n(weekdays="1") == 0
+    assert n(weekdays="6", hours="0") == 1 and n(weekdays="0,5", hours="0,23") == 2
+
+
+def test_route_stops_failure_not_cached_counts_refetch(env):
+    env.keep_cache = True
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
+    env.fake.set_down(True)
+    assert env.get("/api/routes/15/stops").status_code == 502
+    after_fail = stops_hits(env)
+    assert after_fail == 0  # the fake records nothing while down
+    env.fake.set_down(False)
+    assert env.get("/api/routes/15/stops").json()["directions"] == {"out": [{"id": "a"}]}
+    assert stops_hits(env) == after_fail + 1  # failure was not cached: refetched
+    env.get("/api/routes/15/stops")
+    assert stops_hits(env) == after_fail + 1  # success is cached
+
+
+def test_cap_probe_ignores_null_delay_rows(env, monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_ROWS", 5)
+    for i in range(12):
+        env.add(delay=None, scheduled=T0 + i)
+    for i in range(3):
+        env.add(delay=i * 10, scheduled=T0 + 100 + i)
+    j = env.get("/api/routes/15/heatmap").json()
+    assert j["filters"]["truncated"] is False and j["n"] == 3
+    s = env.get("/api/routes/15/summary").json()
+    assert s["filters"]["truncated"] is False and s["n"] == 3
+
+
+# ---------- H2: heavy-scan semaphore ----------
+
+def _heavy_env(env, monkeypatch, slots=1):
+    import app.api as api
+    monkeypatch.setattr(api, "_HEAVY", threading.BoundedSemaphore(slots))
+    monkeypatch.setattr(api, "HEAVY_ROWS", 3)
+    for i in range(5):  # route 15 is heavy (5 > 3 rows); route 16 is light
+        env.add(delay=i, scheduled=T0 + i)
+    env.add(route="16", delay=1, scheduled=T0)
+    return api
+
+
+def _run(fn, *a):
+    out = []
+    t = threading.Thread(target=lambda: out.append(fn(*a)), daemon=True)
+    t.start()
+    return t, out
+
+
+def test_heavy_requests_are_serialised_by_the_semaphore(env, monkeypatch):
+    api = _heavy_env(env, monkeypatch, slots=1)
+    log, gate, first_in = [], threading.Event(), threading.Event()
+    orig = api._scan
+
+    def spy(request, sql, args, fn, size=None):
+        log.append("start")
+        first_in.set()
+        if len(log) == 1:
+            assert gate.wait(10)
+        orig(request, sql, args, fn, size)
+        log.append("end")
+
+    monkeypatch.setattr(api, "_scan", spy)
+    t1, o1 = _run(env.c.get, "/api/routes/15/heatmap")
+    assert first_in.wait(10)
+    t2, o2 = _run(env.c.get, "/api/routes/15/forecast")
+    time.sleep(0.5)
+    assert log == ["start"]  # second heavy request is parked on the semaphore
+    gate.set()
+    t1.join(15), t2.join(15)
+    assert log == ["start", "end", "start", "end"]
+    assert o1[0].status_code == 200 and o2[0].status_code == 200
+
+
+def test_light_request_not_blocked_by_running_heavy_ones(env, monkeypatch):
+    api = _heavy_env(env, monkeypatch, slots=2)
+    gate, inside = threading.Event(), threading.Semaphore(0)
+    orig = api._scan
+
+    def spy(request, sql, args, fn, size=None):
+        if args[0] == "15":
+            inside.release()
+            assert gate.wait(10)
+        orig(request, sql, args, fn, size)
+
+    monkeypatch.setattr(api, "_scan", spy)
+    ts = [_run(env.c.get, "/api/routes/15/heatmap")[0] for _ in range(2)]
+    assert inside.acquire(timeout=10) and inside.acquire(timeout=10)  # both slots taken
+    t3, o3 = _run(env.c.get, "/api/routes/15/forecast")  # third heavy waits
+    r = env.c.get("/api/routes/16/heatmap")  # light: answers while 2 heavy run and 1 waits
+    assert r.status_code == 200 and r.json()["n"] == 1
+    assert env.c.get("/api/routes/16/summary").status_code == 200
+    assert t3.is_alive()
+    gate.set()
+    for t in (*ts, t3):
+        t.join(15)
+    assert o3[0].status_code == 200
+
+
+def test_heavy_slot_released_on_error(env, monkeypatch):
+    api = _heavy_env(env, monkeypatch, slots=1)
+    orig = api._scan
+    calls = []
+
+    def boom(request, sql, args, fn, size=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("scan failed")
+        orig(request, sql, args, fn, size)
+
+    monkeypatch.setattr(api, "_scan", boom)
+    with pytest.raises(RuntimeError):
+        env.c.get("/api/routes/15/heatmap")
+    assert api._HEAVY.acquire(blocking=False)  # free again
+    api._HEAVY.release()
+    assert env.c.get("/api/routes/15/heatmap").status_code == 200
+    assert api._HEAVY.acquire(blocking=False)
+    api._HEAVY.release()
+    assert not getattr(api._held, "slot", False)
+
+
+def test_no_deadlock_under_mixed_concurrency(env, monkeypatch):
+    api = _heavy_env(env, monkeypatch, slots=2)
+    urls = ["/api/routes/15/heatmap", "/api/routes/16/heatmap", "/api/routes/15/forecast",
+            "/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/16/forecast"]
+    env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
+    old = threading.stack_size(256 * 1024)  # 20 clients x portal threads must fit the ulimit -v budget
+    try:
+        ts = [_run(env.c.get, urls[i % len(urls)]) for i in range(20)]
+        t0 = time.monotonic()
+        for t, _ in ts:
+            t.join(max(0.1, 60 - (time.monotonic() - t0)))
+        assert not any(t.is_alive() for t, _ in ts)
+        assert all(o[0].status_code == 200 for _, o in ts)
+    finally:
+        threading.stack_size(old)
+    assert api._HEAVY._value == 2

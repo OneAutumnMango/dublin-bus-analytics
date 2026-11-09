@@ -14,6 +14,7 @@ can 404 (unknown route). `arrivals.seq` is a per-visit key (the scheduled epoch)
 stop order comes only from the server's route_stops (`order_source` 'server' | 'none'). low_n is true when n < 10.
 """
 import asyncio
+import functools
 import math
 import re
 import sqlite3
@@ -185,13 +186,40 @@ def _cond(p, a=""):
     return sql, args
 
 
+MAX_HEAVY_SCANS = 2  # concurrent heavy scans; each can hold ~100+ MB, the threadpool is far larger
+HEAVY_ROWS = 50_000  # a request matching more arrivals than this takes a heavy slot
+_HEAVY = threading.BoundedSemaphore(MAX_HEAVY_SCANS)
+_held = threading.local()
+
+
+def _heavy_scope(fn):
+    """Handler body wrapper: releases the heavy slot `_cap` may have taken on this thread, on any exit.
+    Lock order is always slot first, then _DB_LOCK per chunk, so waiting for a slot never holds _DB_LOCK."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        finally:
+            if getattr(_held, "slot", False):
+                _held.slot = False
+                _HEAVY.release()
+    return wrapper
+
+
 def _cap(request, p, where: str, args: list, delay=True) -> dict:
-    """Params with `since` raised (and truncated=True) when more than MAX_ROWS rows match."""
+    """Params with `since` raised (and truncated=True) when more than MAX_ROWS rows match. When more than
+    HEAVY_ROWS match it also blocks for one of MAX_HEAVY_SCANS heavy slots (released by _heavy_scope).
+    The probes ignore NULL-delay rows (delay=True) exactly as the scan does."""
     cond, cargs = _cond(p)
-    rows = _fetch(request, f"select scheduled from arrivals where {where} and {cond}"
-                  f"{' and delay is not null' if delay else ''} order by scheduled desc limit 2 offset ?",
-                  args + cargs + [MAX_ROWS - 1])
-    return {**p, "since": rows[0][0], "truncated": True} if len(rows) == 2 else p
+    probe = (f"select scheduled from arrivals where {where} and {cond}"
+             f"{' and delay is not null' if delay else ''} order by scheduled desc limit 2 offset ?")
+    rows = _fetch(request, probe, args + cargs + [MAX_ROWS - 1])
+    if len(rows) == 2:
+        p = {**p, "since": rows[0][0], "truncated": True}
+    if len(rows) == 2 or _fetch(request, probe, args + cargs + [HEAVY_ROWS]):
+        _HEAVY.acquire()
+        _held.slot = True
+    return p
 
 
 def _tz(rows, i, p):
@@ -361,6 +389,7 @@ async def route_stops(request: Request, r: RouteP):
 
 # ---- stats ----
 
+@_heavy_scope
 def _summary_db(request, r, p, lists):
     p = _cap(request, p, "route = ?", [r])
     by_stop: dict[str, array] = defaultdict(lambda: array("q"))
@@ -411,6 +440,7 @@ def _histogram(delays):
 
 
 @router.get("/stops/{s}/stats")
+@_heavy_scope
 def stop_stats(request: Request, s: StopP, p: P, route: QStr = None):
     """Stop stats (optionally for one route): n, low_n, delay{summary; ci_low..ci_high is the CI of
     the actual-minus-scheduled delay}, on_time_pct, reliability, histogram (60 s bins from -600 to
@@ -434,6 +464,7 @@ def stop_stats(request: Request, s: StopP, p: P, route: QStr = None):
 
 
 @router.get("/routes/{r}/heatmap")
+@_heavy_scope
 def route_heatmap(request: Request, r: RouteP, p: P):
     """cells: [{weekday 0=Mon, hour, n, low_n, mean_delay}] for Dublin-local scheduled time."""
     p = _cap(request, p, "route = ?", [r])
@@ -472,6 +503,7 @@ def _assign(stops, delays, scheds, pos):
     return (None, []) if tied or best[0] == 0 else (best[1], best[2])
 
 
+@_heavy_scope
 def _accumulation_db(request, r, p, lists, direction):
     p = _cap(request, p, "route = ?", [r])
     stop_ix: dict[str, int] = {}
@@ -550,6 +582,7 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
 
 
 @router.get("/routes/{r}/forecast")
+@_heavy_scope
 def route_forecast(request: Request, r: RouteP, p: P):
     """horizons: always [30,20,10,5,2] in that order: {horizon_min, n, low_n, mean_error, mae,
     p_low, p_high} (null stats when n=0). error = actual minus predicted seconds."""
