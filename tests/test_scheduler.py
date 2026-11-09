@@ -387,7 +387,7 @@ async def test_retention_uses_backup_keep_and_backup_dir(tmp_path):
     paths = [await sc.run_once() for _ in range(6)]
     assert all(p is not None and p.parent == tmp_path / "bk" for p in paths)
     kept = backup.list_backups(tmp_path / "bk")
-    assert len(kept) == 3 and kept == sorted(paths)[-3:]
+    assert len(kept) == 3 and kept == paths[-3:]  # creation order (name order equals it, even within a second)
     assert not (tmp_path / "data" / "backups").exists()
 
 

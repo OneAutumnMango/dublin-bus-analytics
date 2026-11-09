@@ -102,7 +102,11 @@ def _copy_db(src: Path, dst: Path) -> None:
 
 
 def _reserve(tmp_tar: Path, backup_dir: Path, stamp: str) -> Path:
-    for n in range(1000):
+    # a name slot is never reused (retention may have deleted the plain one): take a counter above every
+    # existing one for this stamp so name order == creation order within a second
+    taken = [int((m[2] or "_0")[1:]) for p in backup_dir.iterdir()
+             if (m := _TAR.match(p.name)) and m[1] == stamp]
+    for n in range(max(taken) + 1 if taken else 0, 1000):
         cand = backup_dir / f"analytics-{stamp}{'' if n == 0 else f'_{n:03d}'}.tar"
         try:
             try:

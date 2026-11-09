@@ -937,3 +937,42 @@ def test_verify_rejects_integrity_failure(tmp_path):
 
 
 
+
+
+def _frozen_stamp(monkeypatch):
+    class _D(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 10, 12, 0, 0, tzinfo=tz)
+    monkeypatch.setattr(backup, "datetime", _D)
+
+
+def test_snapshot_same_second_name_order_is_creation_order(tmp_path, monkeypatch):
+    _frozen_stamp(monkeypatch)
+    mk_meta(tmp_path)
+    made = [snapshot(tmp_path, tmp_path / "bk", keep=3) for _ in range(6)]
+    assert len({p.name for p in made}) == 6  # no slot ever reused
+    assert [p.name for p in made] == sorted(p.name for p in made)
+    assert list_backups(tmp_path / "bk") == made[-3:]
+
+
+def test_snapshot_retention_after_middle_slot_deleted(tmp_path, monkeypatch):
+    _frozen_stamp(monkeypatch)
+    mk_meta(tmp_path)
+    bk = tmp_path / "bk"
+    made = [snapshot(tmp_path, bk, keep=10) for _ in range(4)]
+    made[1].unlink()
+    made[3].unlink()  # highest slot gone too: the next name still sorts after every survivor
+    new = snapshot(tmp_path, bk, keep=2)
+    assert new.name > made[2].name
+    assert list_backups(bk) == [made[2], new]
+
+
+def test_snapshot_counter_cap_raises(tmp_path, monkeypatch):
+    _frozen_stamp(monkeypatch)
+    mk_meta(tmp_path)
+    bk = tmp_path / "bk"
+    bk.mkdir()
+    (bk / "analytics-20260610T120000Z_999.tar").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="too many"):
+        snapshot(tmp_path, bk)
