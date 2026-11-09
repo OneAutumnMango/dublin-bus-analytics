@@ -914,3 +914,51 @@ async def test_event_loop_not_blocked(tmp_path, monkeypatch, what):
 def test_search_routes_404_and_502(env):
     env.fake.set_status(404)
     assert env.get("/api/routes").status_code == 404
+
+
+# ---------- fix round 2: N3 ci upper bound + sanitizer ----------
+
+@pytest.mark.parametrize("url", ["/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/15/heatmap",
+                                 "/api/routes/15/accumulation", "/api/routes/15/forecast"])
+@pytest.mark.parametrize("ci", ["0.9999999999999999", "0.99991", "0.99999999"])
+def test_ci_too_close_to_one_is_422(env, url, ci):
+    seed5(env)
+    r = env.get(url, ci=ci)
+    assert r.status_code == 422 and "0.9999" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("url", ["/api/routes/15/summary", "/api/stops/s1/stats"])
+def test_ci_max_allowed_is_finite(env, url):
+    seed5(env)
+    r = env.get(url, ci="0.9999")
+    assert r.status_code == 200
+    j = r.json()
+    finite(j)
+    d = j["delay"] if "delay" in j else j["stops"][0]
+    assert d["ci_low"] < 120 < d["ci_high"]
+
+
+def test_clean_replaces_non_finite_recursively():
+    import app.api as api
+    nan, inf = float("nan"), float("inf")
+    src = {"a": [nan, inf, 1.0, {"b": -inf, "c": 2}], "d": "x", "e": None, "f": (1, nan)}
+    out = api._clean(src)
+    assert out == {"a": [None, None, 1.0, {"b": None, "c": 2}], "d": "x", "e": None, "f": [1, None]}
+    json.dumps(out, allow_nan=False)
+
+
+def test_non_finite_in_stats_becomes_null_not_500(env, monkeypatch):
+    import app.api as api
+    seed5(env)
+    real = api.stats.delay_summary
+
+    def bad(*a, **k):
+        return {**real(*a, **k), "ci_high": float("inf"), "mean": float("nan")}
+
+    monkeypatch.setattr(api.stats, "delay_summary", bad)
+    for url in ("/api/routes/15/summary", "/api/stops/s1/stats"):
+        r = env.get(url)
+        assert r.status_code == 200
+        j = r.json()
+        d = j["delay"] if "delay" in j else j["stops"][0]
+        assert d["ci_high"] is None and d["mean"] is None

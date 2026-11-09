@@ -3,7 +3,7 @@ their own connection per request; proxy/poller handlers are `async def` (the cli
 poller's connection is bound to the event-loop thread).
 
 Statistics endpoints share these query parameters (all validated, invalid -> 422):
-  ci (0,1) default 0.95; pct_lo < pct_hi in [0,1] default 0.05/0.95; window_lo <= window_hi seconds,
+  ci in (0, 0.9999] default 0.95; pct_lo < pct_hi in [0,1] default 0.05/0.95; window_lo <= window_hi seconds,
   the on-time window, default -60/300; since/until epoch ints (inclusive, on `scheduled`);
   weekdays (comma list 0=Mon..6) and hours (comma list 0..23), Dublin-local;
   min_confidence (0 or 1, DEFAULT 1): stats only use rows whose actual was confirmed by a due==0
@@ -13,6 +13,7 @@ A route/stop with no stored data gives 200 with n=0 and null stats; only the ser
 can 404 (unknown route). `arrivals.seq` is a per-visit key (the scheduled epoch), never a stop position:
 stop order comes only from the server's route_stops (`order_source` 'server' | 'none'). low_n is true when n < 10.
 """
+import math
 import re
 import sqlite3
 from bisect import bisect_right
@@ -52,6 +53,7 @@ class RawPathRoute(APIRoute):
 router = APIRouter(prefix="/api", route_class=RawPathRoute)
 
 LOW_N = 10
+CI_MAX = 0.9999
 HORIZONS = (30, 20, 10, 5, 2)
 RECENT = 20
 HIST_LO, HIST_HI, HIST_W = -600, 1800, 60  # seconds; outer bins are open-ended
@@ -98,8 +100,8 @@ def _params(ci: QStr = "0.95", pct_lo: QStr = "0.05", pct_hi: QStr = "0.95",
          "weekdays": None if weekdays is None else _int_list("weekdays", weekdays, 0, 6),
          "hours": None if hours is None else _int_list("hours", hours, 0, 23),
          "min_confidence": _int("min_confidence", min_confidence)}
-    if not 0 < p["ci"] < 1:
-        _bad("ci must be strictly between 0 and 1")
+    if not 0 < p["ci"] <= CI_MAX:  # beyond ~1-1e-16 the t quantile is inf; 0.9999 is already extreme
+        _bad(f"ci must satisfy 0 < ci <= {CI_MAX}")
     if not 0 <= p["pct_lo"] < p["pct_hi"] <= 1:
         _bad("pct_lo and pct_hi must satisfy 0 <= pct_lo < pct_hi <= 1")
     if p["window_lo"] > p["window_hi"]:
@@ -112,6 +114,17 @@ def _params(ci: QStr = "0.95", pct_lo: QStr = "0.05", pct_hi: QStr = "0.95",
 
 
 P = Annotated[dict, Depends(_params)]
+
+
+def _clean(o):
+    """Backstop: non-finite floats become null so a response can never fail JSON encoding."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    return o
 
 
 def _filters(p):
@@ -262,8 +275,8 @@ def _summary_db(request, r, p, lists):
             "direction": pos[sid][2] if sid in pos else None, **_summ(ds, p)}
            for sid, ds in by_stop.items()]
     out.sort(key=lambda s: (s["stop_id"] not in pos, pos.get(s["stop_id"], (0, 0))[:2], s["stop_id"]))
-    return {"route": r, "filters": _filters(p), "order_source": "none" if lists is None else "server",
-            "n": len(rows), "low_n": len(rows) < LOW_N, "stops": out}
+    return _clean({"route": r, "filters": _filters(p), "order_source": "none" if lists is None else "server",
+                   "n": len(rows), "low_n": len(rows) < LOW_N, "stops": out})
 
 
 @router.get("/routes/{r}/summary")
@@ -297,11 +310,11 @@ def stop_stats(request: Request, s: StopP, p: P, route: QStr = None):
     d = _summ(delays, p)
     keys = ("trip_id", "route", "seq", "service_date", "actual", "delay", "confidence", "scheduled")
     recent = [dict(zip(keys, r)) for r in reversed(rows[-RECENT:])]
-    return {"stop_id": s, "route": route, "filters": _filters(p), "n": d["n"], "low_n": d["low_n"],
-            "delay": {k: d[k] for k in ("mean", "min", "max", "std", "median", "ci_low", "ci_high",
-                                       "p_low", "p_high")},
-            "on_time_pct": d["on_time_pct"], "reliability": d["reliability"],
-            "histogram": _histogram(delays), "recent": recent}
+    return _clean({"stop_id": s, "route": route, "filters": _filters(p), "n": d["n"], "low_n": d["low_n"],
+                   "delay": {k: d[k] for k in ("mean", "min", "max", "std", "median", "ci_low", "ci_high",
+                                              "p_low", "p_high")},
+                   "on_time_pct": d["on_time_pct"], "reliability": d["reliability"],
+                   "histogram": _histogram(delays), "recent": recent})
 
 
 @router.get("/routes/{r}/heatmap")
@@ -310,7 +323,7 @@ def route_heatmap(request: Request, r: RouteP, p: P):
     rows = _arrivals(request, p, "route = ?", [r], "delay")
     h = stats.heatmap([{"delay": d, "scheduled": s} for d, s in rows])
     cells = [{**c, "low_n": c["n"] < LOW_N} for c in stats.heatmap_to_json(h)]
-    return {"route": r, "filters": _filters(p), "n": len(rows), "cells": cells}
+    return _clean({"route": r, "filters": _filters(p), "n": len(rows), "cells": cells})
 
 
 def _assign(trip, pos):
@@ -378,7 +391,7 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
     if direction is not None and direction not in (*lists, "unknown"):
         raise HTTPException(404, "unknown direction")
     groups = await run_in_threadpool(_accumulation_db, request, r, p, lists, direction)
-    return {"route": r, "filters": _filters(p), "order_source": "server", "groups": groups}
+    return _clean({"route": r, "filters": _filters(p), "order_source": "server", "groups": groups})
 
 
 @router.get("/routes/{r}/forecast")
@@ -396,4 +409,4 @@ def route_forecast(request: Request, r: RouteP, p: P):
     hs = [{"horizon_min": h, **{"n": 0, **empty, **acc.get(h, {})}} for h in HORIZONS]
     for h in hs:
         h["low_n"] = h["n"] < LOW_N
-    return {"route": r, "filters": _filters(p), "horizons": hs}
+    return _clean({"route": r, "filters": _filters(p), "horizons": hs})
