@@ -232,6 +232,8 @@ class Tracker:
             for k in [k for k, v in d.items() if (t := ok(v)) is not None and now - t > FINALISED_TTL_S]:
                 self._mark(store, k)
                 del d[k]
+        # _neg is not in the undo log: this only drops entries already expired, so a rolled-back
+        # tick losing them is harmless (they would be swept again on the next tick)
         for k in [k for k, t in self._neg.items() if now - t >= NEG_TTL_S]:
             del self._neg[k]
 
@@ -276,6 +278,8 @@ class Tracker:
                 sample = (a.due_min, a.expected, int(a.realtime))
                 # storage rule: row only on first sight, a change of (expected, realtime), or the
                 # first due<=0 observation; a due_min change alone is derivable and not stored
+                # (the `not st.last_sample` and `not st.saw_zero` clauses are redundant: () != any sample;
+                # a key with saw_zero is already finalised and gone from _live; kept for readability)
                 write = (not st.last_sample or sample[1:] != st.last_sample[1:]
                          or (a.due_min <= 0 and not st.saw_zero))
                 if write:

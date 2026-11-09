@@ -970,3 +970,32 @@ async def test_pure_phase_failure_shields_same_trip_stop_live_keys(tmp_path, mon
     r = await t.ingest("15", [arr(0, trip="x", scheduled=T0 + 300 + 3600)], T0 + 30)  # seq 1 raises
     assert (r.skipped, r.finalised, r.dropped) == (1, 0, 0)  # seq 0 not falsely vanished
     t.close()
+
+
+async def feed(t, dues, exp, rt, start=T0, sched=T0 + 600):
+    for i, due in enumerate(dues):
+        await t.ingest("15", [arr(due, expected=exp, realtime=rt, scheduled=sched)], start + 60 * i)
+    return start + 60 * len(dues)
+
+
+async def test_state_updates_every_tick_nonrealtime_vanish_finalises(tr, tmp_path):
+    now = await feed(tr, [5, 4, 3, 2, 1], T0 + 700, False)
+    res = await tr.ingest("15", [], now)
+    assert (res.finalised, res.dropped) == (1, 0)
+    (r,) = rows(tmp_path)
+    assert (r[5], r[6], r[7], r[8], r[9]) == (T0 + 600, T0 + 700, 100, 0, 0)
+    assert len(samples(tmp_path)) == 1
+
+
+async def test_state_updates_even_when_first_due_le_2_writes_no_row(tr, tmp_path):
+    now = await feed(tr, [4, 3, 2], T0 + 700, True)  # due<=2 first seen at the 3rd tick: no row
+    assert len(samples(tmp_path)) == 1
+    await tr.ingest("15", [], now)
+    assert rows(tmp_path)[0][6] == T0 + 700
+
+
+async def test_realtime_unchanged_expected_countdown_confidence_1_two_rows(tr, tmp_path):
+    await feed(tr, [6, 5, 4, 3, 2, 1, 0], T0 + 700, True)
+    (r,) = rows(tmp_path)
+    assert (r[6], r[8]) == (T0 + 700, 1)
+    assert len(samples(tmp_path)) == 2
