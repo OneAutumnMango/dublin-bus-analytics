@@ -200,6 +200,7 @@ def test_summary_unlisted_stops_last_by_stop_id(env):
     env.trip("t1", [("z", 1), ("a", 1), ("y", 1), ("b", 1)])
     s = env.get("/api/routes/15/summary").json()["stops"]
     assert [(x["stop_id"], x["position"]) for x in s] == [("b", 0), ("a", 1), ("y", None), ("z", None)]
+    assert [x["directions"] for x in s] == [["out"], ["out"], [], []]
 
 
 def test_summary_two_directions_and_loop_stop(env):
@@ -208,8 +209,18 @@ def test_summary_two_directions_and_loop_stop(env):
     env.trip("t1", [("c", 1), ("b", 1), ("a", 1)])
     s = env.get("/api/routes/15/summary").json()["stops"]
     # first listing wins: a@0 (out), b@1 (out), c@0 (in, later direction)
-    assert [(x["stop_id"], x["position"], x["direction"]) for x in s] == [
-        ("a", 0, "out"), ("b", 1, "out"), ("c", 0, "in")]
+    # loop stop a appears twice but in one direction; b is listed by both directions
+    assert [(x["stop_id"], x["position"], x["direction"], x["directions"]) for x in s] == [
+        ("a", 0, "out", ["out"]), ("b", 1, None, ["out", "in"]), ("c", 0, "in", ["in"])]
+
+
+def test_summary_stop_in_several_directions_has_null_direction(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "s"}], "in": [{"id": "s"}, {"id": "z"}]})
+    env.trip("t1", [("a", 1), ("s", 2), ("z", 3)])
+    s = {x["stop_id"]: x for x in env.get("/api/routes/15/summary").json()["stops"]}
+    assert (s["s"]["direction"], s["s"]["directions"], s["s"]["position"]) == (None, ["out", "in"], 1)
+    assert (s["a"]["direction"], s["a"]["directions"]) == ("out", ["out"])
+    assert (s["z"]["direction"], s["z"]["directions"]) == ("in", ["in"])
 
 
 @pytest.mark.parametrize("mode", ["down", "404", "malformed"])
@@ -222,8 +233,8 @@ def test_summary_order_none_fallback(env, mode):
         env.fake.set_route_stops("15", {"out": ["sb", 5]})
     j = env.get("/api/routes/15/summary").json()
     assert j["order_source"] == "none"
-    assert [(x["stop_id"], x["position"], x["direction"]) for x in j["stops"]] == [
-        ("sa", None, None), ("sb", None, None)]
+    assert [(x["stop_id"], x["position"], x["direction"], x["directions"]) for x in j["stops"]] == [
+        ("sa", None, None, []), ("sb", None, None, [])]
     assert j["n"] == 2
 
 
@@ -442,7 +453,41 @@ def test_accumulation_tie_and_nomatch_unknown(env):
     env.trip("tie", [("a", 5)])  # a is first in both: tie
     env.trip("none", [("q", 5)], t0=T0 + 5000)  # matches nothing
     g = acc(env)["groups"]
-    assert [(x["direction"], x["n"], x["n_delta"], x["stops"]) for x in g] == [("unknown", 2, 0, [])]
+    assert [(x["direction"], x["fallback"], x["n"], x["n_delta"], x["stops"]) for x in g] == [
+        (None, True, 2, 0, [])]
+
+
+def test_server_direction_named_unknown_does_not_collide_with_fallback(env):
+    env.fake.set_route_stops("15", {"unknown": [{"id": "a"}, {"id": "b"}]})
+    env.trip("real", [("a", 0), ("b", 60)])
+    env.trip("nomatch", [("q", 5)], t0=T0 + 5000)
+    g = acc(env)["groups"]
+    assert [(x["direction"], x["fallback"], x["n"], len(x["stops"])) for x in g] == [
+        ("unknown", False, 1, 2), (None, True, 1, 0)]
+    assert [x["direction"] for x in acc(env, direction="unknown")["groups"]] == ["unknown"]
+    assert [x["fallback"] for x in acc(env, direction="__unknown__")["groups"]] == [True]
+
+
+def test_accumulation_same_trip_id_on_two_service_dates_not_merged(env):
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
+    for date, t0, ds in (("2026-01-01", T0, (0, 60, 180)), ("2026-01-02", T0 + 86400, (0, 120, 240))):
+        for i, (sid, d) in enumerate(zip("abc", ds)):
+            env.add(trip="T", stop=sid, delay=d, scheduled=t0 + i * 60, date=date)
+    g = acc(env)["groups"]
+    assert len(g) == 1 and g[0]["n"] == 2  # merged by trip_id alone it would be 1 trip / 3 matches
+    assert [(x["n"], x["mean_delay"], x["segment_delta"]) for x in g[0]["stops"]] == [
+        (2, 0, None), (2, 90, 90), (2, 210, 120)]
+
+
+def test_accumulation_identical_scheduled_rows_not_dropped(env):
+    # reviewer repro: rows c, b, a inserted in that order, all with the same scheduled
+    env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
+    for sid, d in (("c", 30), ("b", 20), ("a", 10)):
+        env.add(trip="t1", stop=sid, delay=d, scheduled=T0)
+    g = acc(env)["groups"]
+    assert [(x["stop_id"], x["position"], x["mean_delay"]) for x in g[0]["stops"]] == [
+        ("a", 0, 10), ("b", 1, 20), ("c", 2, 30)]
+    assert [x["segment_delta"] for x in g[0]["stops"]] == [None, 10, 10]
 
 
 def test_accumulation_partial_trip_best_match(env):
@@ -454,12 +499,14 @@ def test_accumulation_partial_trip_best_match(env):
     assert [x["position"] for x in g[0]["stops"]] == [1, 2]
 
 
-def test_accumulation_rows_ordered_by_scheduled_not_seq(env):
+def test_accumulation_order_follows_scheduled_not_seq(env):
+    # seq deliberately disagrees with scheduled order: seq order would be a(1)->b(2)? no: b has seq 1
     env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}]})
-    env.add(trip="t1", stop="b", delay=60, scheduled=T0 + 60)
-    env.add(trip="t1", stop="a", delay=0, scheduled=T0)
+    env.add(trip="t1", stop="b", delay=60, scheduled=T0 + 60, seq=1)
+    env.add(trip="t1", stop="a", delay=0, scheduled=T0, seq=2)
     g = acc(env)["groups"][0]
-    assert [(x["stop_id"], x["segment_delta"]) for x in g["stops"]] == [("a", None), ("b", 60)]
+    assert [(x["stop_id"], x["position"], x["segment_delta"]) for x in g["stops"]] == [
+        ("a", 0, None), ("b", 1, 60)]
 
 
 def test_accumulation_filters_apply(env):
@@ -476,7 +523,8 @@ def test_accumulation_direction_param(env):
     env.trip("t1", [("a", 0), ("b", 60)])
     env.trip("t2", [("x", 0), ("y", 60)], t0=T0 + 5000)
     assert [g["direction"] for g in acc(env, direction="in")["groups"]] == ["in"]
-    assert [g["direction"] for g in acc(env, direction="unknown")["groups"]] == []
+    assert acc(env, direction="__unknown__")["groups"] == []
+    assert [g["fallback"] for g in acc(env)["groups"]] == [False, False]
     assert env.get("/api/routes/15/accumulation", direction="sideways").status_code == 404
 
 

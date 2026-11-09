@@ -56,6 +56,7 @@ class RawPathRoute(APIRoute):
 router = APIRouter(prefix="/api", route_class=RawPathRoute)
 
 LOW_N = 10
+FALLBACK = "__unknown__"  # reserved internal/query key of the fallback group
 STOPS_TTL, STOPS_CACHE_MAX, STOPS_TIMEOUT = 300, 256, 3.0  # route_stops cache seconds / entries / call timeout
 CI_MAX = 0.9999
 HORIZONS = (30, 20, 10, 5, 2)
@@ -317,14 +318,18 @@ def _summary_db(request, r, p, lists):
     by_stop: dict[str, list[int]] = defaultdict(list)
     for sid, d, _ in rows:
         by_stop[sid].append(d)
-    pos = {}  # stop -> (direction index, position, direction); first occurrence wins
+    pos = {}  # stop -> (first direction index, first position)
+    dirs: dict[str, list[str]] = defaultdict(list)  # stop -> every direction listing it
     for di, (name, ids) in enumerate((lists or {}).items()):
         for i, sid in enumerate(ids):
-            pos.setdefault(sid, (di, i, name))
+            pos.setdefault(sid, (di, i))
+            if name not in dirs[sid]:
+                dirs[sid].append(name)
     out = [{"stop_id": sid, "position": pos[sid][1] if sid in pos else None,
-            "direction": pos[sid][2] if sid in pos else None, **_summ(ds, p)}
+            "direction": dirs[sid][0] if len(dirs.get(sid, ())) == 1 else None,
+            "directions": dirs.get(sid, []), **_summ(ds, p)}
            for sid, ds in by_stop.items()]
-    out.sort(key=lambda s: (s["stop_id"] not in pos, pos.get(s["stop_id"], (0, 0))[:2], s["stop_id"]))
+    out.sort(key=lambda s: (s["stop_id"] not in pos, pos.get(s["stop_id"], (0, 0)), s["stop_id"]))
     return _clean({"route": r, "filters": _filters(p), "order_source": "none" if lists is None else "server",
                    "n": len(rows), "low_n": len(rows) < LOW_N, "stops": out})
 
@@ -334,7 +339,9 @@ async def route_summary(request: Request, r: RouteP, p: P):
     """Per-stop delay stats in ROUTE order from the server's route_stops (first direction listing
     the stop, by its index there); stops the server does not list come last by stop_id with
     position null; server down or malformed -> stop_id order and order_source "none".
-    Each stop: stop_id, position, direction, n, low_n, mean/min/max/std/median/ci_low/ci_high/
+    A stop listed by exactly one direction has `direction` set; one listed by several has direction
+    null and `directions` naming them all (position is then from the first listing).
+    Each stop: stop_id, position, direction, directions, n, low_n, mean/min/max/std/median/ci_low/ci_high/
     p_low/p_high, on_time_pct, reliability."""
     lists, _src = await _order(request, r)
     return await run_in_threadpool(_summary_db, request, r, p, lists)
@@ -377,13 +384,14 @@ def route_heatmap(request: Request, r: RouteP, p: P):
 
 
 def _assign(trip, pos):
-    """trip: [(stop_id, delay)] sorted by scheduled; pos: {direction: {stop_id: [positions]}}.
+    """trip: [(stop_id, delay, scheduled)] sorted by scheduled; pos: {direction: {stop_id: [positions]}}.
     Greedy per direction: each row takes the first occurrence of its stop after the previous
-    matched position (handles loops). Best match count wins; a tie or no match -> (None, [])."""
+    matched position (handles loops); rows with equal scheduled are first ordered by their
+    position in that direction. Best match count wins; a tie or no match -> (None, [])."""
     scored = []
     for name, occ in pos.items():
         prev, m = -1, []
-        for sid, d in trip:
+        for sid, d, _ in sorted(trip, key=lambda r: (r[2], occ[r[0]][0] if r[0] in occ else len(occ))):
             lst = occ.get(sid, ())
             j = bisect_right(lst, prev)
             if j < len(lst):
@@ -398,28 +406,28 @@ def _assign(trip, pos):
 def _accumulation_db(request, r, p, lists, direction):
     rows = _arrivals(request, p, "route = ?", [r], "trip_id, service_date, stop_id, delay")
     trips: dict[tuple, list] = defaultdict(list)
-    for t, sd, sid, d, _ in rows:  # rows come ordered by scheduled
-        trips[(t, sd)].append((sid, d))
+    for t, sd, sid, d, sch in rows:  # rows come ordered by scheduled
+        trips[(t, sd)].append((sid, d, sch))
     pos = {}
     for name, ids in lists.items():
         pos[name] = defaultdict(list)
         for i, sid in enumerate(ids):
             pos[name][sid].append(i)
-    groups: dict[str, list] = {name: [] for name in lists} | {"unknown": []}
+    groups: dict[str, list] = {name: [] for name in lists} | {FALLBACK: []}
     for trip in trips.values():
         name, matched = _assign(trip, pos)
-        groups[name or "unknown"].append(matched)
+        groups[FALLBACK if name is None else name].append(matched)
     out = []
     for name, ts in groups.items():
         if not ts or (direction is not None and name != direction):
             continue
         # unknown trips have no positions, so no per-stop numbers are fabricated for them
-        acc = [] if name == "unknown" else [
+        acc = [] if name == FALLBACK else [
             {"stop_id": a["stop_id"], "position": a["seq"], "mean_delay": a["mean_delay"],
              "segment_delta": a["segment_delta"], "n": a["n"], "n_delta": a["n_delta"],
              "low_n": a["n"] < LOW_N, "low_n_delta": a["n_delta"] < LOW_N}
             for a in stats.accumulation(ts)]
-        out.append({"direction": name, "n": len(ts), "low_n": len(ts) < LOW_N,
+        out.append({"direction": None if name == FALLBACK else name, "fallback": name == FALLBACK, "n": len(ts), "low_n": len(ts) < LOW_N,
                     "n_delta": max((a["n_delta"] for a in acc), default=0), "stops": acc})
     return out
 
@@ -429,7 +437,9 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
     """groups: [{direction, n (trips), n_delta (max trips behind any segment delta), low_n,
     stops:[{stop_id, position, mean_delay, segment_delta, n, n_delta, low_n, low_n_delta}]}].
     A trip's direction is the server direction whose stop list its rows (by scheduled time) follow
-    in increasing position, best match wins; a tie or no match -> group "unknown" (n only, stops []).
+    in increasing position, best match wins; a tie or no match -> the fallback group
+    (`direction` null, `fallback` true, n only, stops []). Select it with direction=__unknown__
+    (internal reserved key, so a real server direction named "unknown" cannot collide).
     Server unavailable/malformed -> 200 {"order_source": "none", "groups": []}, unless
     `direction` was requested (then 404 unknown route / 502). Unknown `direction` -> 404."""
     try:
@@ -438,7 +448,7 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
         if direction is not None:
             raise HTTPException(e.status, e.msg) from None
         return {"route": r, "filters": _filters(p), "order_source": "none", "groups": []}
-    if direction is not None and direction not in (*lists, "unknown"):
+    if direction is not None and direction not in (*lists, FALLBACK):
         raise HTTPException(404, "unknown direction")
     groups = await run_in_threadpool(_accumulation_db, request, r, p, lists, direction)
     return _clean({"route": r, "filters": _filters(p), "order_source": "server", "groups": groups})
