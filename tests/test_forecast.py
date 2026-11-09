@@ -72,10 +72,20 @@ def test_change_only_old_sample_still_forecast(conn):
     assert all(p == 42 for _, p, _ in fc([conn]))
 
 
-def test_realtime_zero_ignored(conn):
+def test_latest_scheduled_sample_omits_horizon_no_fallback(conn):
     add(conn, ACT - 5000, 1, rt=1)
-    add(conn, ACT - 4000, 2, rt=0)
-    assert fc([conn])[0][1] == 1
+    add(conn, ACT - 1000, 2, rt=0)  # latest for h10/h5/h2 (and h20 at -1200? no: -1000 > -1200)
+    assert [(h, p) for h, p, _ in fc([conn])] == [(30, 1), (20, 1)]
+
+
+def test_latest_scheduled_in_current_does_not_fall_through_to_previous():
+    a, b = sqlite3.connect(":memory:"), sqlite3.connect(":memory:")
+    for c in (a, b):
+        c.execute(SCHEMA)
+    add(a, ACT - 5000, 1, rt=0)
+    add(b, ACT - 6000, 2, rt=1)
+    assert fc([a, b]) == []
+    a.close(); b.close()
 
 
 def test_only_scheduled_samples_gives_nothing(conn):
@@ -173,11 +183,15 @@ def oracle(conns, trip, stop, seq, actual):
     for h in (30, 20, 10, 5, 2):
         cutoff = actual - h * 60
         for rows in conns:
-            ok = [r for r in rows if r[1:4] == (trip, stop, seq) and r[6] == 1 and r[0] <= cutoff]
+            ok = [r for r in rows if r[1:4] == (trip, stop, seq) and r[0] <= cutoff]
             if ok:
-                best = max(ok, key=lambda r: r[0])
-                out.append((h, best[5], actual - best[5]))
-                break
+                if max(ok, key=lambda r: r[0])[6] != 1:
+                    break
+                ok = [r for r in ok if r[6] == 1 and r[5] is not None]
+                if ok:
+                    best = max(ok, key=lambda r: r[0])
+                    out.append((h, best[5], actual - best[5]))
+                    break
     return out
 
 
@@ -238,3 +252,27 @@ def test_open_previous_month_exact_month_start(tmp_path, ts, prev_ts):
     prev = open_previous_month(tmp_path, ts)
     assert prev is not None
     prev.close()
+
+
+def test_wal_honoured_when_present(tmp_path):
+    t = ts_of(2026, 2)
+    c = open_samples(tmp_path, t)
+    c.execute("pragma wal_autocheckpoint=0")
+    c.execute("insert into sample values(?,?,?,?,?,?,?)", (t, "T", "S", 1, 5, t + 300, 1))
+    c.commit()  # stays in the WAL; connection (and WAL) left open
+    assert (tmp_path / "samples-2026-02.db-wal").stat().st_size > 0
+    prev = open_previous_month(tmp_path, ts_of(2026, 3))
+    assert prev.execute("select expected from sample").fetchall() == [(t + 300,)]
+    prev.close()
+    c.close()
+
+
+def test_empty_wal_still_uses_immutable(tmp_path):
+    t = ts_of(2026, 2)
+    open_samples(tmp_path, t).close()
+    (tmp_path / "samples-2026-02.db-wal").write_bytes(b"")
+    before = sorted(p.name for p in tmp_path.iterdir())
+    prev = open_previous_month(tmp_path, ts_of(2026, 3))
+    prev.execute("select count(*) from sample").fetchall()
+    prev.close()
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
