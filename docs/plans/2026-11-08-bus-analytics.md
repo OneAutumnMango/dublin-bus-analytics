@@ -78,7 +78,7 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
 **Security flag:** `none`
 **Does NOT cover:** stop_sequence in the static bundle.
 
-- [ ] Tests first (1800 s accepted, 1801 s null, delay-less loop ambiguity null, delay present exact), then code; `./scripts/test.sh` green.
+- [x] Tests first (1800 s accepted, 1801 s null, delay-less loop ambiguity null, delay present exact), then code; `./scripts/test.sh` green.
 
 ### Task 1: Scaffold analytics service
 
