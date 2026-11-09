@@ -236,6 +236,7 @@ Run after Tasks 8 and 9.
 
 **Interfaces:**
 - Consumes: `open_samples_readonly` (Task 9), `open_meta`
+- Notes from the Task 4 reviews (the UI/API must honour them): sample rows are written ONLY on first sight, a change of `(expected, realtime)`, or the first `due_min <= 0`; so the series is a step function of predictions, not a per-poll record. Reconstruct due as `max(0, floor((expected - t)/60))` (the server truncates, it does not round); sample `ts` is the poller tick start, so near a minute boundary the reconstruction can be one minute high; a bus dropped before arrival (e.g. at due 25) has no arrivals row and its last sample is its only record, so do NOT extrapolate a countdown past the last row: label the series 'last seen' and stop there.
 - Produces: `GET /api/trips/{id}/series?stop=` -> `{"trip_id", "stop_id", "points": [{"ts", "due_min", "expected", "realtime"}...]}` ordered by ts, for the arrival's month (and the previous month if the trip spans the boundary); unknown trip/stop -> 404; no samples -> 200 with empty `points`.
 
 **Security flag:** `security` (path/query validated, SQL parameterised)
