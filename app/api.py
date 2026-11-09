@@ -58,7 +58,7 @@ class RawPathRoute(APIRoute):
 router = APIRouter(prefix="/api", route_class=RawPathRoute)
 
 LOW_N = 10
-FALLBACK = "__unknown__"  # reserved internal/query key of the fallback group
+FALLBACK = "__unknown__"  # query value selecting the fallback group (internally keyed by None)
 STOPS_TTL, STOPS_CACHE_MAX, STOPS_TIMEOUT = 300, 256, 3.0  # route_stops cache seconds / entries / call timeout
 CI_MAX = 0.9999
 HORIZONS = (30, 20, 10, 5, 2)
@@ -497,11 +497,11 @@ def _accumulation_db(request, r, p, lists, direction):
     order = np.argsort(trip_no, kind="stable")  # stable: keeps scheduled order inside each trip
     cuts = [0, *(np.flatnonzero(np.diff(trip_no[order])) + 1).tolist(), len(order)] if len(order) else [0]
     # per group: [trips, {position: [stop no, n, sum, n_delta, delta sum]}]
-    agg = {name: [0, {}] for name in lists} | {FALLBACK: [0, {}]}
+    agg = {name: [0, {}] for name in lists} | {None: [0, {}]}  # None (not a str) = fallback group
     for lo, hi in zip(cuts, cuts[1:]):
         ix = order[lo:hi]
         name, matched = _assign(stop_no[ix].tolist(), dly[ix].tolist(), sch[ix].tolist(), pos)
-        g = agg[FALLBACK if name is None else name]
+        g = agg[name]
         g[0] += 1
         prev = None
         for pp, d, si in matched:
@@ -512,14 +512,15 @@ def _accumulation_db(request, r, p, lists, direction):
                 a[3] += 1
                 a[4] += d - prev[1]
             prev = (pp, d)
+    want = None if direction == FALLBACK and direction not in lists else direction
     out = []
     for name, (trips, by_pos) in agg.items():
-        if not trips or (direction is not None and name != direction):
+        if not trips or (direction is not None and name != want):
             continue
         acc = [{"stop_id": names[a[0]], "position": pp, "mean_delay": a[2] / a[1],
                 "segment_delta": a[4] / a[3] if a[3] else None, "n": a[1], "n_delta": a[3],
                 "low_n": a[1] < LOW_N, "low_n_delta": a[3] < LOW_N} for pp, a in sorted(by_pos.items())]
-        out.append({"direction": None if name == FALLBACK else name, "fallback": name == FALLBACK,
+        out.append({"direction": name, "fallback": name is None,
                     "n": trips, "low_n": trips < LOW_N,
                     "n_delta": max((a["n_delta"] for a in acc), default=0), "stops": acc})
     return out, p
@@ -532,7 +533,8 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
     A trip's direction is the server direction whose stop list its rows (by scheduled time) follow
     in increasing position, best match wins; a tie or no match -> the fallback group
     (`direction` null, `fallback` true, n only, stops []). Select it with direction=__unknown__
-    (internal reserved key, so a real server direction named "unknown" cannot collide).
+    (query value only; internally the fallback is keyed by None, so a real server direction that is
+    literally named "__unknown__" is an ordinary group and direction=__unknown__ then selects that one).
     Server unavailable/malformed -> 200 {"order_source": "none", "groups": []}, unless
     `direction` was requested (then 404 unknown route / 502). Unknown `direction` -> 404."""
     try:

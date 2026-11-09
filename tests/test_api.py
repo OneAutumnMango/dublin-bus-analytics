@@ -468,6 +468,19 @@ def test_server_direction_named_unknown_does_not_collide_with_fallback(env):
     assert [x["fallback"] for x in acc(env, direction="__unknown__")["groups"]] == [True]
 
 
+def test_server_direction_literally_named_dunder_unknown_is_ordinary(env):
+    env.fake.set_route_stops("15", {"__unknown__": [{"id": "a"}, {"id": "b"}], "out": [{"id": "c"}]})
+    env.trip("T1", [("a", 0), ("b", 60)])
+    env.trip("T2", [("zz", 5)], t0=T0 + 5000)
+    g = acc(env)["groups"]
+    assert [(x["direction"], x["fallback"], x["n"], len(x["stops"])) for x in g] == [
+        ("__unknown__", False, 1, 2), (None, True, 1, 0)]
+    assert [x["direction"] for x in acc(env, direction="__unknown__")["groups"]] == ["__unknown__"]
+    assert [x["stop_id"] for x in acc(env, direction="__unknown__")["groups"][0]["stops"]] == ["a", "b"]
+    assert [x["fallback"] for x in acc(env, direction="out")["groups"]] == []
+    assert env.get("/api/routes/15/summary").json()["stops"][0]["direction"] == "__unknown__"
+
+
 def test_accumulation_same_trip_id_on_two_service_dates_not_merged(env):
     env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
     for date, t0, ds in (("2026-01-01", T0, (0, 60, 180)), ("2026-01-02", T0 + 86400, (0, 120, 240))):
@@ -500,7 +513,7 @@ def test_accumulation_partial_trip_best_match(env):
 
 
 def test_accumulation_order_follows_scheduled_not_seq(env):
-    # seq deliberately disagrees with scheduled order: seq order would be a(1)->b(2)? no: b has seq 1
+    # seq deliberately disagrees with scheduled order: b has seq 1, a has seq 2, yet a is scheduled first
     env.fake.set_route_stops("15", {"out": [{"id": "a"}, {"id": "b"}]})
     env.add(trip="t1", stop="b", delay=60, scheduled=T0 + 60, seq=1)
     env.add(trip="t1", stop="a", delay=0, scheduled=T0, seq=2)
