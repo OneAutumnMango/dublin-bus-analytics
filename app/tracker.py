@@ -93,6 +93,8 @@ class Tracker:
         self._tick_now = 0
         self._prev: sqlite3.Connection | None = None  # previous-month reader, per tick only
         self._prev_tried = False
+        self._prev_err: Exception | None = None
+        self._tick_wrote = False
 
     def close(self) -> None:
         if self._samples is not None:
@@ -105,6 +107,11 @@ class Tracker:
         if self._samples is None or path != self._samples_path:
             if self._samples is not None:
                 old, self._samples, self._samples_path = self._samples, None, None
+                try:  # fold the closed month's WAL into the file so previous-month readers see everything
+                    if old.execute("pragma wal_checkpoint(truncate)").fetchone()[0]:
+                        log.warning("wal checkpoint busy at month rollover; leaving WAL in place")
+                except Exception:
+                    log.warning("wal checkpoint failed at month rollover", exc_info=True)
                 old.close()  # state is consistent even if opening the new month fails
             self._samples = open_samples(self.data_dir, now)
             self._samples_path = path
@@ -113,7 +120,12 @@ class Tracker:
     def _prev_conn(self) -> sqlite3.Connection | None:
         if not self._prev_tried:
             self._prev_tried = True
-            self._prev = open_previous_month(self.data_dir, self._tick_now)
+            try:
+                self._prev = open_previous_month(self.data_dir, self._tick_now)
+            except Exception as e:
+                self._prev_err = e
+        if self._prev_err is not None:
+            raise self._prev_err  # every arrival needing the previous month logs the failure
         return self._prev
 
     def _on_finalised(self, arrival_id: int, row: dict) -> None:
@@ -127,6 +139,8 @@ class Tracker:
                 conns.append(prev)
             fc = extract_forecasts(conns, *key, row["actual"])
         except Exception:
+            if self._tick_wrote and not self._samples.in_transaction:
+                raise  # this tick's samples were lost: do not store forecasts, roll the tick back
             log.warning("forecast extraction failed for %s", key, exc_info=True)
             return
         self.meta.executemany("insert or ignore into forecast(arrival_id,horizon_min,predicted,error_s) values(?,?,?,?)",
@@ -216,7 +230,7 @@ class Tracker:
             if now <= self._last_now.get(route, -1):
                 return IngestResult(0, 0, 0, stale=True)
             self._undo = {"_live": {}, "_finalised": {}, "_seq": {}, "_last_now": {}}
-            self._tick_now, self._prev_tried = now, False
+            self._tick_now, self._prev_tried, self._prev_err, self._tick_wrote = now, False, None, False
             try:
                 res = await self._ingest(route, valid, invalid, now, resolved)
                 # shortcut: commit order meta then samples; a crash between leaves a finalised row
@@ -331,6 +345,7 @@ class Tracker:
             self._mark("_live", key)
             if sample is not None:
                 samples.execute("insert into sample values(?,?,?,?,?,?,?)", (now, *key[:2], key[2], *sample))
+                self._tick_wrote = True
                 written += 1
             if row is None:
                 self._live[key] = st

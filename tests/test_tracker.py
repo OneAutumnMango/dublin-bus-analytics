@@ -472,7 +472,7 @@ async def test_property_invariants(tmp_path_factory, ticks):
     m = sqlite3.connect(d / "meta.db")
     try:
         got = m.execute("select a.trip_id,a.stop_id,a.seq,f.horizon_min,f.predicted,f.error_s from forecast f "
-                        "join arrivals a on a.id=f.arrival_id").fetchall()
+                        "left join arrivals a on a.id=f.arrival_id").fetchall()
         want = [(tr_, st_, sq, *f) for tr_, st_, sq, act, *_ in arrivals
                 for f in extract_forecasts([sc], tr_, st_, sq, act)]
     finally:
@@ -867,7 +867,7 @@ def dbdump(d):
             out.append((f.name, r))
     c = sqlite3.connect(Path(d) / "meta.db")
     out.insert(1, c.execute("select a.trip_id,a.stop_id,a.seq,f.horizon_min,f.predicted,f.error_s from forecast f "
-                            "join arrivals a on a.id=f.arrival_id order by 1,2,3,4").fetchall())
+                            "left join arrivals a on a.id=f.arrival_id order by 1,2,3,4").fetchall())
     c.close()
     return out
 
@@ -1043,6 +1043,10 @@ def fc(tmp_path, sql="select a.trip_id,f.horizon_min,f.predicted,f.error_s from 
     return rows(tmp_path, sql)
 
 
+def no_orphans(tmp_path):
+    assert rows(tmp_path, "select count(*) from forecast where arrival_id not in (select id from arrivals)") == [(0,)]
+
+
 async def run(t, steps, trip="t1", base=T0, **kw):
     """steps: (ts offset, expected offset, due, realtime) fed in order for one bus."""
     for off, exp, due, rt in steps:
@@ -1059,6 +1063,7 @@ async def test_forecast_rows_hand_computed(tr, tmp_path):
 async def test_forecast_late_bus_positive_error(tr, tmp_path):
     await run(tr, [(0, 400, 7, True), (400, 460, 0, True)])  # predicted 400, actual 460
     assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(5, T0 + 400, 60), (2, T0 + 400, 60)]
+    no_orphans(tmp_path)
 
 
 async def test_forecast_first_seen_due_7_only_h5_h2(tr, tmp_path):
@@ -1102,11 +1107,11 @@ async def test_previous_month_missing_is_fine_and_creates_nothing(tmp_path):
     assert not (tmp_path / "samples-2025-10.db").exists()
 
 
-async def test_previous_month_not_needed_is_not_opened(tmp_path, monkeypatch):
+async def test_previous_month_not_needed_when_actual_exactly_30min_after_start(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(trk, "open_previous_month", lambda *a: calls.append(a))
     t = Tracker(tmp_path, zero_lookup)
-    await run(t, [(0, 3000, 50, True), (2990, 3000, 0, True)], base=M)  # actual - 30 min == month start
+    await run(t, [(0, 1800, 30, True), (1790, 1800, 0, True)], base=M)  # actual - 1800 == M
     t.close()
     assert calls == []
 
@@ -1220,3 +1225,159 @@ async def test_previous_month_opened_once_per_tick(tmp_path, monkeypatch):
     await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 590)
     t.close()
     assert len(opened) == 1
+
+
+async def test_forecast_follows_latest_sample_realtime_flag(tr, tmp_path):
+    # realtime at T, schedule fallback at T+600, actual T+1950: only h30 has a realtime latest sample
+    await run(tr, [(0, 2000, 33, True), (600, 1900, 22, False), (1940, 1950, 0, True)])
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(30, T0 + 2000, -50)]
+
+
+async def test_same_tick_uncommitted_sample_visible(tr, tmp_path):
+    await tr.ingest("15", [arr(0, expected=T0 + 150)], T0)  # first seen at due 0; sample not yet committed
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(2, T0 + 150, 0)]
+
+
+async def test_hook_called_only_for_inserted_arrivals(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await run(t, [(0, 540, 9, True), (540, 540, 0, True)])
+    t.close()
+    before = fc(tmp_path)
+    t = Tracker(tmp_path, make_lookup())
+    calls = []
+    real = t._on_finalised
+    t._on_finalised = lambda i, r: (calls.append(i), real(i, r))
+    await t.ingest("15", [arr(9, expected=T0 + 1), arr(1, expected=T0 + 1)], T0 + 600)  # new key
+    res = await t.ingest("15", [arr(0, expected=T0 + 540)], T0 + 660)  # UNIQUE-ignored duplicate
+    t.close()
+    assert res.finalised == 0 and calls == [] and fc(tmp_path) == before
+    no_orphans(tmp_path)
+
+
+async def test_two_consecutive_ticks_both_need_previous_month(tmp_path, monkeypatch):
+    prev_month_file(tmp_path, [(M - 1200, x, "s1", 0, 30, M + 700, 1) for x in ("a", "b")])
+    opened = []
+    real = trk.open_previous_month
+    monkeypatch.setattr(trk, "open_previous_month", lambda *a: opened.append(1) or real(*a))
+    t = Tracker(tmp_path, zero_lookup)
+    await t.ingest("15", [arr(9, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 60)
+    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="a")], M + 590)
+    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="b")], M + 600)
+    t.close()
+    assert len(opened) == 2
+    assert [(r[0], r[1]) for r in fc(tmp_path)][:2] == [("a", 30), ("a", 20)]
+    assert sorted({r[0] for r in fc(tmp_path) if r[1] == 30}) == ["a", "b"]
+
+
+async def test_open_previous_month_failure_logged_for_every_arrival(tmp_path, monkeypatch, caplog):
+    def boom(*a):
+        raise sqlite3.DatabaseError("nope")
+    monkeypatch.setattr(trk, "open_previous_month", boom)
+    t = Tracker(tmp_path, zero_lookup)
+    await t.ingest("15", [arr(9, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 60)
+    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 590)
+    t.close()
+    msgs = [r.getMessage() for r in caplog.records if "forecast extraction failed" in r.getMessage()]
+    assert len(msgs) == 2 and "'a'" in msgs[0] and "'b'" in msgs[1]
+    assert len(rows(tmp_path)) == 2
+
+
+async def test_lost_samples_transaction_rolls_tick_back(tmp_path, monkeypatch):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(9, expected=T0 + 540)], T0)
+
+    def lose(*a):
+        t._samples.rollback()
+        raise OSError("disk")
+    monkeypatch.setattr(trk, "extract_forecasts", lose)
+    with pytest.raises(OSError):
+        await t.ingest("15", [arr(0, expected=T0 + 540)], T0 + 540)
+    assert rows(tmp_path) == [] and len(samples(tmp_path)) == 1
+    assert ("t1", "s1", 0) in t._live  # in-memory state restored
+
+
+async def test_extraction_error_without_samples_written_is_swallowed(tmp_path, monkeypatch, caplog):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(2, expected=T0 + 540)], T0)
+    monkeypatch.setattr(trk, "extract_forecasts", lambda *a: 1 / 0)
+    res = await t.ingest("15", [], T0 + 60)  # vanish finalise; nothing written this tick
+    t.close()
+    assert res.finalised == 1 and "forecast extraction failed" in caplog.text
+
+
+# ---- WAL / month rollover --------------------------------------------------------------
+OCT31 = int(datetime(2025, 10, 31, tzinfo=ZoneInfo("UTC")).timestamp())
+
+
+def hm(h, m):
+    return OCT31 + h * 3600 + m * 60
+
+
+async def reviewer_scenario(tmp_path, checkpoint=True):
+    t = Tracker(tmp_path, zero_lookup)
+    a = lambda due, exp, ts: t.ingest("15", [arr(due, expected=exp, scheduled=hm(23, 40), trip="t1")], ts)
+    await a(38, hm(23, 58), hm(23, 20))
+    if checkpoint:
+        t._samples.execute("pragma wal_checkpoint(full)").fetchall()
+    held = sqlite3.connect(f"{(tmp_path / 'samples-2025-10.db').as_uri()}?mode=ro", uri=True)
+    held.execute("select count(*) from sample").fetchall()  # plain reader held open across rollover
+    await a(10, hm(23, 57), hm(23, 47))
+    await a(2, hm(23, 58), hm(23, 56))
+    res = await t.ingest("15", [], OCT31 + 86400 + 600)  # Nov 1 00:10: vanish-finalise, rollover
+    assert res.finalised == 1
+    old_wal = tmp_path / "samples-2025-10.db-wal"
+    t.close()
+    held.close()
+    return old_wal
+
+
+async def test_rollover_with_held_reader_and_mid_month_checkpoint(tmp_path):
+    old_wal = await reviewer_scenario(tmp_path)
+    assert [(h, e) for _, h, _, e in fc(tmp_path)] == [(30, 0), (20, 0), (10, 60), (5, 60), (2, 0)]
+    assert not old_wal.exists() or old_wal.stat().st_size == 0  # layer (a): checkpointed at rollover
+
+
+async def test_rollover_without_any_checkpoint(tmp_path):
+    await reviewer_scenario(tmp_path, checkpoint=False)
+    assert [(h, e) for _, h, _, e in fc(tmp_path)] == [(30, 0), (20, 0), (10, 60), (5, 60), (2, 0)]
+
+
+async def test_crashed_previous_month_with_big_wal(tmp_path):
+    import subprocess
+    import sys
+    code = ("import os,sys\nfrom app.db import open_samples\n"
+            "c=open_samples(sys.argv[1],int(sys.argv[2]))\nc.execute('pragma wal_autocheckpoint=0')\n"
+            "c.executemany('insert into sample values(?,?,?,?,?,?,?)',[(%d,'t1','s1',0,5,%d,1),(%d,'t1','s1',0,5,%d,1)])\n"
+            "c.commit()\nos._exit(0)" % (M - 1200, M + 700, M - 100, M + 650))
+    subprocess.run([sys.executable, "-c", code, str(tmp_path), str(M - 3600)], check=True,
+                   cwd=str(__import__("pathlib").Path(__file__).parent.parent), timeout=60)
+    assert (tmp_path / "samples-2025-10.db-wal").stat().st_size > 0
+    t = Tracker(tmp_path, zero_lookup)
+    await run(t, [(60, 600, 9, True), (590, 600, 0, True)], base=M)
+    t.close()
+    assert [(h, p) for _, h, p, _ in fc(tmp_path)] == [(30, M + 700), (20, M + 700), (10, M + 650), (5, M + 600), (2, M + 600)]
+
+
+class _CkptProxy:
+    def __init__(self, c, mode):
+        self._c, self._mode = c, mode
+
+    def execute(self, sql, *a):
+        if sql.startswith("pragma wal_checkpoint"):
+            if self._mode == "raise":
+                raise sqlite3.OperationalError("locked")
+            return self._c.execute("select 1,0,0")  # busy flag set
+        return self._c.execute(sql, *a)
+
+    def __getattr__(self, k):
+        return getattr(self._c, k)
+
+
+@pytest.mark.parametrize("mode", ["busy", "raise"])
+async def test_busy_checkpoint_at_rollover_does_not_abort_tick(tmp_path, caplog, mode):
+    t = Tracker(tmp_path, zero_lookup)
+    await t.ingest("15", [arr(9, expected=OCT31 + 100, scheduled=OCT31 + 50)], OCT31 + 1)
+    t._samples = _CkptProxy(t._samples, mode)
+    res = await t.ingest("15", [arr(9, expected=OCT31 + 86400 + 5, scheduled=OCT31 + 50, trip="n")], OCT31 + 86400 + 1)
+    t.close()
+    assert res.samples_written == 1 and "checkpoint" in caplog.text
