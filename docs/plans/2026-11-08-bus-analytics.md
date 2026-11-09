@@ -137,7 +137,7 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
 **Security flag:** `none`
 **Does NOT cover:** forecast rows (Task 5 hooks in at finalise), polling schedule.
 
-- [ ] **Step 1:** Tests (hand-built `Arrival` sequences, tmp_path DB):
+- [x] **Step 1:** Tests (hand-built `Arrival` sequences, tmp_path DB):
   - `test_unchanged_sample_not_rewritten`
   - `test_due_zero_finalises_with_confidence_1_and_delay_actual_minus_scheduled`
   - `test_vanish_after_due_2_finalises_confidence_0_actual_last_expected`
@@ -146,7 +146,7 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
   - `test_loop_trip_two_seq_two_arrivals`
   - `test_scheduled_only_stored_realtime_0`
   - `test_service_date_across_midnight` (scheduled 00:10 Dublin on 9th with 25:10 timetable semantics uses scheduled epoch's local date)
-- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add tracker"`.
+- [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add tracker"`.
 
 ### Task 5: Forecast extraction
 
