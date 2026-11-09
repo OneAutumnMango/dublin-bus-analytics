@@ -270,7 +270,7 @@ def test_summary_filters_echoed_and_defaults(env):
     f = env.get("/api/routes/15/summary").json()["filters"]
     assert f == {"ci": 0.95, "pct_lo": 0.05, "pct_hi": 0.95, "window_lo": -60, "window_hi": 300,
                  "since": None, "until": None, "weekdays": None, "hours": None,
-                 "min_confidence": 1, "realtime_only": True}
+                 "min_confidence": 1, "truncated": False, "realtime_only": True}
     f = env.get("/api/routes/15/summary", weekdays="0, 2,2", hours="5", since="1", until="9", ci="0.9",
                 min_confidence="0").json()["filters"]
     assert f["weekdays"] == [0, 2] and f["hours"] == [5] and (f["since"], f["until"]) == (1, 9)
@@ -834,34 +834,43 @@ def test_summary_n_matches_filtered_rows(tmp_path_factory, rows, minc, since):
 
 @pytest.fixture
 def spy(monkeypatch):
-    """Records executed statements (expanded) and the row count of every _fetch."""
+    """Records executed statements (expanded) and, per bulk scan, the number of rows fetched."""
     import app.api as api
     st = types.SimpleNamespace(sql=[], fetched=[])
-    real_open, real_fetch = api.open_meta, api._fetch
+    real_open, real_scan = api.open_meta, api._scan
 
     def open_spy(d):
         c = real_open(d)
         c.set_trace_callback(st.sql.append)
         return c
 
-    def fetch_spy(*a, **k):
-        r = real_fetch(*a, **k)
-        st.fetched.append(len(r))
-        return r
+    def scan_spy(request, sql, args, fn, *a, **k):
+        n = [0]
+
+        def counting(rows):
+            n[0] += len(rows)
+            return fn(rows)
+
+        try:
+            return real_scan(request, sql, args, counting, *a, **k)
+        finally:
+            st.fetched.append(n[0])
 
     monkeypatch.setattr(api, "open_meta", open_spy)
-    monkeypatch.setattr(api, "_fetch", fetch_spy)
+    monkeypatch.setattr(api, "_scan", scan_spy)
     return st
 
 
-def bulk(env, n, route="15", step=60):
+def bulk(env, n, route="15", step=60, batch=50_000):
+    """Seed n arrivals in batches (never holds all rows in memory)."""
     db = open_meta(env.s.data_dir)
-    with db:
-        db.executemany(
-            "insert into arrivals(trip_id,stop_id,seq,service_date,scheduled,actual,delay,confidence,"
-            "realtime,route) values(?,?,?,?,?,?,?,?,?,?)",
-            [(f"{route}t{i}", f"s{i % 20}", T0 + i * step, "d", T0 + i * step, T0 + i * step + i % 100, i % 100,
-              0 if i % 10 == 0 else 1, 1, route) for i in range(n)])
+    for lo in range(0, n, batch):
+        with db:
+            db.executemany(
+                "insert into arrivals(trip_id,stop_id,seq,service_date,scheduled,actual,delay,confidence,"
+                "realtime,route) values(?,?,?,?,?,?,?,?,?,?)",
+                [(f"{route}t{i}", f"s{i % 20}", T0 + i * step, "d", T0 + i * step, T0 + i * step + i % 100,
+                  i % 100, 0 if i % 10 == 0 else 1, 1, route) for i in range(lo, min(n, lo + batch))])
     db.close()
 
 
@@ -946,7 +955,7 @@ async def test_event_loop_not_blocked(tmp_path, monkeypatch, what):
         monkeypatch.setattr(api, "_summary_db", lambda *a: (time.sleep(0.3), {})[1])
         req = ("GET", "/api/routes/15/summary")
     elif what == "accumulation":
-        monkeypatch.setattr(api, "_accumulation_db", lambda *a: (time.sleep(0.3), [])[1])
+        monkeypatch.setattr(api, "_accumulation_db", lambda *a: (time.sleep(0.3), ([], a[2]))[1])
         req = ("GET", "/api/routes/15/accumulation")
     elif what == "tracked":
         env.app.state.poller.tracked = lambda: (time.sleep(0.3), [])[1]
@@ -1212,3 +1221,196 @@ def test_db_work_is_mutually_exclusive(env, monkeypatch):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert worst[0] == 1
+
+
+# ---------- fix round 2: N1 bounded memory (cap, chunking, equivalence, peak RSS) ----------
+
+def test_scan_callback_runs_outside_lock_in_chunks(env, monkeypatch):
+    import app.api as api
+    bulk(env, 100)
+    monkeypatch.setattr(api, "CHUNK", 7)
+    sizes = []
+
+    def fn(rows):
+        assert not api._DB_LOCK.locked()  # lock is per fetch chunk, released while the caller works
+        sizes.append(len(rows))
+
+    api._scan(types.SimpleNamespace(app=env.app), "select scheduled from arrivals", [], fn)
+    assert sizes == [7] * 14 + [2]
+    assert not api._DB_LOCK.locked()
+
+
+def test_row_cap_truncates_oldest_rows_and_says_so(env, monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_ROWS", 100)
+    for i in range(250):
+        env.add(scheduled=T0 + i * 60, delay=i)
+    j = env.get("/api/routes/15/summary", min_confidence=0).json()
+    assert j["n"] == 100
+    assert j["filters"]["truncated"] is True and j["filters"]["since"] == T0 + 150 * 60
+    assert j["stops"][0]["min"] == 150  # oldest 150 rows dropped, newest kept
+    # an explicit narrower since is respected (not truncated: only 40 rows fit)
+    j = env.get("/api/routes/15/summary", since=T0 + 210 * 60, min_confidence=0).json()
+    assert j["n"] == 40 and j["filters"]["truncated"] is False and j["filters"]["since"] == T0 + 210 * 60
+
+
+def test_row_cap_exact_size_not_truncated(env, monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_ROWS", 100)
+    for i in range(100):
+        env.add(scheduled=T0 + i * 60, delay=i)
+    j = env.get("/api/routes/15/summary", min_confidence=0).json()
+    assert j["n"] == 100 and j["filters"]["truncated"] is False and j["filters"]["since"] is None
+
+
+@pytest.mark.parametrize("url", ["/api/routes/15/heatmap", "/api/stops/s1/stats", "/api/routes/15/forecast",
+                                 "/api/routes/15/accumulation"])
+def test_row_cap_applies_to_every_endpoint(env, monkeypatch, url):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_ROWS", 20)
+    env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
+    for i in range(60):
+        a = env.add(scheduled=T0 + i * 60, delay=i, trip=f"t{i}")
+        env.fc(a, 10, i)
+    j = env.get(url).json()
+    assert j["filters"]["truncated"] is True and j["filters"]["since"] == T0 + 40 * 60
+    if "horizons" in j:
+        assert j["horizons"][2]["n"] == 20
+    elif "cells" in j or "delay" in j:
+        assert j["n"] == 20
+    else:
+        assert j["groups"][0]["n"] == 20
+
+
+def test_filters_truncated_false_by_default(env):
+    assert env.get("/api/routes/15/forecast").json()["filters"]["truncated"] is False
+
+
+def test_forecast_matches_reference_computation(env):
+    import random
+    rnd = random.Random(7)
+    rows = []
+    for i in range(300):
+        a = env.add(scheduled=T0 + i * 77, delay=0, trip=f"t{i}", confidence=rnd.choice([0, 1, 1]))
+        for h in (30, 20, 10, 5, 2):
+            if rnd.random() < 0.7:
+                e = rnd.randint(-400, 900)
+                env.fc(a, h, e)
+                rows.append((h, e, i))
+    got = {h["horizon_min"]: h for h in env.get("/api/routes/15/forecast").json()["horizons"]}
+    db = open_meta(env.s.data_dir)
+    ok = {r[0] for r in db.execute("select id from arrivals where confidence >= 1")}
+    db.close()
+    import app.stats as st
+    ref = st.forecast_accuracy([{"horizon_min": h, "error_s": e} for h, e, i in rows if i + 1 in ok])
+    for h in (30, 20, 10, 5, 2):
+        assert got[h]["n"] == ref[h]["n"]
+        for k in ("mean_error", "mae", "p_low", "p_high"):
+            assert got[h][k] == pytest.approx(ref[h][k])
+
+
+def test_accumulation_matches_reference_computation(env):
+    import random
+    import app.stats as st
+    rnd = random.Random(11)
+    ids = [f"s{i}" for i in range(12)]
+    env.fake.set_route_stops("15", {"out": [{"id": x} for x in ids]})
+    trips = []
+    for t in range(60):
+        pos = sorted(rnd.sample(range(12), rnd.randint(2, 12)))
+        calls, rows = [], []
+        for k, ps in enumerate(pos):
+            d = rnd.randint(-100, 600)
+            calls.append((ids[ps], d))
+            rows.append({"stop_id": ids[ps], "seq": ps, "delay": d})
+        env.trip(f"t{t}", calls, t0=T0 + t * 10_000)
+        trips.append(rows)
+    g = acc(env)["groups"]
+    assert len(g) == 1 and g[0]["n"] == 60
+    ref = {a["seq"]: a for a in st.accumulation(trips)}
+    assert [x["position"] for x in g[0]["stops"]] == sorted(ref)
+    for x in g[0]["stops"]:
+        r = ref[x["position"]]
+        assert (x["stop_id"], x["n"], x["n_delta"]) == (r["stop_id"], r["n"], r["n_delta"])
+        assert x["mean_delay"] == pytest.approx(r["mean_delay"])
+        if r["segment_delta"] is None:
+            assert x["segment_delta"] is None
+        else:
+            assert x["segment_delta"] == pytest.approx(r["segment_delta"])
+    assert g[0]["n_delta"] == max(a["n_delta"] for a in ref.values())
+
+
+MEM_SCRIPT = r"""
+import json, resource, sys, time
+resource.setrlimit(resource.RLIMIT_AS, (2_500_000 * 1024,) * 2)
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from fastapi.testclient import TestClient
+from app.config import Settings
+from app.main import create_app
+from app.serverclient import ServerClient
+from tests.fake_server import FakeServer
+fake = FakeServer()
+fake.set_route_stops("15", {"out": [{"id": f"s{i}"} for i in range(50)]})
+app = create_app(Settings("http://f", Path(sys.argv[2])), start_background=False,
+                 client=ServerClient("http://f", fake.client()))
+tc = TestClient(app)
+tc.get("/api/routes/zz/summary"); tc.get("/api/routes/zz/forecast"); tc.get("/api/routes/zz/accumulation")
+base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+t = time.perf_counter()
+r = tc.get(sys.argv[3])
+secs = time.perf_counter() - t
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+print(json.dumps({"status": r.status_code, "delta_mb": (peak - base) / 1024, "secs": secs, "body": r.json()}))
+"""
+
+
+@pytest.fixture(scope="module")
+def big_db(tmp_path_factory):
+    d = tmp_path_factory.mktemp("big")
+    env = Env(d)
+    bulk(env, 300_000, batch=20_000)  # 50 stops cycle -> 6000 trips of 50 stops
+    db = open_meta(d)
+    for lo in range(0, 300_000, 25_000):
+        with db:
+            db.executemany("insert into forecast values(?,?,?,?)",
+                           [(i, h, 0, (i * 7) % 600 - 100) for i in range(lo + 1, lo + 25_001) for h in (30, 10)])
+    db.close()
+    yield d
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.mark.parametrize("url,field", [("/api/routes/15/forecast", "horizons"),
+                                       ("/api/routes/15/accumulation", "groups"),
+                                       ("/api/routes/15/summary", "stops")])
+def test_unwindowed_peak_memory_bounded_300k_rows(big_db, url, field):
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = str(Path(__file__).resolve().parent.parent)
+    out = subprocess.run([sys.executable, "-c", MEM_SCRIPT, root, str(big_db), url], capture_output=True,
+                         text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    res = json.loads(out.stdout.strip().splitlines()[-1])
+    assert res["status"] == 200 and res["body"][field]
+    print(url, f"{res['delta_mb']:.0f} MB above baseline, {res['secs']:.1f}s")
+    assert res["delta_mb"] < 150, res["delta_mb"]  # old code: ~200+ MB at 300k rows
+
+
+def test_open_failure_inside_scan_releases_lock_and_connection(env, monkeypatch):
+    import app.api as api
+    env.add(delay=1)
+    real, calls = api.open_meta, []
+
+    def boom(d):
+        calls.append(1)
+        if len(calls) == 2:  # 1st = cap probe (_fetch), 2nd = the bulk _scan
+            raise RuntimeError("cannot open")
+        return real(d)
+
+    monkeypatch.setattr(api, "open_meta", boom)
+    with pytest.raises(RuntimeError):
+        env.get("/api/stops/s1/stats")
+    assert not api._DB_LOCK.locked()
+    assert env.get("/api/stops/s1/stats").json()["n"] == 1

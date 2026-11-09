@@ -19,12 +19,14 @@ import re
 import sqlite3
 import threading
 import time
+from array import array
 from bisect import bisect_right
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import closing
 from typing import Annotated
 from urllib.parse import unquote
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 
 from fastapi.routing import APIRoute
@@ -104,7 +106,7 @@ def _params(ci: QStr = "0.95", pct_lo: QStr = "0.05", pct_hi: QStr = "0.95",
          "until": None if until is None else _int("until", until),
          "weekdays": None if weekdays is None else _int_list("weekdays", weekdays, 0, 6),
          "hours": None if hours is None else _int_list("hours", hours, 0, 23),
-         "min_confidence": _int("min_confidence", min_confidence)}
+         "min_confidence": _int("min_confidence", min_confidence), "truncated": False}
     if not 0 < p["ci"] <= CI_MAX:  # beyond ~1-1e-16 the t quantile is inf; 0.9999 is already extreme
         _bad(f"ci must satisfy 0 < ci <= {CI_MAX}")
     if not 0 <= p["pct_lo"] < p["pct_hi"] <= 1:
@@ -137,13 +139,40 @@ def _filters(p):
 
 
 # Concurrent sqlite readers in the threadpool slow each other 10-1000x on this host, so ALL sqlite
-# work in this module runs under one lock (released on any error by `with`).
+# work in this module runs under one lock. It is taken per statement / per fetched chunk (never
+# around the caller's processing), so short requests interleave with a long scan; `with` releases
+# it on any error.
 _DB_LOCK = threading.Lock()
+CHUNK = 50_000
+# Hard cap on arrivals examined per request: only the most recent MAX_ROWS rows (by scheduled) are
+# used; when older rows were dropped `filters.truncated` is true and `filters.since` is the effective
+# lower bound. Keeps any single request to a few hundred MB.
+MAX_ROWS = 500_000
 
 
 def _fetch(request: Request, sql: str, args: list) -> list[tuple]:
+    """Small result sets only (cap probe)."""
     with _DB_LOCK, closing(open_meta(request.app.state.settings.data_dir)) as c:
         return c.execute(sql, args).fetchall()
+
+
+def _scan(request: Request, sql: str, args: list, fn, size: int | None = None) -> None:
+    """Run `sql`, calling fn(list_of_row_tuples) for each fetched chunk, outside the DB lock."""
+    size = size or CHUNK
+    c = None
+    try:
+        with _DB_LOCK:
+            c = open_meta(request.app.state.settings.data_dir)
+            cur = c.execute(sql, args)
+            rows = cur.fetchmany(size)
+        while rows:
+            fn(rows)
+            with _DB_LOCK:
+                rows = cur.fetchmany(size)
+    finally:
+        if c is not None:
+            with _DB_LOCK:
+                c.close()
 
 
 def _cond(p, a=""):
@@ -156,6 +185,15 @@ def _cond(p, a=""):
     return sql, args
 
 
+def _cap(request, p, where: str, args: list, delay=True) -> dict:
+    """Params with `since` raised (and truncated=True) when more than MAX_ROWS rows match."""
+    cond, cargs = _cond(p)
+    rows = _fetch(request, f"select scheduled from arrivals where {where} and {cond}"
+                  f"{' and delay is not null' if delay else ''} order by scheduled desc limit 2 offset ?",
+                  args + cargs + [MAX_ROWS - 1])
+    return {**p, "since": rows[0][0], "truncated": True} if len(rows) == 2 else p
+
+
 def _tz(rows, i, p):
     """Weekday/hour (Dublin-local) filter in Python on tuples; i = index of `scheduled`."""
     if p["weekdays"] is None and p["hours"] is None:
@@ -165,13 +203,18 @@ def _tz(rows, i, p):
     return [d["_r"] for d in kept]
 
 
-def _arrivals(request, p, where: str, args: list, cols: str) -> list[tuple]:
-    """Filtered arrivals as tuples of `cols` plus `scheduled` appended as the LAST column,
-    ordered by scheduled. realtime/confidence/since/until filter in SQL (index ix_arr_route_sched)."""
+def _scan_arrivals(request, p, where: str, args: list, cols: str, fn) -> None:
+    """fn(chunk) for filtered arrivals as tuples of `cols` plus `scheduled` as the LAST column, ordered
+    by scheduled. realtime/confidence/since/until filter in SQL (index ix_arr_route_sched)."""
     cond, cargs = _cond(p)
-    rows = _fetch(request, f"select {cols}, scheduled from arrivals where {where} and {cond} "
-                  "and delay is not null order by scheduled", args + cargs)
-    return _tz(rows, -1, p)
+
+    def apply(rows):
+        rows = _tz(rows, -1, p)
+        if rows:
+            fn(rows)
+
+    _scan(request, f"select {cols}, scheduled from arrivals where {where} and {cond} "
+          "and delay is not null order by scheduled", args + cargs, apply)
 
 
 def _summ(delays, p) -> dict:
@@ -319,10 +362,16 @@ async def route_stops(request: Request, r: RouteP):
 # ---- stats ----
 
 def _summary_db(request, r, p, lists):
-    rows = _arrivals(request, p, "route = ?", [r], "stop_id, delay")
-    by_stop: dict[str, list[int]] = defaultdict(list)
-    for sid, d, _ in rows:
-        by_stop[sid].append(d)
+    p = _cap(request, p, "route = ?", [r])
+    by_stop: dict[str, array] = defaultdict(lambda: array("q"))
+    total = [0]
+
+    def fn(rows):
+        total[0] += len(rows)
+        for sid, d, _ in rows:
+            by_stop[sid].append(d)
+
+    _scan_arrivals(request, p, "route = ?", [r], "stop_id, delay", fn)
     pos = {}  # stop -> (first direction index, first position)
     dirs: dict[str, list[str]] = defaultdict(list)  # stop -> every direction listing it
     for di, (name, ids) in enumerate((lists or {}).items()):
@@ -335,8 +384,9 @@ def _summary_db(request, r, p, lists):
             "directions": dirs.get(sid, []), **_summ(ds, p)}
            for sid, ds in by_stop.items()]
     out.sort(key=lambda s: (s["stop_id"] not in pos, pos.get(s["stop_id"], (0, 0)), s["stop_id"]))
+    n = total[0]
     return _clean({"route": r, "filters": _filters(p), "order_source": "none" if lists is None else "server",
-                   "n": len(rows), "low_n": len(rows) < LOW_N, "stops": out})
+                   "n": n, "low_n": n < LOW_N, "stops": out})
 
 
 @router.get("/routes/{r}/summary")
@@ -366,75 +416,113 @@ def stop_stats(request: Request, s: StopP, p: P, route: QStr = None):
     the actual-minus-scheduled delay}, on_time_pct, reliability, histogram (60 s bins from -600 to
     1800 plus open-ended outer bins) and the 20 most recent arrivals."""
     where, args = ("stop_id = ?", [s]) if route is None else ("stop_id = ? and route = ?", [s, route])
-    rows = _arrivals(request, p, where, args,
-                     "trip_id, route, seq, service_date, actual, delay, confidence")
-    delays = [r[5] for r in rows]
+    p = _cap(request, p, where, args)
+    delays, recent = array("q"), deque(maxlen=RECENT)
+
+    def fn(rows):
+        delays.extend(r[5] for r in rows)
+        recent.extend(rows[-RECENT:])
+
+    _scan_arrivals(request, p, where, args, "trip_id, route, seq, service_date, actual, delay, confidence", fn)
     d = _summ(delays, p)
     keys = ("trip_id", "route", "seq", "service_date", "actual", "delay", "confidence", "scheduled")
-    recent = [dict(zip(keys, r)) for r in reversed(rows[-RECENT:])]
     return _clean({"stop_id": s, "route": route, "filters": _filters(p), "n": d["n"], "low_n": d["low_n"],
                    "delay": {k: d[k] for k in ("mean", "min", "max", "std", "median", "ci_low", "ci_high",
                                               "p_low", "p_high")},
                    "on_time_pct": d["on_time_pct"], "reliability": d["reliability"],
-                   "histogram": _histogram(delays), "recent": recent})
+                   "histogram": _histogram(delays), "recent": [dict(zip(keys, r)) for r in reversed(recent)]})
 
 
 @router.get("/routes/{r}/heatmap")
 def route_heatmap(request: Request, r: RouteP, p: P):
     """cells: [{weekday 0=Mon, hour, n, low_n, mean_delay}] for Dublin-local scheduled time."""
-    rows = _arrivals(request, p, "route = ?", [r], "delay")
-    h = stats.heatmap([{"delay": d, "scheduled": s} for d, s in rows])
-    cells = [{**c, "low_n": c["n"] < LOW_N} for c in stats.heatmap_to_json(h)]
-    return _clean({"route": r, "filters": _filters(p), "n": len(rows), "cells": cells})
+    p = _cap(request, p, "route = ?", [r])
+    cnt, tot = defaultdict(int), defaultdict(float)
+
+    def fn(rows):  # per-chunk heatmap merged by (n, sum): no per-row objects survive the chunk
+        for k, v in stats.heatmap([{"delay": d, "scheduled": s} for d, s in rows]).items():
+            cnt[k] += v["n"]
+            tot[k] += v["mean_delay"] * v["n"]
+
+    _scan_arrivals(request, p, "route = ?", [r], "delay", fn)
+    cells = [{"weekday": wd, "hour": hr, "n": cnt[k], "low_n": cnt[k] < LOW_N, "mean_delay": tot[k] / cnt[k]}
+             for k in sorted(cnt) for wd, hr in [k]]
+    return _clean({"route": r, "filters": _filters(p), "n": sum(cnt.values()), "cells": cells})
 
 
-def _assign(trip, pos):
-    """trip: [(stop_id, delay, scheduled)] sorted by scheduled; pos: {direction: {stop_id: [positions]}}.
-    Greedy per direction: each row takes the first occurrence of its stop after the previous
-    matched position (handles loops); rows with equal scheduled are first ordered by their
-    position in that direction. Best match count wins; a tie or no match -> (None, [])."""
-    scored = []
+def _assign(stops, delays, scheds, pos):
+    """One trip: parallel lists (stop index, delay, scheduled) sorted by scheduled; pos:
+    {direction: {stop index: [positions]}}. Greedy per direction: each row takes the first
+    occurrence of its stop after the previous matched position (handles loops); rows with equal
+    scheduled are first ordered by their position in that direction. Best match count wins;
+    a tie or no match -> (None, [])."""
+    best, tied = (0, None, []), False
     for name, occ in pos.items():
         prev, m = -1, []
-        for sid, d, _ in sorted(trip, key=lambda r: (r[2], occ[r[0]][0] if r[0] in occ else len(occ))):
-            lst = occ.get(sid, ())
+        for i in sorted(range(len(stops)), key=lambda i: (scheds[i], occ[stops[i]][0] if stops[i] in occ else len(occ))):
+            lst = occ.get(stops[i], ())
             j = bisect_right(lst, prev)
             if j < len(lst):
                 prev = lst[j]
-                m.append({"stop_id": sid, "seq": prev, "delay": d})
-        scored.append((len(m), name, m))
-    top = max((x[0] for x in scored), default=0)
-    win = [x for x in scored if x[0] == top]
-    return (win[0][1], win[0][2]) if top > 0 and len(win) == 1 else (None, [])
+                m.append((prev, delays[i], stops[i]))
+        if len(m) > best[0]:
+            best, tied = (len(m), name, m), False
+        elif m and len(m) == best[0]:
+            tied = True
+    return (None, []) if tied or best[0] == 0 else (best[1], best[2])
 
 
 def _accumulation_db(request, r, p, lists, direction):
-    rows = _arrivals(request, p, "route = ?", [r], "trip_id, service_date, stop_id, delay")
-    trips: dict[tuple, list] = defaultdict(list)
-    for t, sd, sid, d, sch in rows:  # rows come ordered by scheduled
-        trips[(t, sd)].append((sid, d, sch))
-    pos = {}
+    p = _cap(request, p, "route = ?", [r])
+    stop_ix: dict[str, int] = {}
+    trip_ix: dict[tuple, int] = {}
+    cols = [array("q") for _ in range(4)]  # trip no, stop no, delay, scheduled (flat, no per-row objects)
+
+    def fn(rows):
+        for t, sd, sid, d, sch in rows:  # rows arrive ordered by scheduled
+            cols[0].append(trip_ix.setdefault((t, sd), len(trip_ix)))
+            cols[1].append(stop_ix.setdefault(sid, len(stop_ix)))
+            cols[2].append(d)
+            cols[3].append(sch)
+
+    _scan_arrivals(request, p, "route = ?", [r], "trip_id, service_date, stop_id, delay", fn)
+    del trip_ix
+    names = list(stop_ix)
+    pos = {name: defaultdict(list) for name in lists}
     for name, ids in lists.items():
-        pos[name] = defaultdict(list)
         for i, sid in enumerate(ids):
-            pos[name][sid].append(i)
-    groups: dict[str, list] = {name: [] for name in lists} | {FALLBACK: []}
-    for trip in trips.values():
-        name, matched = _assign(trip, pos)
-        groups[FALLBACK if name is None else name].append(matched)
+            if sid in stop_ix:
+                pos[name][stop_ix[sid]].append(i)
+    trip_no, stop_no, dly, sch = (np.frombuffer(c, dtype=np.int64) for c in cols) if cols[0] else ([],) * 4
+    order = np.argsort(trip_no, kind="stable")  # stable: keeps scheduled order inside each trip
+    cuts = [0, *(np.flatnonzero(np.diff(trip_no[order])) + 1).tolist(), len(order)] if len(order) else [0]
+    # per group: [trips, {position: [stop no, n, sum, n_delta, delta sum]}]
+    agg = {name: [0, {}] for name in lists} | {FALLBACK: [0, {}]}
+    for lo, hi in zip(cuts, cuts[1:]):
+        ix = order[lo:hi]
+        name, matched = _assign(stop_no[ix].tolist(), dly[ix].tolist(), sch[ix].tolist(), pos)
+        g = agg[FALLBACK if name is None else name]
+        g[0] += 1
+        prev = None
+        for pp, d, si in matched:
+            a = g[1].setdefault(pp, [si, 0, 0, 0, 0])
+            a[1] += 1
+            a[2] += d
+            if prev is not None and prev[0] == pp - 1:
+                a[3] += 1
+                a[4] += d - prev[1]
+            prev = (pp, d)
     out = []
-    for name, ts in groups.items():
-        if not ts or (direction is not None and name != direction):
+    for name, (trips, by_pos) in agg.items():
+        if not trips or (direction is not None and name != direction):
             continue
-        # unknown trips have no positions, so no per-stop numbers are fabricated for them
-        acc = [] if name == FALLBACK else [
-            {"stop_id": a["stop_id"], "position": a["seq"], "mean_delay": a["mean_delay"],
-             "segment_delta": a["segment_delta"], "n": a["n"], "n_delta": a["n_delta"],
-             "low_n": a["n"] < LOW_N, "low_n_delta": a["n_delta"] < LOW_N}
-            for a in stats.accumulation(ts)]
-        out.append({"direction": None if name == FALLBACK else name, "fallback": name == FALLBACK, "n": len(ts), "low_n": len(ts) < LOW_N,
+        acc = [{"stop_id": names[a[0]], "position": pp, "mean_delay": a[2] / a[1],
+                "segment_delta": a[4] / a[3] if a[3] else None, "n": a[1], "n_delta": a[3],
+                "low_n": a[1] < LOW_N, "low_n_delta": a[3] < LOW_N} for pp, a in sorted(by_pos.items())]
+        out.append({"direction": None if name == FALLBACK else name, "fallback": name == FALLBACK,
+                    "n": trips, "low_n": trips < LOW_N,
                     "n_delta": max((a["n_delta"] for a in acc), default=0), "stops": acc})
-    return out
+    return out, p
 
 
 @router.get("/routes/{r}/accumulation")
@@ -455,7 +543,7 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
         return {"route": r, "filters": _filters(p), "order_source": "none", "groups": []}
     if direction is not None and direction not in (*lists, FALLBACK):
         raise HTTPException(404, "unknown direction")
-    groups = await run_in_threadpool(_accumulation_db, request, r, p, lists, direction)
+    groups, p = await run_in_threadpool(_accumulation_db, request, r, p, lists, direction)
     return _clean({"route": r, "filters": _filters(p), "order_source": "server", "groups": groups})
 
 
@@ -463,15 +551,25 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
 def route_forecast(request: Request, r: RouteP, p: P):
     """horizons: always [30,20,10,5,2] in that order: {horizon_min, n, low_n, mean_error, mae,
     p_low, p_high} (null stats when n=0). error = actual minus predicted seconds."""
+    p = _cap(request, p, "route = ?", [r], delay=False)
     cond, cargs = _cond(p, "a.")
     marks = ",".join("?" * len(HORIZONS))
-    rows = _tz(_fetch(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
-                      "join forecast f on f.arrival_id = a.id "
-                      f"where a.route = ? and {cond} and f.error_s is not null "
-                      f"and f.horizon_min in ({marks})", [r] + cargs + list(HORIZONS)), 2, p)
-    acc = stats.forecast_accuracy([{"horizon_min": h, "error_s": e} for h, e, _ in rows])
-    empty = dict.fromkeys(("mean_error", "mae", "p_low", "p_high"))
-    hs = [{"horizon_min": h, **{"n": 0, **empty, **acc.get(h, {})}} for h in HORIZONS]
-    for h in hs:
-        h["low_n"] = h["n"] < LOW_N
+    errs = {h: array("q") for h in HORIZONS}  # compact per-horizon arrays; percentiles need the values
+
+    def fn(rows):
+        for h, e, _ in _tz(rows, 2, p):
+            errs[h].append(e)
+
+    _scan(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
+          "join forecast f on f.arrival_id = a.id "
+          f"where a.route = ? and {cond} and f.error_s is not null "
+          f"and f.horizon_min in ({marks})", [r] + cargs + list(HORIZONS), fn)
+    hs = []
+    for h in HORIZONS:
+        a = np.asarray(errs[h], dtype=float)
+        v = dict.fromkeys(("mean_error", "mae", "p_low", "p_high"))
+        if len(a):
+            v = {"mean_error": float(a.mean()), "mae": float(np.abs(a).mean()),
+                 "p_low": float(np.percentile(a, 5)), "p_high": float(np.percentile(a, 95))}
+        hs.append({"horizon_min": h, "n": len(a), **v, "low_n": len(a) < LOW_N})
     return _clean({"route": r, "filters": _filters(p), "horizons": hs})
