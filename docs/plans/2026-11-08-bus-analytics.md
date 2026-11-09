@@ -225,8 +225,8 @@ Added after the Task 6 review: `scheduledEpochSeconds` is the per-visit key for 
 **Security flag:** `none`
 **Does NOT cover:** off-host backup (README says to copy the volume); scheduling (Task 12).
 
-- [ ] **Step 1:** Tests: `test_snapshot_restorable_and_consistent_while_writing`, `test_snapshot_retention_keeps_7`, `test_compact_gzips_only_closed_months`, `test_compact_idempotent`, `test_series_reads_gzipped_month`.
-- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add backup and compaction"`.
+- [x] **Step 1:** Tests: `test_snapshot_restorable_and_consistent_while_writing`, `test_snapshot_retention_keeps_7`, `test_compact_gzips_only_closed_months`, `test_compact_idempotent`, `test_series_reads_gzipped_month`.
+- [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add backup and compaction"`.
 
 ### Task 8b: Trip series endpoint
 
@@ -241,8 +241,8 @@ Run after Tasks 8 and 9.
 **Security flag:** `security` (path/query validated, SQL parameterised)
 **Does NOT cover:** auth.
 
-- [ ] **Step 1: Failing tests:** `test_trip_series_returns_due_reaching_zero`, `test_trip_series_reads_gzipped_month`, `test_trip_series_unknown_trip_404`, `test_trip_series_spans_month_boundary`.
-- [ ] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add trip series endpoint"`.
+- [x] **Step 1: Failing tests:** `test_trip_series_returns_due_reaching_zero`, `test_trip_series_reads_gzipped_month`, `test_trip_series_unknown_trip_404`, `test_trip_series_spans_month_boundary`.
+- [x] **Step 2-4:** fail, implement, pass. **Step 5:** Commit `"Add trip series endpoint"`.
 
 ### Task 10: Web UI
 
