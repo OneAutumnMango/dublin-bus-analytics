@@ -117,7 +117,7 @@ from app.main import create_app
 from app.scheduler import BackupScheduler
 
 
-class Stop(Exception):
+class Stop(BaseException):  # BaseException: must escape the loop's `except Exception`
     pass
 
 
@@ -164,7 +164,10 @@ class Spy:
         self.calls.append(("snapshot", data_dir, backup_dir, keep))
         if self.fail_snapshot:
             raise OSError("disk full")
-        return Path(backup_dir) / "analytics-x.tar"
+        Path(backup_dir).mkdir(parents=True, exist_ok=True)
+        p = Path(backup_dir) / "analytics-x.tar"
+        p.write_bytes(b"x")
+        return p
 
     def compact(self, data_dir, now, skipped=None):
         self.calls.append(("compact", data_dir, now, skipped))
@@ -218,7 +221,7 @@ async def test_compaction_failure_is_logged_backup_kept(tmp_path, caplog):
 
 
 async def test_run_survives_unexpected_exception_from_run_once(tmp_path, caplog):
-    sc, _ = sched(tmp_path, Spy(), Clock(NOW, limit=2))
+    sc, _ = sched(tmp_path, Spy(), Clock(NOW, limit=3))
     put_backup(sc.settings, NOW)
     n = []
 
@@ -229,7 +232,7 @@ async def test_run_survives_unexpected_exception_from_run_once(tmp_path, caplog)
     sc.run_once = boom
     with pytest.raises(Stop):
         await sc.run()
-    assert len(n) == 2 and any("backup run failed" in r.message for r in caplog.records)
+    assert len(n) == 2 and any("iteration failed" in r.message for r in caplog.records)
 
 
 async def test_disabled_scheduler_never_runs(tmp_path, caplog):
@@ -467,3 +470,135 @@ def test_lifespan_no_scheduler_without_background(tmp_path, monkeypatch):
     with TestClient(_app(tmp_path, False)):
         pass
     assert called == []
+
+
+# ---------------------------------------------------------------- fix round 1
+async def test_loop_survives_now_fn_failure_once(tmp_path, caplog):
+    spy = Spy()
+    clock = Clock(d(2026, 6, 10, 12), limit=2)
+    boom = [True]
+
+    def now():
+        if boom[0]:
+            boom[0] = False
+            raise RuntimeError("clock")
+        return clock.now
+
+    sc = BackupScheduler(S(tmp_path), now_fn=now, sleep_fn=clock.sleep, snapshot_fn=spy.snap, compact_fn=spy.compact)
+    put_backup(sc.settings, NOW)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert clock.sleeps[0] == 60 and any(r.exc_info for r in caplog.records)
+    assert len(spy.calls) == 2  # the backup still happened later
+
+
+async def test_loop_survives_sleep_fn_failure_once(tmp_path):
+    spy = Spy()
+    clock = Clock(d(2026, 6, 10, 12), limit=2)
+    first = [True]
+
+    async def sleep(secs):
+        if first[0]:
+            first[0] = False
+            raise RuntimeError("sleep")
+        await clock.sleep(secs)
+
+    sc = BackupScheduler(S(tmp_path), now_fn=clock, sleep_fn=sleep, snapshot_fn=spy.snap, compact_fn=spy.compact)
+    put_backup(sc.settings, clock.now)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert clock.sleeps[0] == 60 and len(spy.calls) == 2
+
+
+async def test_loop_survives_next_run_failure_once(tmp_path, monkeypatch):
+    import app.scheduler as m
+    spy = Spy()
+    real, first = m.next_run, [True]
+
+    def flaky(now, t):
+        if first[0]:
+            first[0] = False
+            raise RuntimeError("next_run")
+        return real(now, t)
+
+    monkeypatch.setattr(m, "next_run", flaky)
+    clock = Clock(d(2026, 6, 10, 12), limit=2)
+    sc, _ = sched(tmp_path, spy, clock)
+    put_backup(sc.settings, clock.now)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert clock.sleeps[0] == 60 and len(spy.calls) == 2
+
+
+async def test_catch_up_failure_does_not_stop_loop(tmp_path):
+    spy = Spy()
+    sc, clock = sched(tmp_path, spy, Clock(NOW, limit=1))
+    calls = []
+    orig = sc._needs_catch_up
+
+    def bad():
+        calls.append(1)
+        raise RuntimeError("x")
+
+    sc._needs_catch_up = bad
+    with pytest.raises(Stop):
+        await sc.run()
+    assert calls == [1] and clock.sleeps[0] == 60  # catch-up attempted once, not retried every loop
+
+
+async def test_cancel_inside_error_backoff_propagates(tmp_path):
+    started = asyncio.Event()
+
+    async def sleep(_):
+        started.set()
+        await asyncio.sleep(3600)
+
+    def now():
+        raise RuntimeError("x")
+
+    sc = BackupScheduler(S(tmp_path), now_fn=now, sleep_fn=sleep, snapshot_fn=Spy().snap, compact_fn=Spy().compact)
+    put_backup(S(tmp_path), NOW)
+    t = asyncio.create_task(sc.run())
+    await started.wait()
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+
+
+@pytest.mark.parametrize("mode", ["none", "missing", "empty"])
+async def test_unusable_snapshot_result_skips_compaction(tmp_path, mode, caplog):
+    spy = Spy()
+    empty = tmp_path / "empty.tar"
+    empty.write_bytes(b"")
+    spy.snap = lambda *a: {"none": None, "missing": tmp_path / "nope.tar", "empty": empty}[mode]
+    sc, _ = sched(tmp_path, spy)
+    assert await sc.run_once() is None
+    assert spy.calls == [] and any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+async def test_relative_backup_dir_warns_once(tmp_path, caplog):
+    sc, _ = sched(tmp_path, Spy(), Clock(NOW, limit=2), backup_dir=Path("rel/bk"))
+    put_backup(S(tmp_path, backup_dir=Path("rel/bk")), NOW)  # (cwd-relative; cleaned below)
+    try:
+        with pytest.raises(Stop):
+            await sc.run()
+    finally:
+        import shutil
+        shutil.rmtree("rel", ignore_errors=True)
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING and "BACKUP_DIR" in r.message]
+    assert len(warns) == 1 and str(Path("rel/bk").resolve()) in warns[0].message
+
+
+async def test_absolute_backup_dir_no_warning(tmp_path, caplog):
+    sc, _ = sched(tmp_path, Spy(), Clock(NOW, limit=0))
+    put_backup(sc.settings, NOW)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+async def test_default_backup_dir_no_warning(tmp_path, caplog):
+    sc, _ = sched(tmp_path, Spy(), Clock(NOW, limit=0), backup_dir=None)
+    with pytest.raises(Stop):
+        await sc.run()
+    assert not [r for r in caplog.records if "BACKUP_DIR" in r.message]

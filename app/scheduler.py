@@ -42,6 +42,7 @@ def next_run(now: datetime, backup_time: str) -> datetime:
 
 log = logging.getLogger(__name__)
 CATCH_UP_AFTER_S = 24 * 3600
+RETRY_S = 60
 MIN_SLEEP_S = 1.0  # a backwards clock jump must never turn the loop into a spin
 
 
@@ -67,6 +68,9 @@ class BackupScheduler:
             path = await asyncio.to_thread(self.snapshot_fn, s.data_dir, s.backup_path, s.backup_keep)
         except Exception:
             log.exception("backup snapshot failed; compaction skipped")
+            return None
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            log.error("snapshot returned no usable backup file (%s); compaction skipped", path)
             return None
         log.info("backup written: %s", path)
         skipped: list[Path] = []
@@ -94,15 +98,23 @@ class BackupScheduler:
         if not self.settings.backup_enabled:
             log.info("backups disabled (BACKUP_ENABLED=false)")
             return
-        if self._needs_catch_up():
-            log.info("no backup in the last 24h; running catch-up backup")
-            await self.run_once()
+        d = self.settings.backup_dir
+        if d is not None and not d.is_absolute():
+            log.warning("BACKUP_DIR %s is relative; it resolves to %s against the working directory "
+                        "(use an absolute path, e.g. under /data, in containers)", d, d.resolve())
+        caught_up = False
         while True:
-            nxt = next_run(self.now_fn(), self.settings.backup_time)
-            await self.sleep_fn(max(MIN_SLEEP_S, (nxt - self.now_fn()).total_seconds()))
-            if self.now_fn() < nxt:  # clock went backwards while sleeping: not due yet
-                continue
-            try:
+            try:  # the whole body is guarded: the scheduler must never silently stop (cancel still propagates)
+                if not caught_up:
+                    caught_up = True
+                    if self._needs_catch_up():
+                        log.info("no backup in the last 24h; running catch-up backup")
+                        await self.run_once()
+                nxt = next_run(self.now_fn(), self.settings.backup_time)
+                await self.sleep_fn(max(MIN_SLEEP_S, (nxt - self.now_fn()).total_seconds()))
+                if self.now_fn() < nxt:  # clock went backwards while sleeping: not due yet
+                    continue
                 await self.run_once()
-            except Exception:  # run_once handles its own errors; this keeps the loop alive whatever happens
-                log.exception("backup run failed")
+            except Exception:
+                log.exception("backup scheduler iteration failed; retrying in %ds", RETRY_S)
+                await self.sleep_fn(RETRY_S)
