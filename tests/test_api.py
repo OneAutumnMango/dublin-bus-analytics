@@ -1867,3 +1867,16 @@ def test_trip_series_other_trip_and_stop_samples_not_mixed(env):
     put_samples(env, [(S, S, 9, S, 1)], trip="T2")
     put_samples(env, [(S, S, 9, S, 1)], stop="s2")
     assert len(series(env).json()["visits"][0]["points"]) == 3
+
+
+def test_scan_open_failure_propagates_without_close(env, monkeypatch):
+    import app.api as api
+
+    def boom(_):
+        raise sqlite3.OperationalError("cannot open")
+    monkeypatch.setattr(api, "open_meta", boom)
+    req = types.SimpleNamespace(app=env.app)
+    with pytest.raises(sqlite3.OperationalError):
+        api._scan(req, "select 1", [], lambda rows: None)
+    assert api._DB_LOCK.acquire(blocking=False)  # lock released
+    api._DB_LOCK.release()
