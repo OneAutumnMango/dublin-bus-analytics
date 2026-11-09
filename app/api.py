@@ -15,15 +15,19 @@ stop order comes only from the server's route_stops (`order_source` 'server' | '
 """
 import asyncio
 import functools
+import logging
 import math
+import os
 import re
 import sqlite3
 import threading
 import time
+import zlib
 from array import array
 from bisect import bisect_right
 from collections import defaultdict, deque
 from contextlib import closing
+from datetime import datetime, timezone
 from typing import Annotated
 from urllib.parse import unquote
 
@@ -35,7 +39,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
 from app import stats
-from app.db import open_meta
+from app.db import open_meta, open_samples_readonly
 from app.poller import ROUTE_RE
 from app.serverclient import RouteNotFound, ServerUnavailable
 
@@ -56,6 +60,7 @@ class RawPathRoute(APIRoute):
         return match, child
 
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", route_class=RawPathRoute)
 
 LOW_N = 10
@@ -608,3 +613,130 @@ def route_forecast(request: Request, r: RouteP, p: P):
                  "p_low": float(np.percentile(a, 5)), "p_high": float(np.percentile(a, 95))}
         hs.append({"horizon_min": h, "n": len(a), **v, "low_n": len(a) < LOW_N})
     return _clean({"route": r, "filters": _filters(p), "horizons": hs})
+
+
+# ---- trip series ----
+
+MAX_VISITS, MAX_POINTS, MAX_SERIES_MONTHS = 50, 2000, 2
+SERIES_MARGIN_S = 86_400  # samples lie within hours of a visit's scheduled..actual; one day of slack each side
+_MONTH_FILE = re.compile(r"samples-([0-9]{4})-(0[1-9]|1[0-2])\.db(?:\.gz)?")
+TripP = Annotated[str, Path(min_length=1, max_length=64)]
+SeriesStop = Annotated[str, Query(min_length=1, max_length=64)]
+
+
+def _month_no(ts: int) -> int:
+    d = datetime.fromtimestamp(ts, timezone.utc)
+    return d.year * 12 + d.month - 1
+
+
+def _disk_months(data_dir) -> list[int]:
+    """Month numbers having samples-YYYY-MM.db or .db.gz (strict file-name match; no user input in paths)."""
+    with os.scandir(data_dir) as it:
+        found = {int(m[1]) * 12 + int(m[2]) - 1 for e in it if (m := _MONTH_FILE.fullmatch(e.name))}
+    return sorted(found)
+
+
+def _read_month(data_dir, month_no: int, sql: str, args: list, fn) -> None:
+    """fn(row) for each row of one month; a missing month is skipped, an unreadable (corrupt) one is
+    logged and skipped. Decompression of a gz month happens outside _DB_LOCK; the connection (and its
+    temp copy) is always closed."""
+    ts = int(datetime(month_no // 12, month_no % 12 + 1, 1, tzinfo=timezone.utc).timestamp())
+    try:
+        c = open_samples_readonly(data_dir, ts)
+    except FileNotFoundError:
+        return
+    except (OSError, EOFError, zlib.error, sqlite3.Error) as e:
+        log.warning("series: cannot open samples month %d-%02d: %r", month_no // 12, month_no % 12 + 1, e)
+        return
+    try:
+        with _DB_LOCK:
+            cur = c.execute(sql, args)
+            rows = cur.fetchmany(CHUNK)
+        while rows:
+            for r in rows:
+                fn(r)
+            with _DB_LOCK:
+                rows = cur.fetchmany(CHUNK)
+    except sqlite3.Error as e:  # corrupt file: keep what was read from the other months
+        log.warning("series: unreadable samples month %d-%02d: %r", month_no // 12, month_no % 12 + 1, e)
+    finally:
+        with _DB_LOCK:
+            c.close()
+
+
+@router.get("/trips/{trip_id}/series")
+def trip_series(request: Request, trip_id: TripP, stop: SeriesStop, seq: QStr = None, since: QStr = None,
+                until: QStr = None):
+    """Prediction series of one trip at one stop: {trip_id, stop_id, truncated, visits: [{seq, scheduled,
+    arrival: {actual, delay, confidence, realtime, service_date} | null, last_seen_ts,
+    points: [{ts, due_min, expected, realtime}]}]}, visits by seq, points by ts.
+    A visit is one call of the trip at the stop; `seq` is its SCHEDULED EPOCH (a loop trip has several
+    visits, a trip_id reused on another service date has others). `seq` selects one visit; since/until
+    (epoch ints, inclusive) bound the visit's seq (= scheduled). `arrival` is null for a bus that was
+    dropped before arriving. The points are a STEP FUNCTION of the feed's predictions (rows are written
+    only on first sight, a change of (expected, realtime) or the first due_min <= 0), not one per poll;
+    `due_min` is the feed's value when written. A UI reconstructs due at time t as
+    max(0, floor((expected - t) / 60)) and must NOT extrapolate past `last_seen_ts` (the latest sample of
+    the visit; a dropped bus has no row after it). At most MAX_VISITS visits and MAX_POINTS points per
+    visit (the earliest; `last_seen_ts` is still the true latest) and MAX_SERIES_MONTHS month files
+    (the most recent) are read; any cut sets `truncated`. Months come from the arrivals rows (their
+    scheduled/actual +- one day) or, with no arrivals row, from the months on disk within since/until
+    (else the most recent ones). A sample-only visit is thus found only in those months.
+    404 when no visit matched; an arrivals row without samples gives 200 with empty points."""
+    want_seq = None if seq is None else _int("seq", seq)
+    lo = None if since is None else _int("since", since)
+    hi = None if until is None else _int("until", until)
+    if lo is not None and hi is not None and lo > hi:
+        _bad("since must be <= until")
+    cond, cargs = "", []
+    for col, op, v in (("seq", "=", want_seq), ("seq", ">=", lo), ("seq", "<=", hi)):
+        if v is not None:
+            cond += f" and {col} {op} ?"
+            cargs.append(v)
+    arr = _fetch(request, "select seq, scheduled, actual, delay, confidence, realtime, service_date from arrivals "
+                 f"where trip_id = ? and stop_id = ? and seq is not null{cond} order by seq, service_date limit ?",
+                 [trip_id, stop, *cargs, MAX_VISITS + 1])
+    truncated = len(arr) > MAX_VISITS
+    visits: dict[int, dict] = {}
+    for sq, sch, act, dly, conf, rt, sd in arr[:MAX_VISITS]:
+        visits.setdefault(sq, {"seq": sq, "scheduled": sch, "last_seen_ts": None, "points": [],
+                               "arrival": {"actual": act, "delay": dly, "confidence": conf,
+                                           "realtime": rt, "service_date": sd}})
+    data_dir = request.app.state.settings.data_dir
+    disk = _disk_months(data_dir)
+    if arr:
+        wanted = set()
+        for sq, sch, act, *_ in arr[:MAX_VISITS]:
+            ts = [t for t in (sq, sch, act) if t is not None]
+            wanted.update(range(_month_no(min(ts) - SERIES_MARGIN_S), _month_no(max(ts) + SERIES_MARGIN_S) + 1))
+        months = [m for m in disk if m in wanted]
+    else:
+        a = -math.inf if lo is None else _month_no(lo - SERIES_MARGIN_S)
+        b = math.inf if hi is None else _month_no(hi + SERIES_MARGIN_S)
+        months = [m for m in disk if a <= m <= b]
+    if len(months) > MAX_SERIES_MONTHS:
+        truncated, months = True, months[-MAX_SERIES_MONTHS:]
+    sql = ("select seq, ts, due_min, expected, realtime from sample where trip_id = ? and stop_id = ?"
+           f"{cond} order by seq, ts")
+
+    def add(row):
+        nonlocal truncated
+        sq, ts, due, exp, rt = row
+        v = visits.get(sq)
+        if v is None:
+            if len(visits) >= MAX_VISITS:
+                truncated = True
+                return
+            v = visits[sq] = {"seq": sq, "scheduled": sq, "arrival": None, "last_seen_ts": None, "points": []}
+        v["last_seen_ts"] = ts
+        if len(v["points"]) >= MAX_POINTS:
+            truncated = True
+        else:
+            v["points"].append({"ts": ts, "due_min": due, "expected": exp, "realtime": rt})
+
+    for m in months:
+        _read_month(data_dir, m, sql, [trip_id, stop, *cargs], add)
+    if not visits:
+        raise HTTPException(404, "no such trip/stop visit")
+    return _clean({"trip_id": trip_id, "stop_id": stop, "truncated": truncated,
+                   "visits": [visits[k] for k in sorted(visits)]})

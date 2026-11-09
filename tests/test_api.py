@@ -1601,3 +1601,269 @@ def test_no_deadlock_under_mixed_concurrency(env, monkeypatch):
     finally:
         threading.stack_size(old)
     assert api._HEAVY._value == 2
+
+
+# ---------- trip series ----------
+
+S = T0  # 2025-10-09 08:53:20 UTC
+SERIES_KEYS = {"trip_id", "stop_id", "truncated", "visits"}
+VISIT_KEYS = {"seq", "scheduled", "arrival", "last_seen_ts", "points"}
+ARRIVAL_KEYS = {"actual", "delay", "confidence", "realtime", "service_date"}
+POINT_KEYS = {"ts", "due_min", "expected", "realtime"}
+
+
+def put_samples(env, rows, trip="T", stop="s1"):
+    """rows = (seq, ts, due_min, expected, realtime); each goes to the UTC month file of its ts."""
+    from app.db import open_samples
+    for seq, ts, due, exp, rt in rows:
+        c = open_samples(env.s.data_dir, ts)
+        with c:
+            c.execute("insert into sample values(?,?,?,?,?,?,?)", (ts, trip, stop, seq, due, exp, rt))
+        c.close()
+
+
+def series(env, trip="T", stop="s1", **q):
+    return env.get(f"/api/trips/{quote(trip, safe='')}/series", **({"stop": stop} | q))
+
+
+def check_shape(j):
+    finite(j)
+    assert set(j) == SERIES_KEYS
+    for v in j["visits"]:
+        assert set(v) == VISIT_KEYS
+        assert v["arrival"] is None or set(v["arrival"]) == ARRIVAL_KEYS
+        assert all(set(p) == POINT_KEYS for p in v["points"])
+        assert [p["ts"] for p in v["points"]] == sorted(p["ts"] for p in v["points"])
+    assert [v["seq"] for v in j["visits"]] == sorted(v["seq"] for v in j["visits"])
+
+
+@pytest.fixture
+def tmp_private(tmp_path, monkeypatch):
+    import tempfile
+    d = tmp_path / "tmpdir"
+    d.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(d))
+    return d
+
+
+COUNTDOWN = [(S, S - 1500, 25, S, 1), (S, S - 600, 10, S + 30, 1), (S, S + 40, 0, S + 40, 1)]
+
+
+def seed_countdown(env):
+    env.add(trip="T", stop="s1", scheduled=S, delay=40)
+    put_samples(env, COUNTDOWN)
+
+
+@pytest.mark.filterwarnings("error::ResourceWarning")
+def test_trip_series_returns_due_reaching_zero(env, tmp_private):
+    seed_countdown(env)
+    r = series(env)
+    assert r.status_code == 200
+    j = r.json()
+    check_shape(j)
+    assert j == {"trip_id": "T", "stop_id": "s1", "truncated": False, "visits": [{
+        "seq": S, "scheduled": S, "last_seen_ts": S + 40,
+        "arrival": {"actual": S + 40, "delay": 40, "confidence": 1, "realtime": 1, "service_date": "2026-01-01"},
+        "points": [{"ts": t, "due_min": d, "expected": e, "realtime": rt} for _, t, d, e, rt in COUNTDOWN]}]}
+    for p in j["visits"][0]["points"]:  # the documented reconstruction reproduces the stored due
+        assert max(0, (p["expected"] - p["ts"]) // 60) == p["due_min"]
+    assert list(tmp_private.iterdir()) == []
+
+
+def test_trip_series_loop_trip_has_two_visits(env):
+    env.add(trip="T", stop="s1", scheduled=S, delay=0)
+    env.add(trip="T", stop="s1", scheduled=S + 1800, delay=60)
+    put_samples(env, [(S + 1800, S + 1000, 13, S + 1800, 1), (S, S - 60, 1, S + 10, 1), (S, S + 5, 0, S + 5, 1)])
+    j = series(env).json()
+    check_shape(j)
+    assert [(v["seq"], len(v["points"]), v["arrival"]["delay"]) for v in j["visits"]] == [(S, 2, 0), (S + 1800, 1, 60)]
+
+
+def test_trip_series_same_trip_two_service_dates_and_filters(env):
+    d2 = S + 86400
+    env.add(trip="T", stop="s1", scheduled=S, delay=0, date="2026-01-01")
+    env.add(trip="T", stop="s1", scheduled=d2, delay=5, date="2026-01-02")
+    put_samples(env, [(S, S - 60, 1, S, 1), (d2, d2 - 60, 2, d2 + 60, 1)])
+    both = series(env).json()
+    assert [v["seq"] for v in both["visits"]] == [S, d2]
+    assert [v["arrival"]["service_date"] for v in both["visits"]] == ["2026-01-01", "2026-01-02"]
+    for q, expect in (({"seq": str(d2)}, [d2]), ({"seq": str(S)}, [S]), ({"since": str(S + 1)}, [d2]),
+                      ({"until": str(S)}, [S]), ({"since": str(S), "until": str(d2)}, [S, d2])):
+        j = series(env, **q).json()
+        assert [v["seq"] for v in j["visits"]] == expect, q
+        assert all(len(v["points"]) == 1 for v in j["visits"])
+    assert series(env, seq=str(S + 1)).status_code == 404  # nothing matched
+    assert series(env, since=str(d2 + 1)).status_code == 404
+
+
+@pytest.mark.filterwarnings("error::ResourceWarning")
+def test_trip_series_reads_gzipped_month(env, tmp_private):
+    from app.backup import compact_closed_months
+    seed_countdown(env)
+    assert compact_closed_months(env.s.data_dir, S + 90 * 86400)
+    assert not list(env.s.data_dir.glob("samples-*.db")) and list(env.s.data_dir.glob("samples-*.db.gz"))
+    j = series(env).json()
+    assert [p["ts"] for p in j["visits"][0]["points"]] == [S - 1500, S - 600, S + 40]
+    assert list(tmp_private.iterdir()) == []  # temp decompressed copy removed
+    assert not list(env.s.data_dir.glob("samples-*.db"))  # and never created in the data dir
+
+
+@pytest.mark.filterwarnings("error::ResourceWarning")
+def test_trip_series_spans_month_boundary(env, tmp_private):
+    b = _utc(2025, 10, 1)  # visit scheduled just after midnight UTC
+    env.add(trip="T", stop="s1", scheduled=b + 600, delay=30)
+    put_samples(env, [(b + 600, b - 900, 25, b + 600, 1), (b + 600, b + 100, 8, b + 620, 1),
+                      (b + 600, b + 630, 0, b + 630, 1)])
+    assert {p.name for p in env.s.data_dir.glob("samples-*.db")} == {"samples-2025-09.db", "samples-2025-10.db"}
+    j = series(env).json()
+    check_shape(j)
+    assert [p["ts"] for p in j["visits"][0]["points"]] == [b - 900, b + 100, b + 630]
+    assert j["visits"][0]["last_seen_ts"] == b + 630 and j["truncated"] is False
+    assert list(tmp_private.iterdir()) == []
+
+
+def test_trip_series_missing_month_file_skipped(env, monkeypatch):
+    import app.api as api
+    env.add(trip="T", stop="s1", scheduled=S, delay=0)  # arrival, no samples file at all
+    j = series(env).json()
+    assert j["visits"][0]["points"] == [] and j["visits"][0]["last_seen_ts"] is None
+    put_samples(env, COUNTDOWN)
+
+    def gone(*a):  # file vanished between the directory scan and the open
+        raise FileNotFoundError("x")
+    monkeypatch.setattr(api, "open_samples_readonly", gone)
+    assert series(env).json()["visits"][0]["points"] == []
+
+
+@pytest.mark.parametrize("kind", ["plain", "gz", "truncated_gz"])
+@pytest.mark.filterwarnings("error::ResourceWarning")
+def test_trip_series_corrupt_month_skipped_with_warning(env, tmp_private, caplog, kind):
+    import gzip
+    b = _utc(2025, 10, 1)
+    env.add(trip="T", stop="s1", scheduled=b + 600, delay=30)
+    put_samples(env, [(b + 600, b + 100, 8, b + 620, 1), (b + 600, b + 630, 0, b + 630, 1)])
+    d = env.s.data_dir
+    if kind == "plain":
+        (d / "samples-2025-09.db").write_bytes(b"garbage" * 500)
+    elif kind == "gz":
+        (d / "samples-2025-09.db.gz").write_bytes(b"not gzip at all")
+    else:
+        good = gzip.compress(b"x" * 100_000)
+        (d / "samples-2025-09.db.gz").write_bytes(good[: len(good) // 2])
+    with caplog.at_level("WARNING", logger="app.api"):
+        r = series(env)
+    assert r.status_code == 200
+    assert [p["ts"] for p in r.json()["visits"][0]["points"]] == [b + 100, b + 630]
+    assert any("samples month 2025-09" in m for m in caplog.messages)
+    assert list(tmp_private.iterdir()) == []
+
+
+def test_trip_series_unknown_and_validation(env):
+    seed_countdown(env)
+    assert series(env, trip="nope").status_code == 404
+    assert series(env, stop="nope").status_code == 404
+    assert env.get("/api/trips/T/series").status_code == 422  # stop missing
+    assert series(env, stop="").status_code == 422
+    assert series(env, stop="s" * 65).status_code == 422
+    assert series(env, stop="s" * 64).status_code == 404  # exact limit passes validation
+    assert env.get("/api/trips/" + "t" * 65 + "/series", stop="s1").status_code == 422
+    assert series(env, seq="abc").status_code == 422
+    assert series(env, seq="1.5").status_code == 422
+    assert series(env, since="x").status_code == 422
+    assert series(env, since="10", until="9").status_code == 422
+    assert series(env, seq=str(S)).status_code == 200
+
+
+@pytest.mark.parametrize("bad", ["x' OR '1'='1", "'; drop table arrivals;--", "T\" or 1=1 --", "%", "_", "a/b"])
+def test_trip_series_sql_injection_strings(env, bad):
+    seed_countdown(env)
+    assert series(env, trip=bad).status_code == 404
+    assert series(env, stop=bad).status_code == 404
+    for q in ({"seq": bad}, {"since": bad}, {"until": bad}):
+        assert series(env, **q).status_code == 422
+    db = open_meta(env.s.data_dir)
+    assert db.execute("select count(*) from arrivals").fetchone() == (1,)
+    db.close()
+    assert len(series(env).json()["visits"][0]["points"]) == 3
+
+
+def test_trip_series_slash_in_trip_id(env):
+    env.add(trip="a/b", stop="s1", scheduled=S, delay=0)
+    put_samples(env, [(S, S, 0, S, 1)], trip="a/b")
+    assert len(series(env, trip="a/b").json()["visits"][0]["points"]) == 1
+
+
+def test_trip_series_dropped_bus_has_no_arrival_and_last_seen(env):
+    put_samples(env, [(S, S - 1500, 25, S, 1), (S, S - 900, 20, S + 120, 0)])  # vanished at due 20: no arrivals row
+    j = series(env).json()
+    check_shape(j)
+    v = j["visits"][0]
+    assert v["arrival"] is None and v["scheduled"] == S and v["last_seen_ts"] == S - 900
+    assert [p["realtime"] for p in v["points"]] == [1, 0]
+
+
+def test_trip_series_without_arrivals_uses_recent_months_or_since_until(env):
+    for m, (y, mo) in enumerate([(2025, 7), (2025, 8), (2025, 9)]):
+        t = _utc(y, mo, 15)
+        put_samples(env, [(t, t - 60, 1, t, 1)])
+    j = series(env).json()  # no since/until: the two most recent months on disk
+    assert [v["seq"] for v in j["visits"]] == [_utc(2025, 8, 15), _utc(2025, 9, 15)] and j["truncated"] is True
+    j = series(env, until=str(_utc(2025, 7, 20))).json()
+    assert [v["seq"] for v in j["visits"]] == [_utc(2025, 7, 15)] and j["truncated"] is False
+    j = series(env, since=str(_utc(2025, 8, 1)), until=str(_utc(2025, 8, 31))).json()
+    assert [v["seq"] for v in j["visits"]] == [_utc(2025, 8, 15)]
+    assert series(env, since=str(_utc(2025, 12, 1))).status_code == 404
+
+
+def test_trip_series_ignores_foreign_files_in_data_dir(env):
+    seed_countdown(env)
+    for n in ("samples-2025-13.db", "samples-2025-1.db", "samples-2025-10.db.bak", "xsamples-2025-10.db",
+              "samples-2025-10.db.gz.tmp"):
+        (env.s.data_dir / n).write_bytes(b"junk")
+    assert len(series(env).json()["visits"][0]["points"]) == 3
+
+
+def test_trip_series_truncation_caps(env, monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_VISITS", 2)
+    monkeypatch.setattr(api, "MAX_POINTS", 3)
+    for i in range(3):
+        env.add(trip="T", stop="s1", scheduled=S + i * 600, delay=0)
+    put_samples(env, [(S, S - 100 + k, 1, S, 1) for k in range(5)])
+    j = series(env).json()
+    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S, S + 600]
+    v = j["visits"][0]
+    assert [p["ts"] for p in v["points"]] == [S - 100, S - 99, S - 98] and v["last_seen_ts"] == S - 96  # earliest kept
+    # sample-only visit beyond the cap: dropped and flagged
+    put_samples(env, [(S + 5000, S + 4000, 3, S + 5000, 1)])
+    assert series(env, seq=str(S + 5000)).json()["visits"][0]["seq"] == S + 5000  # alone it fits
+    j = series(env).json()
+    assert j["truncated"] is True and len(j["visits"]) == 2
+    monkeypatch.undo()
+    j = series(env, seq=str(S)).json()
+    assert j["truncated"] is False and len(j["visits"][0]["points"]) == 5
+
+
+def test_trip_series_sample_only_visit_over_cap_flagged(env, monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_VISITS", 2)
+    put_samples(env, [(S + i, S + i, 1, S + i, 1) for i in range(3)])
+    j = series(env).json()
+    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S, S + 1]
+
+
+def test_trip_series_month_cap(env, monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_SERIES_MONTHS", 1)
+    b = _utc(2025, 10, 1)
+    env.add(trip="T", stop="s1", scheduled=b + 600, delay=0)  # candidate months: Sep and Oct
+    put_samples(env, [(b + 600, b - 900, 25, b + 600, 1), (b + 600, b + 100, 8, b + 620, 1)])
+    j = series(env).json()
+    assert j["truncated"] is True and [p["ts"] for p in j["visits"][0]["points"]] == [b + 100]
+
+
+def test_trip_series_other_trip_and_stop_samples_not_mixed(env):
+    seed_countdown(env)
+    put_samples(env, [(S, S, 9, S, 1)], trip="T2")
+    put_samples(env, [(S, S, 9, S, 1)], stop="s2")
+    assert len(series(env).json()["visits"][0]["points"]) == 3
