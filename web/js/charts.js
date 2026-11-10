@@ -193,8 +193,8 @@ function el(doc, tag, attrs = {}, text) {
 let uid = 0;
 function root(doc, w, h, title, desc, cls) {
   const id = `c${++uid}`;
-  const svg = el(doc, 'svg', { viewBox: `0 0 ${w} ${h}`, class: `chart ${cls}`, role: 'img', 'aria-labelledby': `${id}t ${id}d`, focusable: 'false' });
-  svg.append(el(doc, 'title', { id: `${id}t` }, title), el(doc, 'desc', { id: `${id}d` }, desc));
+  const svg = el(doc, 'svg', { viewBox: `0 0 ${w} ${h}`, class: `chart ${cls}`, role: 'img', 'aria-label': title, 'aria-describedby': `${id}d`, focusable: 'false' });
+  svg.append(el(doc, 'desc', { id: `${id}d` }, desc)); // no root <title>: browsers show it as a hover tooltip over the whole chart
   return svg;
 }
 
@@ -270,7 +270,7 @@ export function renderAccumulation(geo, stops, { title, desc, doc = globalThis.d
     el(doc, 'line', { class: 'zero-line', x1: geo.x0, x2: geo.x1, y1: geo.zeroB, y2: geo.zeroB }),
     el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelA.top - 3 }, 'Mean delay at each stop (min, up = later)'),
     el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelB.top - 6 }, 'Change from previous stop (min): above zero loses time, below gains'));
-  const gid = `${svg.getAttribute('aria-labelledby').split(' ')[0].slice(0, -1)}g`;
+  const gid = `${svg.getAttribute('aria-describedby').slice(0, -1)}g`;
   const gaps = [];
   geo.pts.forEach((p, i) => { if (i && p.pos - geo.pts[i - 1].pos !== 1) gaps.push({ x: p.x, y: null }); gaps.push(p); });
   const area = areaPath(gaps, geo.panelA.top + geo.panelA.h);

@@ -1,6 +1,5 @@
 // One tooltip for everything hoverable. On first hover, native tooltips are converted to data-tip so the browser's
-// own bubble never shows alongside ours: inner SVG <title> elements (the chart root keeps its title/desc for screen
-// readers) and HTML title attributes.
+// own bubble never shows alongside ours: inner SVG <title> elements  and HTML title attributes.
 const MAX_UP = 5;
 
 // Text to show for el: nearest data-tip, else a direct <title> child (SVG), within a few ancestors.
@@ -24,7 +23,7 @@ export function placeTip(x, y, w, h, vw, vh) {
   return { left: Math.max(8, left), top: Math.max(8, top) };
 }
 
-// Moves native tooltip sources inside a chart svg to data-tip (idempotent); keeps the chart's own accessible title.
+// Moves native tooltip sources inside a chart svg to data-tip (idempotent). The chart's own name is aria-label.
 export function stripChart(svg) {
   for (const t of svg.querySelectorAll('title')) {
     const p = t.parentNode;

@@ -207,3 +207,13 @@ test('renderAccumulation draws an area fill with a gradient and no NaN attribute
   const svg1 = C.renderAccumulation(C.accumulationGeometry(one), one, { title: 't', desc: 'd', doc });
   assert.equal(svg1.all((n) => n.getAttribute?.('class') === 'acc-area').length, 0);
 });
+
+test('chart root has an aria-label and no <title> child (browsers show a root title as a hover tooltip)', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const stops = [0, 1].map((i) => ({ stop_id: `s${i}`, position: i, mean_delay: 60 * i, segment_delta: 30, n: 20, n_delta: 20 }));
+  const svg = C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 'My chart', desc: 'about it', doc });
+  assert.equal(svg.getAttribute('aria-label'), 'My chart');
+  assert.ok(svg.getAttribute('aria-describedby'));
+  assert.equal(svg.children.filter((c) => c.tag === 'title').length, 0);
+});
