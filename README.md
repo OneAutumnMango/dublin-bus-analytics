@@ -1,6 +1,6 @@
 # dublin-bus-analytics
 
-Polls a [dublin-bus-server](../dublin-bus-server/README.md) for arrivals on the routes you track, stores change-only samples in SQLite, and serves delay and forecast-accuracy analytics with a small web UI (FastAPI plus plain ES modules, no build step).
+Polls a `dublin-bus-server` for arrivals on the routes you track, stores change-only samples in SQLite, and serves delay and forecast-accuracy analytics with a small web UI (FastAPI plus plain ES modules, no build step).
 
 **Warning: there is no authentication. Bind to 127.0.0.1 and never expose it publicly.**
 
@@ -40,7 +40,7 @@ The fake server returns no live arrivals, so only the seeded history appears.
 
 ### Option B: live data
 
-Run the real server (needs a `GTFSR_API_KEY` from the NTA developer portal; see its [README](../dublin-bus-server/README.md): `docker compose up -d` publishes 127.0.0.1:8080, or `scripts/run-server.sh` without Docker), then:
+Run the real server (needs a `GTFSR_API_KEY` from the NTA developer portal; see the sibling server README for setup: `docker compose up -d` publishes 127.0.0.1:8080, or `scripts/run-server.sh` without Docker), then:
 
 ```bash
 SERVER_URL=http://127.0.0.1:8080 DATA_DIR=./data/live uvicorn app.main:app --reload --port 8081
