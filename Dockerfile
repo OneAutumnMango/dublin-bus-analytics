@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir . && useradd -r -u 10001 app && mkdir /data && ch
 # only what app/api/static.py serves (not the JS tests or package.json)
 COPY web/index.html ./web/index.html
 COPY web/css ./web/css
+COPY web/fonts ./web/fonts
 COPY web/js ./web/js
 ENV WEB_DIR=/srv/web
 USER app
