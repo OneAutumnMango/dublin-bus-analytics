@@ -326,6 +326,8 @@ Run after Task 9 (execution order: ... 9, 12, 10, 11, 13). Task 9 only provides 
 
 ### Task 13: Developer README, sample compose, example env
 
+**PRIORITY (user instruction 2026-11-10): run Task 13 immediately after Tasks 8b and 10 are implemented, BEFORE Task 11 and in parallel with their reviews. The README must LEAD with a section 'Run the website without the container (dev environment)': prerequisites (Python 3.12, pyenv hint, Node 18+ only for the JS tests), venv + `pip install -e ".[dev]"`, running the dev server with `uvicorn app.main:app --reload`, pointing it at a real dublin-bus-server via SERVER_URL or at the offline `seed_demo.py --fake-server` for a no-key demo, seeding demo data, opening the UI, how to track a route, running python tests (with the memory-safe ulimit hint) and `node --test web/test/`, common problems (port in use, DATA_DIR permissions, empty UI because nothing tracked/seeded, order_source none without a server).**
+
 (`scripts/seed_demo.py` moved into Task 10 so the UI can be developed against realistic data; Task 13 documents it in the README and keeps its tests if not already present.)
 
 Run last (execution order: ... 11, 13).
