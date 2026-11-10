@@ -18,7 +18,11 @@
   document.addEventListener('DOMContentLoaded', function () {
     var btn = document.getElementById('theme-toggle');
     if (!btn) return;
-    function label() { btn.textContent = 'Theme: ' + theme; }
+    function label() {
+      var names = { auto: 'Auto', light: 'Light', dark: 'Dark' }, icons = { auto: '\u25D0', light: '\u2600', dark: '\u263E' };
+      btn.textContent = icons[theme] + ' ' + names[theme];
+      btn.setAttribute('aria-label', 'Theme: ' + names[theme].toLowerCase() + '. Click to change.');
+    }
     labelFn = label;
     label();
     btn.addEventListener('click', function () {

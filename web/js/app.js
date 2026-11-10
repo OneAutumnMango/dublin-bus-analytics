@@ -18,11 +18,18 @@ const SITE = 'Dublin Bus Analytics';
 let ctl = null;
 let lastKey = null;
 
+const NAV = { routes: 'routes', route: 'routes', stop: 'routes', trip: 'routes', analytics: 'routes', map: 'map', settings: 'settings' };
+function markNav(name) { // highlight the current section in the top bar
+  const links = globalThis.document.querySelectorAll?.('.main-nav a') || [];
+  for (const a of links) { if (a.getAttribute('data-nav') === NAV[name]) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
+}
+
 async function show() {
   if (ctl) ctl.abort(); // anything still loading for the previous view is cancelled and ignored
   ctl = new AbortController();
   const { signal } = ctl;
   const r = parseHash(globalThis.location.hash);
+  markNav(r.name);
   const main = globalThis.document.getElementById('main');
   main.replaceChildren();
   main.removeAttribute('aria-busy');
