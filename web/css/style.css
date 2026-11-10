@@ -257,3 +257,22 @@ tbody tr:last-child td { border-bottom: 0; }
 .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s2) var(--s4); }
 
 .chart .hit { fill: transparent; stroke: none; pointer-events: all; }
+
+/* ---- tooltip card ---- */
+#chart-tip { min-width: 190px; max-width: 360px; padding: var(--s3) var(--s4); font-family: var(--font); }
+.tip-title { font-weight: 650; font-size: var(--fs); margin-bottom: 2px; }
+.tip-sub { color: var(--muted); font-size: var(--fs-xs); margin-bottom: 2px; }
+.tip-head { display: flex; align-items: baseline; gap: var(--s2); margin: var(--s1) 0 var(--s2); }
+.tip-value { font: 650 1.375rem/1.1 var(--mono); letter-spacing: -0.02em; }
+.tip-value.early { color: var(--early-text); } .tip-value.late { color: var(--late-text); }
+.tip-unit { color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em; }
+.tip-range { position: relative; height: 14px; margin: var(--s2) 0; }
+.tip-range span { position: absolute; top: 50%; transform: translateY(-50%); }
+.tip-range .tr-zero { top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--muted); transform: none; }
+.tip-range .tr-whisker { height: 2px; background: var(--muted); border-radius: 1px; }
+.tip-range .tr-band { height: 8px; background: var(--band); border: 1px solid var(--band-line); border-radius: 3px; }
+.tip-range .tr-mean { width: 8px; height: 8px; margin-left: -4px; background: var(--text); transform: translateY(-50%) rotate(45deg); }
+.tip-range .tr-mean.early { background: var(--early); } .tip-range .tr-mean.late { background: var(--late); }
+.tip-grid { display: grid; grid-template-columns: auto auto; gap: 2px var(--s4); margin: var(--s2) 0 0; font-size: var(--fs-sm); }
+.tip-grid dt { color: var(--muted); } .tip-grid dd { margin: 0; text-align: right; font-family: var(--mono); }
+.tip-foot { margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--border); color: var(--warn); font-size: var(--fs-xs); }

@@ -1,6 +1,20 @@
 // One tooltip for everything hoverable. On first hover, native tooltips are converted to data-tip so the browser's
 // own bubble never shows alongside ours: inner SVG <title> elements  and HTML title attributes.
+import { getSettings } from './settings.js';
+import { renderCard } from './tipcard.js';
+
 const MAX_UP = 5;
+
+// Raw JSON payload from the nearest data-tip-json within a few ancestors, or null.
+export function tipJson(el) {
+  let n = el;
+  for (let i = 0; n && i < MAX_UP; i++, n = n.parentNode ?? null) {
+    const j = n.getAttribute?.('data-tip-json');
+    if (j) return j;
+    if ((n.tag ?? n.tagName) === 'svg') break;
+  }
+  return null;
+}
 
 // Text to show for el: nearest data-tip, else a direct <title> child (SVG), within a few ancestors.
 export function tipText(el) {
@@ -51,9 +65,16 @@ export function installTooltip(doc = globalThis.document) {
 
   const hide = () => { tip.hidden = true; };
   const show = (target, x, y) => {
-    const text = tipText(target);
-    if (!text) { hide(); return; }
-    if (tip.textContent !== text) tip.textContent = text;
+    const raw = tipJson(target);
+    let card = null;
+    if (raw) { try { card = renderCard(doc, JSON.parse(raw), getSettings()); } catch { card = null; } }
+    const text = card ? null : tipText(target);
+    if (!card && !text) { hide(); return; }
+    const key = raw && card ? `${raw}|${JSON.stringify(getSettings().tip)}` : text;
+    if (tip.getAttribute('data-key') !== key) {
+      tip.setAttribute('data-key', key);
+      if (card) tip.replaceChildren(card); else tip.textContent = text;
+    }
     tip.hidden = false;
     const { width, height } = tip.getBoundingClientRect();
     const p = placeTip(x, y, width, height, globalThis.innerWidth, globalThis.innerHeight);
