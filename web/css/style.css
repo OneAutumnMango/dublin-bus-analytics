@@ -214,3 +214,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .sidebar input { width: 100%; }
 .sidebar a[aria-current="page"] { font-weight: 700; text-decoration: none; border-left: 3px solid var(--accent); padding-left: var(--s2); }
 .sidebar .route-list .grow { min-width: 0; color: var(--text); font-size: var(--fs); }
+
+#chart-tip { position: fixed; z-index: 1000; max-width: 320px; padding: var(--s2) var(--s3); background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--control-border); border-radius: var(--radius-sm); font: var(--fs-sm)/1.4 var(--mono); box-shadow: var(--shadow); pointer-events: none; }
+#chart-tip[hidden] { display: none; }
