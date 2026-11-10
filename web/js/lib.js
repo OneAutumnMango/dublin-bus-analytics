@@ -406,3 +406,16 @@ export function makeLimiter(max) {
     get queued() { return queue.length; },
   };
 }
+
+// {direction: [stops in route order]} -> Map(direction key -> "First stop – Last stop (bus 4)").
+// Falls back to the raw key when a direction has no named stops.
+export function directionLabels(directions, route) {
+  const m = new Map();
+  const nm = (s) => (typeof (s?.name ?? s?.stopName ?? s?.stop_name) === 'string' ? (s.name ?? s.stopName ?? s.stop_name) : null);
+  for (const [key, list] of Object.entries(directions && typeof directions === 'object' ? directions : {})) {
+    const names = (Array.isArray(list) ? list : []).map(nm).filter(Boolean);
+    const bus = route ? ` (bus ${route})` : '';
+    m.set(key, names.length > 1 ? `${names[0]} – ${names[names.length - 1]}${bus}` : names.length === 1 ? `${names[0]}${bus}` : `${key}${bus}`);
+  }
+  return m;
+}

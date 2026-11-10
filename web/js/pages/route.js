@@ -2,7 +2,7 @@
 import { api, isAbort } from '../api.js';
 import { renderRangeChart, rangeDomain, rangeGeometry, rangeSummary } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, tile, put } from '../dom.js';
-import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPctile, paginate, plural, stopNameMap, describeDelay } from '../lib.js';
+import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPctile, paginate, plural, stopNameMap, describeDelay, directionLabels } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
@@ -25,30 +25,30 @@ export async function render(ctx) {
       api.summary(route, s.apiQuery, { signal }),
       api.stopsOf(route, { signal }).catch((e) => { if (isAbort(e)) throw e; return null; }),
     ]);
-    return { summary, names: stopNameMap(stops?.directions) };
+    return { summary, names: stopNameMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
   };
-  await region(box, ctx.signal).load(fetcher, ({ summary, names }, el) => draw(ctx, route, s, summary, names, dir, page, el),
+  await region(box, ctx.signal).load(fetcher, ({ summary, names, dirs }, el) => draw(ctx, route, s, summary, names, dirs, dir, page, el),
     { announce: ({ summary }) => `Route ${route}: loaded ${plural((summary.stops || []).length, 'stop')}` });
 }
 
-function draw(ctx, route, s, data, names, dir, page, el) {
+function draw(ctx, route, s, data, names, dirs, dir, page, el) {
   put(el, ...filterNotices(data));
   const all = data.stops || [];
   if (!all.length) {
     put(el, emptyState(`No confirmed arrivals for route ${route} in this selection. Is the route tracked, and has the poller run long enough? Try a wider date range or include unconfirmed arrivals.`));
     return;
   }
-  const dirs = [...new Set(all.flatMap((x) => x.directions || []))];
+  const dirKeys = [...new Set(all.flatMap((x) => x.directions || []))];
   const stops = dir ? all.filter((x) => (x.directions || []).includes(dir)) : all;
   const hashFor = (extra) => buildHash('route', { route }, { ...controlsToQuery(s.controls), ...(dir ? { dir } : {}), ...extra });
-  if (dirs.length > 1) {
+  if (dirKeys.length > 1) {
     const sel = h('select', { id: 'dir', on: { change: (ev) => ctx.go(buildHash('route', { route }, { ...controlsToQuery(s.controls), dir: ev.target.value })) } },
-      h('option', { value: '', selected: !dir }, 'All directions'), dirs.map((d) => h('option', { value: d, selected: d === dir }, d)));
+      h('option', { value: '', selected: !dir }, 'All directions'), dirKeys.map((d) => h('option', { value: d, selected: d === dir }, dirs.get(d) || d)));
     put(el, h('div', { class: 'row card' }, h('label', { for: 'dir' }, 'Direction', sel)));
   }
   const withData = stops.filter((x) => x.n > 0).length;
   put(el, h('div', { class: 'tiles' }, tile('Arrivals analysed', fmtCount(data.n), { lowN: data.low_n }),
-    tile('Stops with data', fmtCount(withData), { note: dir ? `direction ${dir}` : null })), h('p', { class: 'hint' }, windowText(data)));
+    tile('Stops with data', fmtCount(withData), { note: dir ? (dirs.get(dir) || `direction ${dir}`) : null })), h('p', { class: 'hint' }, windowText(data)));
   if (!stops.length) { put(el, emptyState('No stops with data in this direction.')); return; }
 
   const items = stops.map((x) => ({ id: x.stop_id, label: names.get(x.stop_id) || x.stop_id, href: buildHash('stop', { route, stop: x.stop_id }, controlsToQuery(s.controls)),

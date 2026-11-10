@@ -424,3 +424,12 @@ test('makeLimiter never exceeds the limit, keeps FIFO order, drops aborted queue
   await assert.rejects(lim3.run(async () => { throw new Error('x'); }));
   assert.equal(await lim3.run(async () => 7), 7, 'a failed task frees its slot');
 });
+
+test('directionLabels: first - last stop with bus number, raw key fallback', async () => {
+  const { directionLabels } = await import('../js/lib.js');
+  const m = directionLabels({ a: [{ name: 'Heuston Station' }, { name: 'Mid' }, { name: 'Monkstown' }], b: [{ id: 'x' }], c: [{ stopName: 'Solo' }] }, '4');
+  assert.equal(m.get('a'), 'Heuston Station – Monkstown (bus 4)');
+  assert.equal(m.get('b'), 'b (bus 4)');
+  assert.equal(m.get('c'), 'Solo (bus 4)');
+  assert.equal(directionLabels(null, '4').size, 0);
+});

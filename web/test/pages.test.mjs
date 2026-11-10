@@ -248,7 +248,7 @@ test('analytics page: heatmap, accumulation groups incl. fallback, forecast', as
   assert.equal(ctx.main.byTag('h1').length, 1);
   assert.equal(ctx.main.byTag('svg').length, 3);
   assert.equal(ctx.main.byTag('svg')[0].all((n) => n.getAttribute?.('tabindex') === '0').length, 0, 'no tab stops inside role=img');
-  assert.match(t, /Direction: out · 40 trips/);
+  assert.match(t, /&lt;img src=x onerror=alert\(1\)&gt;|<img src=x onerror=alert\(1\)> – Two \(bus 15\) · 40 trips/);
   assert.match(t, /Unmatched trips · 7 trips/);
   assert.match(t, /could not be matched/);
   assert.match(t, /30 min before/);
