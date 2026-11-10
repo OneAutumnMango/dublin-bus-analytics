@@ -26,14 +26,14 @@ def web_dir() -> Path:
 
 
 class SecureStaticFiles(StaticFiles):
-    """Serves only index.html, css/** and js/**; every response (errors too) gets the security headers."""
+    """Serves only index.html, css/**, js/**, fonts/** and vendor/**; every response (errors too) gets the security headers."""
 
     async def check_config(self):  # a missing directory just yields 404s
         pass
 
     async def get_response(self, path, scope):
         p = posixpath.normpath(path)
-        if not (p in (".", "index.html") or p.startswith(("css/", "js/"))):
+        if not (p in (".", "index.html") or p.startswith(("css/", "js/", "fonts/", "vendor/"))):
             raise HTTPException(404)
         return await super().get_response(path, scope)
 

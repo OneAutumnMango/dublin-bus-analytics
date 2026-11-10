@@ -18,7 +18,7 @@ export function fillSegments(a, b) {
 export function timeRangeSlider({ from = 0, to = MAX, step = 5, onChange = () => {} } = {}) {
   let a = snap(from, step), b = snap(to, step);
   const mkInput = (cls, label, v) => h('input', { type: 'range', class: `tr-input ${cls}`, min: '0', max: String(MAX), step: '1', value: String(v), 'aria-label': label });
-  const inA = mkInput('tr-from', 'Window start (time of day)', a), inB = mkInput('tr-to', 'Window end (time of day)', b);
+  const inA = mkInput('tr-start', 'Window start (time of day)', a), inB = mkInput('tr-end', 'Window end (time of day)', b);
   const label = h('output', { class: 'tr-label', 'aria-live': 'polite' });
   const track = h('div', { class: 'tr-track' });
   const fills = h('div', { class: 'tr-fills', 'aria-hidden': 'true' });

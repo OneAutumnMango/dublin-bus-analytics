@@ -195,3 +195,18 @@ def test_error_responses_carry_security_headers(client):
 def test_static_responses_revalidate(client):
     for p in ("/", "/js/app.js", "/css/style.css"):
         assert client.get(p).headers["cache-control"] == "no-cache"
+
+
+@pytest.mark.parametrize("path,ctype", [("/fonts/inter-400.ttf", "font"), ("/vendor/maplibre/maplibre-gl-csp.js", "javascript"),
+                                        ("/vendor/maplibre/maplibre-gl-csp-worker.js", "javascript"),
+                                        ("/vendor/maplibre/maplibre-gl.css", "text/css")])
+def test_fonts_and_vendored_map_library_are_served(client, path, ctype):
+    r = client.get(path)
+    assert r.status_code == 200, path
+    assert ctype in r.headers["content-type"], r.headers["content-type"]
+    assert r.headers["content-security-policy"] == CSP
+
+
+def test_other_top_level_dirs_still_404(client):
+    for p in ("/vendor", "/vendor/../app/main.py", "/test/mappage.test.mjs", "/docs/plans/x.md"):
+        assert client.get(p).status_code == 404, p
