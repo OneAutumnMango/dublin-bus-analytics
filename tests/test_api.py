@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import math
 import time
@@ -1532,9 +1533,36 @@ def _run(fn, *a):
     return t, out
 
 
+@contextlib.contextmanager
+def _shared_loop(env):
+    """`with env.c:` (one event loop for all client threads) that re-raises a body failure only AFTER the
+    portal has shut down cleanly: raising through the TestClient exit can hang on teardown."""
+    err = []
+    with env.c:
+        try:
+            yield
+        except BaseException as e:  # noqa: BLE001 - re-raised below
+            err.append(e)
+    if err:
+        raise err[0]
+
+
+def test_gates_are_created_lazily_per_event_loop(monkeypatch):
+    import app.api as api
+    monkeypatch.setattr(api, "MAX_HEAVY_SCANS", 3)
+
+    async def gates():
+        return api._gate("heavy"), api._gate("heavy"), api._gate("gz")
+
+    a1, a2, g1 = asyncio.run(gates())
+    b1, _, g2 = asyncio.run(gates())
+    assert a1 is a2 and a1 is not b1 and g1 is not g2 and a1 is not g1  # per loop, per name
+    assert (a1._value, g1._value) == (3, 1)  # sizes: MAX_HEAVY_SCANS and 1
+
+
 def _get(fn, *a, timeout=5):
     """Call fn in a helper thread; returns None when it does not finish in time (fail fast, no hang). Callers
-    assert after the `with env.c:` block: raising through the TestClient portal exit can hang on teardown."""
+    assert after the `with _shared_loop(env):` block: raising through the TestClient portal exit can hang on teardown."""
     t, o = _run(fn, *a)
     t.join(timeout)
     return None if t.is_alive() else o[0]  # None = starved; asserted by the caller AFTER leaving `with env.c`
@@ -1554,7 +1582,7 @@ def test_heavy_requests_are_serialised_by_the_gate(env, monkeypatch):
         log.append("end")
 
     monkeypatch.setattr(api, "_scan", spy)
-    with env.c:
+    with _shared_loop(env):
         t1, o1 = _run(env.c.get, "/api/routes/15/heatmap")
         assert first_in.wait(10)
         t2, o2 = _run(env.c.get, "/api/routes/15/forecast")
@@ -1581,7 +1609,7 @@ def test_queued_heavy_requests_do_not_starve_light_ones_or_health(env, monkeypat
         orig(request, sql, args, fn, size)
 
     monkeypatch.setattr(api, "_scan", spy)
-    with env.c:
+    with _shared_loop(env):
         old = _limiter(env, 4)
         try:
             runs = [_run(env.c.get, "/api/routes/15/heatmap") for _ in range(6)]
@@ -1619,7 +1647,7 @@ def test_health_is_a_coroutine_and_answers_with_all_workers_busy(env, monkeypatc
         orig(request, sql, args, fn, size)
 
     monkeypatch.setattr(api, "_scan", spy)
-    with env.c:
+    with _shared_loop(env):
         old = _limiter(env, 2)  # exactly the two running heavy requests
         try:
             runs = [_run(env.c.get, "/api/routes/15/heatmap") for _ in range(2)]
@@ -1645,7 +1673,7 @@ def test_heavy_slot_released_on_error(env, monkeypatch):
         orig(request, sql, args, fn, size)
 
     monkeypatch.setattr(api, "_scan", boom)
-    with env.c:
+    with _shared_loop(env):
         with pytest.raises(RuntimeError):
             env.c.get("/api/routes/15/heatmap")
         assert _gate_value(env) == 1  # permit back
@@ -1679,29 +1707,6 @@ async def test_heavy_cancelled_while_waiting_leaks_no_permit(env, monkeypatch):
     assert await api._heavy(req, api._params(), "route = ?", ["15"], lambda p: "again") == "again"
     assert api._gate("heavy")._value == 1
     assert await api._heavy(req, api._params(), "route = ?", ["16"], lambda p: p["truncated"]) is False  # light
-
-
-def test_no_deadlock_under_mixed_concurrency(env, monkeypatch):
-    api = _heavy_env(env, monkeypatch, slots=2)
-    urls = ["/api/routes/15/heatmap", "/api/routes/16/heatmap", "/api/routes/15/forecast",
-            "/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/16/forecast",
-            "/api/routes/15/accumulation", "/api/trips/x/series?stop=s1"]
-    env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
-    old_stack = threading.stack_size(256 * 1024)  # 20 clients + workers must fit the ulimit -v budget
-    try:
-        with env.c:
-            old = _limiter(env, 8)
-            ts = [_run(env.c.get, urls[i % len(urls)]) for i in range(20)]
-            t0 = time.monotonic()
-            for t, _ in ts:
-                t.join(max(0.1, 60 - (time.monotonic() - t0)))
-            assert not any(t.is_alive() for t, _ in ts)
-            assert [o[0].status_code for _, o in ts] == [404 if "series" in urls[i % len(urls)] else 200
-                                                         for i, (_, o) in enumerate(ts)]
-            assert _gate_value(env) == 2
-            _limiter(env, old)
-    finally:
-        threading.stack_size(old_stack)
 
 
 # ---------- trip series ----------
@@ -2125,7 +2130,7 @@ def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_
         log.append("end")
 
     monkeypatch.setattr(api, "_read_month", spy)
-    with env.c:
+    with _shared_loop(env):
         t1, o1 = _run(series, env, "G")
         assert first_in.wait(10)
         t2, o2 = _run(series, env, "G")
@@ -2153,7 +2158,7 @@ def test_series_plain_month_not_blocked_by_gz_read(env, monkeypatch):
         orig(data_dir, m, *a)
 
     monkeypatch.setattr(api, "_read_month", spy)
-    with env.c:
+    with _shared_loop(env):
         t1, o1 = _run(series, env, "G")
         assert first_in.wait(10)
         t = time.perf_counter()
@@ -2221,3 +2226,21 @@ def test_series_upper_margin_pulls_in_next_month(env):
         "samples-2025-10.db", "samples-2025-11.db", "samples-2025-12.db"}
     j = series(env).json()
     assert [p["ts"] for p in j["visits"][0]["points"]] == [q - 900, q + 1800]
+
+
+async def test_no_deadlock_under_mixed_concurrency(env, monkeypatch):
+    import anyio.to_thread
+    api = _heavy_env(env, monkeypatch, slots=2)
+    urls = ["/api/routes/15/heatmap", "/api/routes/16/heatmap", "/api/routes/15/forecast",
+            "/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/16/forecast",
+            "/api/routes/15/accumulation", "/api/trips/x/series?stop=s1"]
+    env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
+    lim = anyio.to_thread.current_default_thread_limiter()
+    old, lim.total_tokens = lim.total_tokens, 8
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=env.app), base_url="http://t") as c:
+            rs = await asyncio.wait_for(asyncio.gather(*(c.get(urls[i % len(urls)]) for i in range(20))), 60)
+    finally:
+        lim.total_tokens = old
+    assert [r.status_code for r in rs] == [404 if "series" in urls[i % len(urls)] else 200 for i in range(20)]
+    assert api._gate("heavy")._value == 2
