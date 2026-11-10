@@ -1316,7 +1316,7 @@ def test_forecast_matches_reference_computation(env):
     db = open_meta(env.s.data_dir)
     ok = {r[0] for r in db.execute("select id from arrivals where confidence >= 1")}
     db.close()
-    import app.stats as st
+    import app.analysis.stats as st
     ref = st.forecast_accuracy([{"horizon_min": h, "error_s": e} for h, e, i in rows if i + 1 in ok])
     for h in (30, 20, 10, 5, 2):
         assert got[h]["n"] == ref[h]["n"]
@@ -1326,7 +1326,7 @@ def test_forecast_matches_reference_computation(env):
 
 def test_accumulation_matches_reference_computation(env):
     import random
-    import app.stats as st
+    import app.analysis.stats as st
     rnd = random.Random(11)
     ids = [f"s{i}" for i in range(12)]
     env.fake.set_route_stops("15", {"out": [{"id": x} for x in ids]})

@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given, strategies as st
 from scipy.stats import t as student_t
 
-from app.stats import (accumulation, delay_summary, filter_rows, forecast_accuracy, heatmap,
+from app.analysis.stats import (accumulation, delay_summary, filter_rows, forecast_accuracy, heatmap,
                        heatmap_to_json,
                        on_time_pct, reliability_score)
 

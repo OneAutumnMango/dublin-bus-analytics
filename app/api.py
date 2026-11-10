@@ -39,7 +39,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
-from app import stats
+from app.analysis import stats
 from app.core.db import open_meta, open_samples_readonly
 from app.collect.poller import ROUTE_RE
 from app.collect.serverclient import RouteNotFound, ServerUnavailable
