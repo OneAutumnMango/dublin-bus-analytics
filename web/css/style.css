@@ -209,3 +209,28 @@ tbody tr:last-child td { border-bottom: 0; }
 #chart-tip { position: fixed; z-index: 1000; max-width: 320px; padding: var(--s2) var(--s3); background: var(--surface-2); color: var(--text);
   border: 1px solid var(--control-border); border-radius: var(--radius-sm); font: var(--fs-sm)/1.4 var(--mono); box-shadow: var(--shadow); pointer-events: none; }
 #chart-tip[hidden] { display: none; }
+
+/* ---- sidebar ---- */
+.sidebar { padding: var(--s4) var(--s3); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.sidebar h2 { display: flex; align-items: center; gap: var(--s2); margin: var(--s5) var(--s2) var(--s2); }
+.sidebar h2::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.sidebar h2:first-child { margin-top: 0; }
+.sidebar form { margin: 0 var(--s2); }
+.sidebar form label { font-size: 0; gap: 0; } /* label text stays for screen readers; the placeholder carries the hint visually */
+.sidebar input[type="search"] { width: 100%; min-height: 34px; padding-left: 30px; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238190a4' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 10px center; }
+.sidebar .route-list { display: grid; gap: 1px; }
+.sidebar .route-list li { flex-wrap: nowrap; justify-content: space-between; min-height: 32px; margin: 0; padding: 2px var(--s2); border-radius: var(--radius-sm); }
+.sidebar .route-list .grow { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--s2); overflow: hidden; white-space: nowrap; color: var(--text); font-size: var(--fs); }
+.sidebar .route-list .grow .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-sm); }
+.sidebar .route-list .name { min-width: 3em; font-family: var(--mono); font-weight: 600; flex: none; }
+.sidebar .route-list li > .name.grow { display: block; padding: 0; }
+.sidebar .name a { display: block; padding: 5px var(--s2); margin: -2px calc(-1 * var(--s2)); border-radius: var(--radius-sm); text-decoration: none; color: var(--text); }
+.sidebar .name a:hover { color: var(--accent); }
+.sidebar li:has(a[aria-current="page"]) { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
+.sidebar a[aria-current="page"] { border-left: 0; padding-left: var(--s2); color: var(--accent); font-weight: 650; }
+.sidebar .btn { min-height: 24px; padding: 0 var(--s2); font-size: var(--fs-sm); flex: none; }
+.sidebar .btn-danger { opacity: 0; }
+.sidebar li:hover .btn-danger, .sidebar li:focus-within .btn-danger { opacity: 1; }
+.sidebar .badge { font-size: var(--fs-xs); flex: none; }
+.sidebar .empty { padding: var(--s4) var(--s3); font-size: var(--fs-sm); }
+.sidebar .hint { margin: var(--s2); }

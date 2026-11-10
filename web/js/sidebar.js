@@ -96,7 +96,7 @@ export async function renderSidebar(root, { signal } = {}) {
     }
   }
 
-  const input = h('input', { id: 'route-q', type: 'search', autocomplete: 'off', placeholder: 'e.g. 15 or 46A',
+  const input = h('input', { id: 'route-q', type: 'search', autocomplete: 'off', placeholder: 'Search routes, e.g. 15 or 46A',
     on: { input: () => { clearTimeout(timer); timer = setTimeout(() => search(input.value), DEBOUNCE_MS); } } });
   const form = h('form', { role: 'search', on: { submit: async (ev) => {
     ev.preventDefault();
