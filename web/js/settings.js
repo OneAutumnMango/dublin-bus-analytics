@@ -6,7 +6,7 @@ export const DEFAULTS = Object.freeze({
   density: 'comfortable', // theme lives in theme.js (dba-theme) so it applies before first paint
   tip: { on: true, units: 'min', stats: Object.fromEntries(STATS.map((k) => [k, true])) },
   charts: { heatCap: 0, pageSize: 40, tableToggle: true },
-  map: { areaOpacity: 0.5 }, // strength of the area colouring on the map (all styles)
+  map: { areaOpacity: 0.5, areaSize: 400 }, // strength and spread (metres) of the area colouring on the map
 });
 
 const obj = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {});
@@ -22,7 +22,8 @@ export function validate(raw) {
       stats: Object.fromEntries(STATS.map((k) => [k, bool(stats[k], true)])) },
     charts: { heatCap: cap === 0 || (Number.isFinite(cap) && cap >= 1 && cap <= 60) ? cap : 0,
       pageSize: pick(ch.pageSize, [20, 40, 80], 40), tableToggle: bool(ch.tableToggle, true) },
-    map: { areaOpacity: Number.isFinite(mp.areaOpacity) && mp.areaOpacity >= 0.1 && mp.areaOpacity <= 1 ? Math.round(mp.areaOpacity * 100) / 100 : 0.5 },
+    map: { areaOpacity: Number.isFinite(mp.areaOpacity) && mp.areaOpacity >= 0.1 && mp.areaOpacity <= 1 ? Math.round(mp.areaOpacity * 100) / 100 : 0.5,
+      areaSize: pick(mp.areaSize, [150, 250, 400, 600, 800, 1200], 400) },
   };
 }
 

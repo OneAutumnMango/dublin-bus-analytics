@@ -140,8 +140,10 @@ export function smoothRaster(stops, { pxM = 50, radiusM = 450, maxPx = 1100, cap
 
 export const AREA_MODES = [['off', 'Off'], ['hex', 'Hex grid'], ['circles', 'Circles'], ['smooth', 'Smooth gradient']];
 // GeoJSON regions for the vector modes; 'smooth' is a raster (smoothRaster) and 'off' draws nothing.
-export function areaCells(mode, stops) {
-  return mode === 'hex' ? hexCells(stops) : mode === 'circles' ? circleCells(stops) : fc([]);
+// sizeM is the user's "area size": hexagon radius; circles use 3/4 of it; the smooth gradient reaches 9/8 of it.
+export const smoothReach = (sizeM) => Math.round(sizeM * 1.125);
+export function areaCells(mode, stops, sizeM = 400) {
+  return mode === 'hex' ? hexCells(stops, { sizeM }) : mode === 'circles' ? circleCells(stops, { radiusM: sizeM * 0.75 }) : fc([]);
 }
 
 const head = (sec) => (isNum(sec) ? { sec } : null);

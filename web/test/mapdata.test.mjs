@@ -140,3 +140,14 @@ test('routeLines uses real shapes when given, stop lines otherwise', () => {
   assert.equal(back.geometry.coordinates.length, 2, 'direction without a shape falls back to its stops');
   assert.equal(M.routeLines(data(), new Set(['15']), null).features.length, 2);
 });
+
+test('area size scales hexagons, circles and the smooth reach', () => {
+  const stops = M.visibleStops(data(), new Set(['15', '46A']));
+  const width = (g) => { const xs = g.features[0].geometry.coordinates[0].map((p) => p[0]); return Math.max(...xs) - Math.min(...xs); };
+  assert.ok(width(M.areaCells('circles', stops, 800)) > width(M.areaCells('circles', stops, 250)) * 3);
+  assert.ok(M.areaCells('hex', stops, 150).features.length <= 1, 'tiny hexagons: the two stops ~65 m apart may no longer share a cell');
+  assert.equal(M.areaCells('hex', stops, 2000).features.length, 1);
+  assert.equal(M.smoothReach(400), 450);
+  const small = M.smoothRaster(stops, { radiusM: M.smoothReach(150) }), big = M.smoothRaster(stops, { radiusM: M.smoothReach(1200) });
+  assert.ok(big.width > small.width, 'a larger spread covers more ground');
+});

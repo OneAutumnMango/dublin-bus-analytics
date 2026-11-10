@@ -96,3 +96,9 @@ test('map.areaOpacity: default, bounds and persistence', () => {
   assert.equal(S.getSettings().map.areaOpacity, 0.8);
   assert.equal(S.getSettings().tip.on, true, 'other settings untouched');
 });
+
+test('map.areaSize: default 400 m, only the offered sizes are accepted', () => {
+  assert.equal(S.DEFAULTS.map.areaSize, 400);
+  assert.equal(S.validate({ map: { areaSize: 600 } }).map.areaSize, 600);
+  for (const bad of [0, 123, -400, '400', null, 1e9]) assert.equal(S.validate({ map: { areaSize: bad } }).map.areaSize, 400, String(bad));
+});

@@ -3,7 +3,7 @@
 import { api, isAbort } from '../api.js';
 import { dataTable, emptyState, errorBox, h, link, notice, put } from '../dom.js';
 import { fmtCount, fmtDelay, fmtNum, makeLatest } from '../lib.js';
-import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, smoothRaster, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
+import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, smoothRaster, smoothReach, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
 import { loadMapState, saveMapState } from '../mapstate.js';
 import { getSettings, onSettings } from '../settings.js';
 import { hideTip, showTip } from '../tooltip.js';
@@ -119,7 +119,7 @@ export async function render(ctx) {
     if (!m || !st.ready) return;
     m.getSource('stops').setData(stopFeatures(stops));
     m.getSource('routes').setData(routeLines(st.data, st.visible, st.shapes));
-    m.getSource('regions').setData(areaCells(st.areas, stops));
+    m.getSource('regions').setData(areaCells(st.areas, stops, getSettings().map.areaSize));
     drawSmooth(stops);
     m.setPaintProperty('regions', 'fill-opacity', (getSettings().map.areaOpacity * (st.areas === 'circles' ? 0.6 : 0.8)));
     for (const id of ['stops', 'regions']) m.setPaintProperty(id, id === 'stops' ? 'circle-color' : 'fill-color', colourExpr(st.cap));
@@ -134,7 +134,7 @@ export async function render(ctx) {
     if (m.getLayer('smooth')) m.removeLayer('smooth');
     if (m.getSource('smooth')) m.removeSource('smooth');
     if (st.areas !== 'smooth') return;
-    const r = smoothRaster(stops, { cap: st.cap, alpha: getSettings().map.areaOpacity });
+    const r = smoothRaster(stops, { cap: st.cap, alpha: getSettings().map.areaOpacity, radiusM: smoothReach(getSettings().map.areaSize) });
     const canvas = r && hooks.makeCanvas(r);
     if (!canvas) return;
     m.addSource('smooth', { type: 'canvas', canvas, coordinates: r.coordinates, animate: false });
