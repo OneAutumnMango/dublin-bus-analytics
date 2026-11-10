@@ -36,3 +36,18 @@ test('slider: label, snapping, change fires onChange, presets, wrap label', () =
   s.set(0, MAX);
   assert.match(s.el.textContent, /00:00 – 23:59/);
 });
+
+test('slider can reach 23:59 even though 1439 is not a multiple of the step', () => {
+  installDom();
+  const seen = [];
+  const s = timeRangeSlider({ from: 0, to: 1439, onChange: (a, b) => seen.push([a, b]) });
+  assert.deepEqual(s.get(), [0, 1439]);
+  assert.match(s.el.textContent, /00:00 – 23:59/);
+  const [, inB] = s.el.byTag('input');
+  assert.equal(inB.attrs.get('step'), '1', 'native step 1: the browser would otherwise stop at 1435');
+  for (const [typed, want] of [[1439, 1439], [1437, 1439], [1436, 1435], [1435, 1435], [1000, 1000], [1003, 1005]]) {
+    inB.value = String(typed); inB.dispatch('change');
+    assert.equal(s.get()[1], want, `typed ${typed}`);
+  }
+  assert.equal(seen.at(-1)[1], 1005);
+});

@@ -1,12 +1,13 @@
 // Time-of-day window: two native range inputs layered on one track (keyboard accessible). Values are minutes since
-// midnight, 0..1439 in `step` steps. If the start handle is after the end handle the window wraps midnight.
+// midnight, 0..1439; values snap to `step` minutes (23:59 is the last stop). If the start handle is after the end handle the window wraps midnight.
 import { h } from './dom.js';
 import { minutesLabel, windowLabel } from './mapdata.js';
 
 export const MAX = 1439;
 export const PRESETS = [['All day', 0, MAX], ['Morning peak', 420, 570], ['Daytime', 570, 960], ['Evening peak', 960, 1140], ['Night', 1320, 300]];
 
-const snap = (v, step) => Math.max(0, Math.min(MAX, Math.round(Number(v) / step) * step > MAX ? MAX : Math.round(Number(v) / step) * step));
+// Round to the step; the top of the day is 23:59 (1439), which is not a multiple of 5, so anything within half a step of it snaps there.
+const snap = (v, step) => { const n = Number(v); return !Number.isFinite(n) ? 0 : n >= MAX - step / 2 ? MAX : Math.max(0, Math.round(n / step) * step); };
 
 // Highlighted parts of the track as [leftPct, widthPct]; two parts when the window wraps midnight.
 export function fillSegments(a, b) {
@@ -16,7 +17,7 @@ export function fillSegments(a, b) {
 
 export function timeRangeSlider({ from = 0, to = MAX, step = 5, onChange = () => {} } = {}) {
   let a = snap(from, step), b = snap(to, step);
-  const mkInput = (cls, label, v) => h('input', { type: 'range', class: `tr-input ${cls}`, min: '0', max: String(MAX), step: String(step), value: String(v), 'aria-label': label });
+  const mkInput = (cls, label, v) => h('input', { type: 'range', class: `tr-input ${cls}`, min: '0', max: String(MAX), step: '1', value: String(v), 'aria-label': label });
   const inA = mkInput('tr-from', 'Window start (time of day)', a), inB = mkInput('tr-to', 'Window end (time of day)', b);
   const label = h('output', { class: 'tr-label', 'aria-live': 'polite' });
   const track = h('div', { class: 'tr-track' });
