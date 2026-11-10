@@ -2,6 +2,9 @@
 // Delays in the data are seconds; chart axes are minutes. Negative = early (left/down), positive = late.
 import { isNum, extent, linearScale, niceTicks, niceDomain, divergingBucket, fmtNum, fmtDelay, fmtCount,
   clockTime, LOW_N_NOTE, shorten, niceIntTicks, plural } from './lib.js';
+import { accTipData, heatTipData, histTipData } from './tipdata.js';
+
+const tipJson = (o) => JSON.stringify(o);
 
 const r2 = (x) => (isNum(x) ? Math.round(x * 100) / 100 : x);
 const toMin = (s) => (isNum(s) ? s / 60 : null);
@@ -222,6 +225,8 @@ export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs sch
       }
       g.append(el(doc, 'path', { class: `mean ${r.mean < 0 ? 'early' : r.mean > 0 ? 'late' : 'ontime'}`, d: `M${r.xMean} ${r.cy - 5}l5 5l-5 5l-5-5z` }));
     }
+    if (r.tip) g.setAttribute('data-tip-json', tipJson(r.tip));
+    g.append(el(doc, 'rect', { class: 'hit', x: 0, y: r.y, width: geo.width, height: geo.rowH })); // whole row is the hover target
     svg.append(g);
   }
   return svg;
@@ -237,7 +242,9 @@ export function renderHistogram(geo, { title, desc, markers = [], band = null, d
   for (const b of geo.bars) {
     const r = el(doc, 'rect', { class: `bar${b.lo !== null && b.lo < 0 ? ' early' : b.lo !== null && b.lo >= 0 ? ' late' : ''}`, x: b.x, y: b.y, width: b.w, height: b.h });
     r.append(el(doc, 'title', {}, `${b.label}: ${fmtCount(b.count)} arrivals`));
-    svg.append(r);
+    const hg = el(doc, 'g', { 'data-tip-json': tipJson(histTipData(b, geo.total)) });
+    hg.append(r, el(doc, 'rect', { class: 'hit', x: b.x, y: geo.top, width: b.w + 1, height: geo.plotH })); // full-height column
+    svg.append(hg);
   }
   for (const t of geo.xTicks) svg.append(el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.top + geo.plotH + 16, 'text-anchor': 'middle' }, t.label));
   svg.append(el(doc, 'text', { class: 'axis-label', x: geo.left, y: geo.height - 6 }, '← early    minutes vs schedule    late →'));
@@ -251,7 +258,7 @@ export function renderHeatmap(grid, { title, desc, doc = globalThis.document } =
   for (let h = 0; h < 24; h += 2) svg.append(el(doc, 'text', { class: 'tick-label', x: grid.left + h * grid.cw + grid.cw / 2, y: grid.top - 8, 'text-anchor': 'middle' }, String(h).padStart(2, '0')));
   WEEKDAYS.forEach((d, i) => svg.append(el(doc, 'text', { class: 'tick-label', x: grid.left - 6, y: grid.top + i * grid.ch + grid.ch / 2 + 4, 'text-anchor': 'end' }, d)));
   for (const c of grid.cells) {
-    const g = el(doc, 'g', { class: 'cell' });
+    const g = el(doc, 'g', { class: 'cell', 'data-tip-json': tipJson(heatTipData(c)) });
     const cls = c.empty ? 'hm-empty' : `hm-b${c.bucket < 0 ? 'n' : ''}${Math.abs(c.bucket)}`;
     g.append(el(doc, 'title', {}, `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00 - ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}, n=${fmtCount(c.n)}${c.lowN && !c.empty ? `. ${LOW_N_NOTE}` : ''}`),
       el(doc, 'rect', { class: `${cls}${c.lowN ? ' low-n' : ''}`, x: c.x, y: c.y, width: c.w, height: c.h, rx: 2 }));
@@ -284,8 +291,9 @@ export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) =>
   svg.append(el(doc, 'path', { class: 'acc-line', d: geo.path, fill: 'none' }));
   stops.forEach((s, i) => {
     const p = geo.pts[i], b = geo.bars[i];
-    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c); }
-    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1) }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r); }
+    const lab = stopLabel(s), tip = tipJson(accTipData(s, lab, p.pos));
+    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
+    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
   });
   for (const t of geo.xTicks) svg.append(el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.height - 6, 'text-anchor': 'middle' }, t.label));
   return svg;

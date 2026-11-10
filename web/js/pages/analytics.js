@@ -1,4 +1,5 @@
 // Analytics view: weekday x hour heatmap, delay accumulation along the route, forecast accuracy by horizon.
+import { forecastTipData } from '../tipdata.js';
 import { api, isAbort } from '../api.js';
 import { accumulationGeometry, heatmapGrid, renderAccumulation, renderHeatmap, renderRangeChart, rangeDomain, rangeGeometry, WEEKDAYS } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, notice, put } from '../dom.js';
@@ -79,7 +80,7 @@ function drawForecast(route, d, el) {
   put(el, h('h2', {}, 'How accurate are the live predictions?'), ...filterNotices(d));
   const hs = d.horizons || [];
   if (!hs.some((x) => x.n > 0)) { put(el, emptyState('No forecast data for this selection yet. Forecast accuracy needs arrivals with stored predictions.')); return; }
-  const items = hs.map((x) => ({ label: `${x.horizon_min} min before`, n: x.n, low_n: x.low_n, mean: x.mean_error, min: null, max: null, lo: x.p_low, hi: x.p_high }));
+  const items = hs.map((x) => ({ label: `${x.horizon_min} min before`, n: x.n, low_n: x.low_n, mean: x.mean_error, min: null, max: null, lo: x.p_low, hi: x.p_high, tip: forecastTipData(x) }));
   const geo = rangeGeometry(items, rangeDomain(items));
   const svg = renderRangeChart(geo, { title: 'Prediction error by horizon', axisLabel: 'minutes: actual minus predicted', zeroLabel: 'exactly as predicted',
     desc: `Mean prediction error per horizon: ${hs.map((x) => `${x.horizon_min} minutes before: ${fmtDelay(x.mean_error)} (${plural(x.n, 'sample')})`).join('; ')}. Positive means the bus came later than predicted.` });

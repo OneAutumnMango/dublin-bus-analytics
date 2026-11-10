@@ -217,3 +217,23 @@ test('chart root has an aria-label and no <title> child (browsers show a root ti
   assert.ok(svg.getAttribute('aria-describedby'));
   assert.equal(svg.children.filter((c) => c.tag === 'title').length, 0);
 });
+
+test('marks carry rich tip payloads and padded hit targets', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const stops = [0, 1, 2].map((i) => ({ stop_id: `s${i}`, position: i, mean_delay: 60 * i, segment_delta: 30, n: 20, n_delta: 20 }));
+  const acc = C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', stopLabel: (s) => `L${s.stop_id}`, doc });
+  const hits = acc.all((n) => n.getAttribute?.('class') === 'hit');
+  assert.ok(hits.some((n) => n.tag === 'circle' && n.getAttribute('r') === '9'));
+  assert.ok(hits.every((n) => { try { JSON.parse(n.getAttribute('data-tip-json')); return true; } catch { return false; } }));
+  assert.match(acc.all((n) => n.getAttribute?.('class') === 'acc-dot')[0].getAttribute('data-tip-json'), /Stop 1 · Ls0/);
+  const items = [{ label: 'A', n: 5, mean: 60, min: 0, max: 120, lo: 0, hi: 100, tip: { title: 'A', rows: [] } }];
+  const geo = C.rangeGeometry(items);
+  const rc = C.renderRangeChart(geo, { title: 't', desc: 'd', doc });
+  const row = rc.all((n) => n.tag === 'g' && n.getAttribute('data-tip-json'))[0];
+  assert.ok(row);
+  const hit = row.all((n) => n.getAttribute?.('class') === 'hit')[0];
+  assert.equal(hit.getAttribute('height'), String(geo.rowH));
+  const hm = C.renderHeatmap(C.heatmapGrid([{ weekday: 0, hour: 8, n: 12, mean_delay: 300 }]), { title: 't', desc: 'd', doc });
+  assert.match(hm.all((n) => /cell/.test(n.getAttribute?.('class') || '') && /Mon 08:00/.test(n.getAttribute('data-tip-json') || ''))[0].getAttribute('data-tip-json'), /Mon 08:00/);
+});
