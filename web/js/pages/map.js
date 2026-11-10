@@ -62,7 +62,7 @@ export async function render(ctx) {
     h('p', { class: 'subtitle' }, 'Your tracked routes. Stops are coloured by how early (blue) or late (orange) buses arrive there.'),
     h('div', { class: 'map-layout' }, panel, h('div', { class: 'map-wrap' }, canvas, legend)), tableHost);
 
-  const st = { data: null, visible: new Set(), regions: true, win: [0, MAX], cap: 300, map: null, ready: false, stopsById: new Map() };
+  const st = { data: null, visible: new Set(), regions: true, stops: true, win: [0, MAX], cap: 300, map: null, ready: false, stopsById: new Map() };
   const latest = makeLatest(signal);
   const query = () => ({ ...s.apiQuery, ...(st.win[0] === 0 && st.win[1] === MAX ? {} : { minutes_from: st.win[0], minutes_to: st.win[1] }) });
 
@@ -95,6 +95,7 @@ export async function render(ctx) {
     m.getSource('regions').setData(hexCells(stops));
     for (const id of ['stops', 'regions']) m.setPaintProperty(id, id === 'stops' ? 'circle-color' : 'fill-color', colourExpr(st.cap));
     m.setLayoutProperty('regions', 'visibility', st.regions ? 'visible' : 'none');
+    for (const id of ['stops', 'stops-nodata']) m.setLayoutProperty(id, 'visibility', st.stops ? 'visible' : 'none');
   }
 
   const summary = h('p', { class: 'hint' });
@@ -132,7 +133,8 @@ export async function render(ctx) {
       h('h2', {}, 'Routes'), chips,
       h('div', { class: 'row' }, h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => setAll(true) } }, 'All'), h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => setAll(false) } }, 'None'),
         h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => fit() } }, 'Fit to routes')),
-      h('h2', {}, 'Regions'),
+      h('h2', {}, 'Layers'),
+      h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.stops, on: { change: (e) => { st.stops = e.target.checked; refresh(); } } }), 'Show stops'),
       h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.regions, on: { change: (e) => { st.regions = e.target.checked; refresh(); } } }), 'Colour areas where nearby stops run early or late'),
       h('h2', {}, 'Time of day'), slider.el, status, summary,
       h('p', { class: 'hint attribution' }, 'Basemap loaded from tiles.openfreemap.org · © OpenMapTiles · data © OpenStreetMap contributors. Date range follows the default window; change it on a route’s analytics page.'));

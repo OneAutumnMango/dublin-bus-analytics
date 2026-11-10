@@ -60,7 +60,12 @@ test('map page: layers, sources, legend, route toggles, regions toggle', async (
   assert.equal(map.layout['regions.visibility'], 'visible');
   assert.deepEqual(map.paint['stops.circle-color'].slice(0, 3), ['interpolate', ['linear'], ['get', 'delay']]);
   const boxes = ctx.main.all((n) => n.tag === 'input' && n.attrs.get('type') === 'checkbox');
-  const [c15, c46, regions] = boxes;
+  const [c15, c46, stopsBox, regions] = boxes;
+  assert.equal(map.layout['stops.visibility'], 'visible');
+  stopsBox.checked = false; stopsBox.dispatch('change', { target: stopsBox });
+  assert.equal(map.layout['stops.visibility'], 'none'); assert.equal(map.layout['stops-nodata.visibility'], 'none');
+  stopsBox.checked = true; stopsBox.dispatch('change', { target: stopsBox });
+  assert.equal(map.layout['stops.visibility'], 'visible');
   c46.checked = false; c46.dispatch('change', { target: c46 });
   assert.deepEqual(names(map.sources.stops.data).sort(), ['Alpha', 'Beta']);
   assert.equal(map.sources.routes.data.features.length, 1);
