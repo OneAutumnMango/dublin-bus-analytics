@@ -77,13 +77,13 @@ Invalid values stop the app at startup with a message naming the variable. See `
 ```bash
 pytest -q                                  # whole suite; several minutes
 pytest -q -k "forecast or stats"           # subset by keyword
-pytest -q tests/test_db.py tests/test_docs.py   # subset by file
+pytest -q tests/core/test_db.py tests/test_docs.py   # subset by file
 pytest --cov=app --cov-branch --cov-report=term-missing
 node --test web/test/                      # JS unit tests (no server needed)
 BASE_URL=http://127.0.0.1:8081 node --test web/test/contract.test.mjs   # against a running app
 ```
 
-On a low-RAM machine run Python with a cap, for example `ulimit -v 2500000; pytest -q`, and run the heavy files one at a time: `tests/test_api.py`, `tests/test_tracker.py`, `tests/test_backup.py`. The contract test is skipped unless `BASE_URL` is set; optional `ROUTE` and `STOP` pick the route and stop to check (with the demo data: `ROUTE=15 STOP=15-S02`).
+On a low-RAM machine run Python with a cap, for example `ulimit -v 2500000; pytest -q`, and run the heavy files one at a time: `tests/api/test_routes.py`, `tests/collect/test_tracker.py`, `tests/backup/test_backup.py`. The contract test is skipped unless `BASE_URL` is set; optional `ROUTE` and `STOP` pick the route and stop to check (with the demo data: `ROUTE=15 STOP=15-S02`).
 
 ## Build and run the container
 
@@ -135,10 +135,10 @@ Copies kept off the host are your responsibility. `scripts/seed_demo.py` must ne
 
 ## Repo layout
 
-- `app/` FastAPI app: poller, tracker, stats, forecast, API, backup
+- `app/` FastAPI app, grouped by responsibility: `core/` (config, models, db), `collect/` (server client, poller, tracker, forecast), `analysis/` (stats), `api/` (JSON routes, static UI), `backup/` (backup, scheduler, backup router); entrypoint `app.main:app`
 - `web/` static UI and its Node tests (`web/test/`)
 - `scripts/` `seed_demo.py` (demo data and fake server), `smoke.sh` (full-stack check)
-- `tests/` pytest suite
+- `tests/` pytest suite mirroring the `app/` layout (`tests/support/` holds the fake server)
 - `docs/verification.md` what is verified and what is still owed manually
 - `docs/specs/` design spec, `docs/plans/` implementation plan
 - `Dockerfile`, `docker-compose.example.yml`, `analytics.env.example`

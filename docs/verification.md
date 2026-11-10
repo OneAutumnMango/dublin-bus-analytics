@@ -5,7 +5,7 @@
 - `docker build` of the analytics image succeeds (504 MB on disk); it serves the UI (`/`, `/js/app.js`, `/css/style.css` with CSP headers), 404s `/package.json`, lists seeded routes at `/api/routes/tracked`, runs as uid 10001, and the HEALTHCHECK turns `healthy`.
 - With no data server reachable the poller logs "server unavailable" and the app stays up (`/api/health` ok).
 - `docker compose --profile analytics config` in the server repo renders the analytics service (plain `docker compose config` omits it); `ANALYTICS_BACKUP_*` overrides and defaults (03:00, 7, true, /data/backups) both come through.
-- pytest (`tests/test_docs.py`, `tests/test_web.py`, `tests/test_health.py`) and `node --test web/test/`.
+- pytest (`tests/test_docs.py`, `tests/api/test_static.py`, `tests/test_main.py`) and `node --test web/test/`.
 
 ## NOT verified (owed manually)
 
