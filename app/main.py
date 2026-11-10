@@ -57,7 +57,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.include_router(backup_router)
 
     @app.get("/api/health")
-    def health():
+    async def health():
         return {"ok": True}
 
     app.mount("/", static_app(), name="web")  # last: a mount at / would shadow routes added after it

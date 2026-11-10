@@ -1494,16 +1494,35 @@ def test_cap_probe_ignores_null_delay_rows(env, monkeypatch):
     assert s["filters"]["truncated"] is False and s["n"] == 3
 
 
-# ---------- H2: heavy-scan semaphore ----------
+# ---------- H2: heavy-scan gate (asyncio, waits on the event loop) ----------
 
 def _heavy_env(env, monkeypatch, slots=1):
     import app.api as api
-    monkeypatch.setattr(api, "_HEAVY", threading.BoundedSemaphore(slots))
+    monkeypatch.setattr(api, "MAX_HEAVY_SCANS", slots)  # the gate is created lazily per event loop
     monkeypatch.setattr(api, "HEAVY_ROWS", 3)
     for i in range(5):  # route 15 is heavy (5 > 3 rows); route 16 is light
         env.add(delay=i, scheduled=T0 + i)
     env.add(route="16", delay=1, scheduled=T0)
     return api
+
+
+def _limiter(env, n):
+    """Set the anyio default thread-limiter tokens of the client's (shared) loop; returns the old value."""
+    import anyio.to_thread
+
+    async def set_(n):
+        lim = anyio.to_thread.current_default_thread_limiter()
+        old, lim.total_tokens = lim.total_tokens, n
+        return old
+    return env.c.portal.call(set_, n)
+
+
+def _gate_value(env, name="heavy"):
+    import app.api as api
+
+    async def val():
+        return api._gate(name)._value
+    return env.c.portal.call(val)
 
 
 def _run(fn, *a):
@@ -1513,7 +1532,7 @@ def _run(fn, *a):
     return t, out
 
 
-def test_heavy_requests_are_serialised_by_the_semaphore(env, monkeypatch):
+def test_heavy_requests_are_serialised_by_the_gate(env, monkeypatch):
     api = _heavy_env(env, monkeypatch, slots=1)
     log, gate, first_in = [], threading.Event(), threading.Event()
     orig = api._scan
@@ -1527,18 +1546,21 @@ def test_heavy_requests_are_serialised_by_the_semaphore(env, monkeypatch):
         log.append("end")
 
     monkeypatch.setattr(api, "_scan", spy)
-    t1, o1 = _run(env.c.get, "/api/routes/15/heatmap")
-    assert first_in.wait(10)
-    t2, o2 = _run(env.c.get, "/api/routes/15/forecast")
-    time.sleep(0.5)
-    assert log == ["start"]  # second heavy request is parked on the semaphore
-    gate.set()
-    t1.join(15), t2.join(15)
+    with env.c:
+        t1, o1 = _run(env.c.get, "/api/routes/15/heatmap")
+        assert first_in.wait(10)
+        t2, o2 = _run(env.c.get, "/api/routes/15/forecast")
+        time.sleep(0.5)
+        assert log == ["start"]  # second heavy request is parked on the gate
+        gate.set()
+        t1.join(15), t2.join(15)
     assert log == ["start", "end", "start", "end"]
     assert o1[0].status_code == 200 and o2[0].status_code == 200
 
 
-def test_light_request_not_blocked_by_running_heavy_ones(env, monkeypatch):
+def test_queued_heavy_requests_do_not_starve_light_ones_or_health(env, monkeypatch):
+    """Reviewer probe: gate 2, only 4 worker threads, 6 slow heavy requests. Waiting requests must hold no
+    thread (a thread-based wait would leave nothing for the light request until a heavy one finishes)."""
     api = _heavy_env(env, monkeypatch, slots=2)
     gate, inside = threading.Event(), threading.Semaphore(0)
     orig = api._scan
@@ -1546,21 +1568,30 @@ def test_light_request_not_blocked_by_running_heavy_ones(env, monkeypatch):
     def spy(request, sql, args, fn, size=None):
         if args[0] == "15":
             inside.release()
-            assert gate.wait(10)
+            assert gate.wait(15)
         orig(request, sql, args, fn, size)
 
     monkeypatch.setattr(api, "_scan", spy)
-    ts = [_run(env.c.get, "/api/routes/15/heatmap")[0] for _ in range(2)]
-    assert inside.acquire(timeout=10) and inside.acquire(timeout=10)  # both slots taken
-    t3, o3 = _run(env.c.get, "/api/routes/15/forecast")  # third heavy waits
-    r = env.c.get("/api/routes/16/heatmap")  # light: answers while 2 heavy run and 1 waits
-    assert r.status_code == 200 and r.json()["n"] == 1
-    assert env.c.get("/api/routes/16/summary").status_code == 200
-    assert t3.is_alive()
-    gate.set()
-    for t in (*ts, t3):
-        t.join(15)
-    assert o3[0].status_code == 200
+    with env.c:
+        old = _limiter(env, 4)
+        try:
+            runs = [_run(env.c.get, "/api/routes/15/heatmap") for _ in range(6)]
+            assert inside.acquire(timeout=10) and inside.acquire(timeout=10)  # both permits taken
+            time.sleep(0.3)  # the other four are queued
+            t = time.perf_counter()
+            light = env.c.get("/api/routes/16/heatmap")
+            health = env.c.get("/api/health")
+            took = time.perf_counter() - t
+            assert not inside.acquire(timeout=0.01)  # still only two running
+            gate.set()
+            for th, _ in runs:
+                th.join(20)
+        finally:
+            gate.set()
+            _limiter(env, old)
+    assert light.status_code == 200 and light.json()["n"] == 1 and health.json() == {"ok": True}
+    assert took < 1.0, took
+    assert [o[0].status_code for _, o in runs] == [200] * 6 and all(o[0].json()["n"] == 5 for _, o in runs)
 
 
 def test_heavy_slot_released_on_error(env, monkeypatch):
@@ -1575,32 +1606,63 @@ def test_heavy_slot_released_on_error(env, monkeypatch):
         orig(request, sql, args, fn, size)
 
     monkeypatch.setattr(api, "_scan", boom)
-    with pytest.raises(RuntimeError):
-        env.c.get("/api/routes/15/heatmap")
-    assert api._HEAVY.acquire(blocking=False)  # free again
-    api._HEAVY.release()
-    assert env.c.get("/api/routes/15/heatmap").status_code == 200
-    assert api._HEAVY.acquire(blocking=False)
-    api._HEAVY.release()
-    assert not getattr(api._held, "slot", False)
+    with env.c:
+        with pytest.raises(RuntimeError):
+            env.c.get("/api/routes/15/heatmap")
+        assert _gate_value(env) == 1  # permit back
+        assert env.c.get("/api/routes/15/heatmap").status_code == 200
+        assert _gate_value(env) == 1
+
+
+async def test_heavy_cancelled_while_waiting_leaks_no_permit(env, monkeypatch):
+    import app.api as api
+    _heavy_env(env, monkeypatch, slots=1)
+    req = types.SimpleNamespace(app=env.app)
+    running, release = threading.Event(), threading.Event()
+
+    def work(p):
+        running.set()
+        assert release.wait(10)
+        return "done"
+
+    t1 = asyncio.create_task(api._heavy(req, api._params(), "route = ?", ["15"], work))
+    while not running.is_set():
+        await asyncio.sleep(0.01)
+    t2 = asyncio.create_task(api._heavy(req, api._params(), "route = ?", ["15"], lambda p: "never"))
+    await asyncio.sleep(0.1)  # t2 waits on the gate
+    t2.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t2
+    assert api._gate("heavy")._value == 0  # t1 still holds its permit; t2 took none and released none
+    release.set()
+    assert await t1 == "done"
+    assert api._gate("heavy")._value == 1
+    assert await api._heavy(req, api._params(), "route = ?", ["15"], lambda p: "again") == "again"
+    assert api._gate("heavy")._value == 1
+    assert await api._heavy(req, api._params(), "route = ?", ["16"], lambda p: p["truncated"]) is False  # light
 
 
 def test_no_deadlock_under_mixed_concurrency(env, monkeypatch):
     api = _heavy_env(env, monkeypatch, slots=2)
     urls = ["/api/routes/15/heatmap", "/api/routes/16/heatmap", "/api/routes/15/forecast",
-            "/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/16/forecast"]
+            "/api/routes/15/summary", "/api/stops/s1/stats", "/api/routes/16/forecast",
+            "/api/routes/15/accumulation", "/api/trips/x/series?stop=s1"]
     env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
-    old = threading.stack_size(256 * 1024)  # 20 clients x portal threads must fit the ulimit -v budget
+    old_stack = threading.stack_size(256 * 1024)  # 20 clients + workers must fit the ulimit -v budget
     try:
-        ts = [_run(env.c.get, urls[i % len(urls)]) for i in range(20)]
-        t0 = time.monotonic()
-        for t, _ in ts:
-            t.join(max(0.1, 60 - (time.monotonic() - t0)))
-        assert not any(t.is_alive() for t, _ in ts)
-        assert all(o[0].status_code == 200 for _, o in ts)
+        with env.c:
+            old = _limiter(env, 8)
+            ts = [_run(env.c.get, urls[i % len(urls)]) for i in range(20)]
+            t0 = time.monotonic()
+            for t, _ in ts:
+                t.join(max(0.1, 60 - (time.monotonic() - t0)))
+            assert not any(t.is_alive() for t, _ in ts)
+            assert [o[0].status_code for _, o in ts] == [404 if "series" in urls[i % len(urls)] else 200
+                                                         for i, (_, o) in enumerate(ts)]
+            assert _gate_value(env) == 2
+            _limiter(env, old)
     finally:
-        threading.stack_size(old)
-    assert api._HEAVY._value == 2
+        threading.stack_size(old_stack)
 
 
 # ---------- trip series ----------
@@ -1829,18 +1891,18 @@ def test_trip_series_truncation_caps(env, monkeypatch):
     monkeypatch.setattr(api, "MAX_POINTS", 3)
     for i in range(3):
         env.add(trip="T", stop="s1", scheduled=S + i * 600, delay=0)
-    put_samples(env, [(S, S - 100 + k, 1, S, 1) for k in range(5)])
+    put_samples(env, [(S + 600, S - 100 + k, 1, S, 1) for k in range(5)])
     j = series(env).json()
-    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S, S + 600]
+    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S + 600, S + 1200]  # most recent
     v = j["visits"][0]
     assert [p["ts"] for p in v["points"]] == [S - 100, S - 99, S - 98] and v["last_seen_ts"] == S - 96  # earliest kept
-    # sample-only visit beyond the cap: dropped and flagged
+    # a newer sample-only visit evicts the oldest kept one
     put_samples(env, [(S + 5000, S + 4000, 3, S + 5000, 1)])
     assert series(env, seq=str(S + 5000)).json()["visits"][0]["seq"] == S + 5000  # alone it fits
     j = series(env).json()
-    assert j["truncated"] is True and len(j["visits"]) == 2
+    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S + 1200, S + 5000]
     monkeypatch.undo()
-    j = series(env, seq=str(S)).json()
+    j = series(env, seq=str(S + 600)).json()
     assert j["truncated"] is False and len(j["visits"][0]["points"]) == 5
 
 
@@ -1849,7 +1911,13 @@ def test_trip_series_sample_only_visit_over_cap_flagged(env, monkeypatch):
     monkeypatch.setattr(api, "MAX_VISITS", 2)
     put_samples(env, [(S + i, S + i, 1, S + i, 1) for i in range(3)])
     j = series(env).json()
-    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S, S + 1]
+    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [S + 1, S + 2]
+    # an OLDER visit first seen in a later month file, once the visits are full, is dropped
+    P = _utc(2025, 9, 15)
+    put_samples(env, [(P + 1, P + 1, 1, P, 1), (P + 2, P + 2, 1, P, 1), (P - 5, _utc(2025, 10, 2), 1, P, 1)],
+                trip="U")
+    j = series(env, trip="U").json()
+    assert j["truncated"] is True and [v["seq"] for v in j["visits"]] == [P + 1, P + 2]
 
 
 def test_trip_series_month_cap(env, monkeypatch):
@@ -1880,3 +1948,176 @@ def test_scan_open_failure_propagates_without_close(env, monkeypatch):
         api._scan(req, "select 1", [], lambda rows: None)
     assert api._DB_LOCK.acquire(blocking=False)  # lock released
     api._DB_LOCK.release()
+
+
+# ---------- fix round 1: series selection, clamping, gz gate ----------
+
+def put_many(env, rows, trip="T", stop="s1"):
+    from app.db import open_samples, samples_path
+    by_month = {}
+    for r in rows:
+        by_month.setdefault(samples_path(env.s.data_dir, r[1]), []).append(r)
+    for path, rs in by_month.items():
+        c = open_samples(env.s.data_dir, rs[0][1])
+        with c:
+            c.executemany("insert into sample values(?,?,?,?,?,?,?)",
+                          [(ts, trip, stop, sq, d, e, rt) for sq, ts, d, e, rt in rs])
+        c.close()
+
+
+def daily(env, start, days, hour=8):
+    """One arrival + 2 samples per day for the same trip at s1; returns the seqs."""
+    seqs = []
+    for i in range(days):
+        sq = start + i * 86400 + hour * 3600
+        env.add(trip="T", stop="s1", scheduled=sq, delay=0)
+        put_many(env, [(sq, sq - 600, 10, sq, 1), (sq, sq + 10, 0, sq + 10, 1)])
+        seqs.append(sq)
+    return seqs
+
+
+def test_series_default_returns_most_recent_visits_with_points(env):
+    seqs = daily(env, _utc(2026, 1, 15), 60)  # 15 Jan .. 15 Mar, 3 month files
+    j = series(env).json()
+    check_shape(j)
+    got = [v["seq"] for v in j["visits"]]
+    assert got == [q for q in seqs if q >= _utc(2026, 2, 1)] and len(got) == 43  # Feb + Mar fit; January dropped
+    assert got[-1] == seqs[-1]  # the newest is present
+    assert all(len(v["points"]) == 2 for v in j["visits"])  # none empty merely for an unread month
+    assert j["truncated"] is True
+
+
+def test_series_arrivals_in_three_months_keeps_newest_two_months(env):
+    seqs = [_utc(2026, m, 15, 8) for m in (1, 2, 3)]
+    for q in seqs:
+        env.add(trip="T", stop="s1", scheduled=q, delay=0)
+        put_many(env, [(q, q, 0, q, 1)])
+    j = series(env).json()
+    assert [v["seq"] for v in j["visits"]] == seqs[1:] and j["truncated"] is True
+    assert all(len(v["points"]) == 1 for v in j["visits"])
+    assert [v["seq"] for v in series(env, seq=str(seqs[0])).json()["visits"]] == seqs[:1]  # still reachable
+
+
+def test_series_sample_only_visit_sorts_before_later_arrivals_visit(env):
+    seed_countdown(env)
+    put_many(env, [(S - 7200, S - 7500, 5, S - 7200, 1)])  # dropped bus, earlier, same month, no arrivals row
+    j = series(env).json()
+    check_shape(j)
+    assert [(v["seq"], v["arrival"] is None) for v in j["visits"]] == [(S - 7200, True), (S, False)]
+
+
+def test_series_exact_caps_not_truncated_but_one_more_is(env):
+    for i in range(50):
+        env.add(trip="T", stop="s1", scheduled=S + i, delay=0)
+    j = series(env).json()
+    assert len(j["visits"]) == 50 and j["truncated"] is False
+    env.add(trip="T", stop="s1", scheduled=S + 50, delay=0)
+    j = series(env).json()
+    assert [v["seq"] for v in j["visits"]] == [S + i for i in range(1, 51)] and j["truncated"] is True
+
+
+def test_series_exact_point_cap_and_points_only_truncation(env):
+    put_many(env, [(S, S - 5000 + i, 1, S, 1) for i in range(2000)])
+    j = series(env).json()
+    assert len(j["visits"][0]["points"]) == 2000 and j["truncated"] is False
+    put_many(env, [(S, S - 5000 + 2000, 1, S, 1)])
+    j = series(env).json()  # 2001 rows: one visit, only the points are cut
+    assert len(j["visits"]) == 1 and len(j["visits"][0]["points"]) == 2000
+    assert j["truncated"] is True and j["visits"][0]["last_seen_ts"] == S - 3000
+
+
+def test_series_exact_seq_finds_old_sample_only_visit_beyond_two_newer_months(env):
+    feb = _utc(2026, 2, 10, 8)
+    put_many(env, [(feb, feb, 5, feb, 1)])
+    for m in (3, 4):
+        q = _utc(2026, m, 10, 8)
+        put_many(env, [(q, q, 5, q, 1)])
+    assert [v["seq"] for v in series(env).json()["visits"]] == [_utc(2026, 3, 10, 8), _utc(2026, 4, 10, 8)]
+    j = series(env, seq=str(feb)).json()
+    assert [v["seq"] for v in j["visits"]] == [feb] and len(j["visits"][0]["points"]) == 1
+
+
+@pytest.mark.parametrize("q", [{"since": "999999999999"}, {"until": "-999999999999"}, {"since": "-999999999999"},
+                               {"until": "999999999999"}, {"seq": "999999999999"}, {"seq": "0"},
+                               {"seq": "253402300800"}, {"seq": "-62135596801"}, {"seq": "-999999999999"},
+                               {"since": "-62135596801", "until": "253402300800"}])
+@pytest.mark.parametrize("with_data", [False, True])
+def test_series_out_of_range_epochs_never_500(env, q, with_data):
+    if with_data:
+        seed_countdown(env)
+    r = series(env, **q)
+    assert r.status_code in (200, 404), (q, r.text)
+    if r.status_code == 200:
+        check_shape(r.json())
+
+
+def test_series_out_of_range_db_values_do_not_crash(env):
+    env.add(trip="T", stop="s1", scheduled=10**12, delay=0, seq=10**12)  # nonsense epoch already in the db
+    assert series(env).status_code == 200
+
+
+def gz_two_months(env):
+    """Oct 2025 gzipped (closed), Nov 2025 plain; returns (oct seq, nov seq)."""
+    from app.backup import compact_closed_months
+    o, n = _utc(2025, 10, 10, 8), _utc(2025, 11, 10, 8)
+    for q, trip in ((o, "G"), (n, "P")):
+        env.add(trip=trip, stop="s1", scheduled=q, delay=0)
+        put_many(env, [(q, q - 60, 1, q, 1)], trip=trip)
+    assert len(compact_closed_months(env.s.data_dir, _utc(2025, 11, 5))) == 1
+    assert (env.s.data_dir / "samples-2025-11.db").exists()
+    return o, n
+
+
+@pytest.mark.filterwarnings("error::ResourceWarning")
+def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_private):
+    import app.api as api
+    gz_two_months(env)
+    log, gate, first_in = [], threading.Event(), threading.Event()
+    orig = api._read_month
+
+    def spy(*a):
+        log.append("start")
+        first_in.set()
+        if len(log) == 1:
+            assert gate.wait(10)
+        orig(*a)
+        log.append("end")
+
+    monkeypatch.setattr(api, "_read_month", spy)
+    with env.c:
+        t1, o1 = _run(series, env, "G")
+        assert first_in.wait(10)
+        t2, o2 = _run(series, env, "G")
+        time.sleep(0.5)
+        assert log == ["start"]  # second gz read waits on the loop
+        gate.set()
+        t1.join(15), t2.join(15)
+    assert log == ["start", "end", "start", "end"]
+    assert [o[0].status_code for o in (o1, o2)] == [200, 200]
+    assert all(len(o[0].json()["visits"][0]["points"]) == 1 for o in (o1, o2))
+    assert list(tmp_private.iterdir()) == []
+
+
+def test_series_plain_month_not_blocked_by_gz_read(env, monkeypatch):
+    import app.api as api
+    gz_two_months(env)
+    gate, first_in = threading.Event(), threading.Event()
+    orig = api._read_month
+
+    def spy(data_dir, m, *a):
+        if m == 2025 * 12 + 9:  # October, the gz month
+            first_in.set()
+            assert gate.wait(10)
+        orig(data_dir, m, *a)
+
+    monkeypatch.setattr(api, "_read_month", spy)
+    with env.c:
+        t1, o1 = _run(series, env, "G")
+        assert first_in.wait(10)
+        t = time.perf_counter()
+        r = series(env, "P")
+        assert r.status_code == 200 and len(r.json()["visits"][0]["points"]) == 1
+        assert time.perf_counter() - t < 1.0 and t1.is_alive()
+        gate.set()
+        t1.join(15)
+    assert o1[0].status_code == 200
