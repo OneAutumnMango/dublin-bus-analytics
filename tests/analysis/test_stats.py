@@ -426,3 +426,19 @@ def test_forecast_accepts_error_s_and_prefers_it():
     assert forecast_accuracy([{"horizon_min": 5, "error": 30}])[5]["mean_error"] == 30
     assert forecast_accuracy([{"horizon_min": 5, "error_s": 60, "error": 30}])[5]["mean_error"] == 60
     assert forecast_accuracy([{"horizon_min": 5, "error_s": None, "error": 30}])[5]["mean_error"] == 30
+
+
+def _at(h, m):
+    """Epoch of a winter (UTC == Dublin) time of day."""
+    return int(datetime(2026, 1, 12, h, m, tzinfo=timezone.utc).timestamp())
+
+
+def test_filter_minutes_inclusive_wrap_and_single_minute():
+    rows = [{"scheduled": _at(h, m), "confidence": 1, "realtime": 1, "k": f"{h:02}:{m:02}"}
+            for h, m in ((5, 59), (6, 0), (10, 30), (10, 31), (23, 59), (0, 0), (1, 59), (2, 0))]
+    keys = lambda **kw: [r["k"] for r in filter_rows(rows, **kw)]  # noqa: E731
+    assert keys(minutes=(360, 630)) == ["06:00", "10:30"]
+    assert keys(minutes=(1320, 119)) == ["23:59", "00:00", "01:59"]  # wraps midnight, inclusive both ends
+    assert keys(minutes=(630, 630)) == ["10:30"]  # equal bounds = that single minute, not all day
+    assert len(keys(minutes=(0, 1439))) == len(rows)
+    assert filter_rows([{"confidence": 1, "realtime": 1}], minutes=(0, 1439)) == []  # no `scheduled` fails

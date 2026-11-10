@@ -85,10 +85,11 @@ def heatmap(rows) -> dict:
 
 
 def filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=None,
-                weekdays=None, hours=None) -> list:
+                weekdays=None, hours=None, minutes=None) -> list:
     """Keep rows passing all filters. since/until: inclusive epoch bounds on `scheduled`;
-    weekdays (0=Mon)/hours are Dublin-local. A row without `scheduled` fails any time filter."""
-    timed = not (since is None and until is None and weekdays is None and hours is None)
+    weekdays (0=Mon)/hours are Dublin-local. minutes=(lo, hi): Dublin-local minute of day, inclusive;
+    lo > hi wraps midnight. A row without `scheduled` fails any time filter."""
+    timed = not (since is None and until is None and weekdays is None and hours is None and minutes is None)
     out = []
     for r in rows:
         if (r.get("confidence") or 0) < min_confidence or (realtime_only and not r.get("realtime")):
@@ -101,6 +102,10 @@ def filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=No
             if (weekdays is not None and d.weekday() not in weekdays) or (
                     hours is not None and d.hour not in hours):
                 continue
+            if minutes is not None:
+                m, lo, hi = d.hour * 60 + d.minute, minutes[0], minutes[1]
+                if not (lo <= m <= hi if lo <= hi else (m >= lo or m <= hi)):
+                    continue
         out.append(r)
     return out
 

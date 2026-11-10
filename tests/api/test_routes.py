@@ -2244,3 +2244,70 @@ async def test_no_deadlock_under_mixed_concurrency(env, monkeypatch):
         lim.total_tokens = old
     assert [r.status_code for r in rs] == [404 if "series" in urls[i % len(urls)] else 200 for i in range(20)]
     assert api._gate("heavy")._value == 2
+
+
+# ---------- map ----------
+
+def _stop(sid, name, lat, lon, code="1"):
+    return {"id": sid, "code": code, "name": name, "lat": lat, "lon": lon}
+
+
+def _map_env(env):
+    env.c.put("/api/routes/tracked/15")
+    env.c.put("/api/routes/tracked/46A")
+    env.fake.set_route_stops("15", {"out": [_stop("a", "Alpha", 53.3, -6.2, "2051"), _stop("b", "Beta", 53.31, -6.21), {"id": "nocoords"}]})
+    env.fake.set_route_stops("46A", {"out": [_stop("b", "Beta", 53.31, -6.21), _stop("c", "Gamma", 53.32, -6.22)]})
+
+
+def test_map_merges_routes_and_weights_mean(env):
+    _map_env(env)
+    for d in (60, 120):
+        env.add(route="15", stop="a", delay=d, scheduled=T0 + d)
+    env.add(route="15", stop="b", delay=0, scheduled=T0)
+    for d in (300, 300, 300):
+        env.add(route="46A", stop="b", delay=d, scheduled=T0 + d)
+    env.add(route="15", stop="ghost", delay=5)  # not in any stop list: ignored
+    j = env.get("/api/map").json()
+    finite(j)
+    assert [r["route"] for r in j["routes"]] == ["15", "46A"] and j["unavailable"] == []
+    by = {s["stop_id"]: s for s in j["stops"]}
+    assert set(by) == {"a", "b", "c"}  # b listed by two routes appears once; stop without coordinates skipped
+    assert by["a"]["code"] == "2051" and by["a"]["name"] == "Alpha" and by["a"]["lat"] == 53.3
+    assert by["a"]["n"] == 2 and by["a"]["mean_delay"] == 90
+    assert by["b"]["n"] == 4 and by["b"]["mean_delay"] == (0 + 900) / 4
+    assert {x["route"]: (x["n"], x["mean_delay"]) for x in by["b"]["routes"]} == {"15": (1, 0), "46A": (3, 300)}
+    assert by["c"]["n"] == 0 and by["c"]["mean_delay"] is None and by["c"]["routes"] == []
+    assert j["n"] == 6 and j["minutes"] is None and "minutes" not in j["filters"]
+
+
+def test_map_minute_window_wraps_and_validates(env):
+    _map_env(env)
+    base = int(datetime(2026, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())  # winter: UTC == Dublin
+    for hh, mm, d in ((6, 0, 10), (10, 30, 20), (12, 0, 30), (23, 30, 40), (0, 30, 50)):
+        env.add(route="15", stop="a", delay=d, scheduled=base + hh * 3600 + mm * 60)
+    j = env.get("/api/map", minutes_from=360, minutes_to=630).json()
+    assert j["minutes"] == [360, 630] and j["filters"]["minutes"] == [360, 630]
+    assert {s["stop_id"]: s["n"] for s in j["stops"]}["a"] == 2
+    wrap = env.get("/api/map", minutes_from=1380, minutes_to=60).json()
+    assert {s["stop_id"]: s["n"] for s in wrap["stops"]}["a"] == 2  # 23:30 and 00:30
+    single = env.get("/api/map", minutes_from=720, minutes_to=720).json()
+    assert {s["stop_id"]: s["n"] for s in single["stops"]}["a"] == 1
+    for bad in ({"minutes_from": 10}, {"minutes_to": 10}, {"minutes_from": -1, "minutes_to": 5},
+                {"minutes_from": 0, "minutes_to": 1440}, {"minutes_from": "x", "minutes_to": 5}):
+        assert env.get("/api/map", **bad).status_code == 422, bad
+
+
+def test_map_server_down_for_route_is_reported_not_fatal(env):
+    env.c.put("/api/routes/tracked/15")
+    env.c.put("/api/routes/tracked/99")
+    env.fake.set_route_stops("15", {"out": [_stop("a", "Alpha", 53.3, -6.2)]})  # 99 unknown to the server
+    env.add(route="15", stop="a", delay=60)
+    j = env.get("/api/map").json()
+    assert j["unavailable"] == ["99"] and [r["route"] for r in j["routes"]] == ["15"]
+    assert j["stops"][0]["mean_delay"] == 60
+    assert env.get("/api/map").status_code == 200
+
+
+def test_map_with_nothing_tracked(env):
+    j = env.get("/api/map").json()
+    assert j["routes"] == [] and j["stops"] == [] and j["n"] == 0

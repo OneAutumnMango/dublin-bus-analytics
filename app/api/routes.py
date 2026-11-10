@@ -105,7 +105,7 @@ def _int_list(name, raw, lo, hi):
 def _params(ci: QStr = "0.95", pct_lo: QStr = "0.05", pct_hi: QStr = "0.95",
             window_lo: QStr = "-60", window_hi: QStr = "300", since: QStr = None,
             until: QStr = None, weekdays: QStr = None, hours: QStr = None,
-            min_confidence: QStr = "1") -> dict:
+            min_confidence: QStr = "1", minutes_from: QStr = None, minutes_to: QStr = None) -> dict:
     p = {"ci": _float("ci", ci), "pct_lo": _float("pct_lo", pct_lo),
          "pct_hi": _float("pct_hi", pct_hi), "window_lo": _int("window_lo", window_lo),
          "window_hi": _int("window_hi", window_hi),
@@ -113,7 +113,14 @@ def _params(ci: QStr = "0.95", pct_lo: QStr = "0.05", pct_hi: QStr = "0.95",
          "until": None if until is None else _int("until", until),
          "weekdays": None if weekdays is None else _int_list("weekdays", weekdays, 0, 6),
          "hours": None if hours is None else _int_list("hours", hours, 0, 23),
-         "min_confidence": _int("min_confidence", min_confidence), "truncated": False}
+         "min_confidence": _int("min_confidence", min_confidence), "truncated": False, "minutes": None}
+    if (minutes_from is None) != (minutes_to is None):
+        _bad("minutes_from and minutes_to must be given together")
+    if minutes_from is not None:
+        lo, hi = _int("minutes_from", minutes_from), _int("minutes_to", minutes_to)
+        if not (0 <= lo <= 1439 and 0 <= hi <= 1439):
+            _bad("minutes_from and minutes_to must be in 0..1439")
+        p["minutes"] = [lo, hi]
     if not 0 < p["ci"] <= CI_MAX:  # beyond ~1-1e-16 the t quantile is inf; 0.9999 is already extreme
         _bad(f"ci must satisfy 0 < ci <= {CI_MAX}")
     if not 0 <= p["pct_lo"] < p["pct_hi"] <= 1:
@@ -142,7 +149,10 @@ def _clean(o):
 
 
 def _filters(p):
-    return {**p, "realtime_only": True}
+    out = {**p, "realtime_only": True}
+    if out["minutes"] is None:
+        del out["minutes"]  # only echoed when a time-of-day window applies
+    return out
 
 
 # Concurrent sqlite readers in the threadpool slow each other 10-1000x on this host, so ALL sqlite
@@ -231,10 +241,10 @@ async def _heavy(request, p, where: str, args: list, work, delay=True):
 
 def _tz(rows, i, p):
     """Weekday/hour (Dublin-local) filter in Python on tuples; i = index of `scheduled`."""
-    if p["weekdays"] is None and p["hours"] is None:
+    if p["weekdays"] is None and p["hours"] is None and p["minutes"] is None:
         return rows
     kept = stats.filter_rows([{"scheduled": r[i], "_r": r} for r in rows], min_confidence=0,
-                             realtime_only=False, weekdays=p["weekdays"], hours=p["hours"])
+                             realtime_only=False, weekdays=p["weekdays"], hours=p["hours"], minutes=p["minutes"])
     return [d["_r"] for d in kept]
 
 
@@ -790,3 +800,61 @@ async def trip_series(request: Request, trip_id: TripP, stop: SeriesStop, seq: Q
         raise HTTPException(404, "no such trip/stop visit")
     return _clean({"trip_id": trip_id, "stop_id": stop, "truncated": st["truncated"],
                    "visits": [visits[k] for k in sorted(visits)]})
+
+
+# ---- map ----
+
+def _route_totals(request, r, p):
+    """({stop_id: [n, sum of delays]}, truncated) for one route under the filters."""
+    acc: dict[str, list] = defaultdict(lambda: [0, 0])
+
+    def fn(rows):
+        for sid, d, _ in rows:
+            a = acc[sid]
+            a[0] += 1
+            a[1] += d
+
+    _scan_arrivals(request, p, "route = ?", [r], "stop_id, delay", fn)
+    return dict(acc), p["truncated"]
+
+
+@router.get("/map")
+async def map_data(request: Request, p: P):
+    """Every tracked route's stops with position (lat/lon from the server's stop lists) and mean delay under
+    the filters (`minutes_from`/`minutes_to` = Dublin-local minute-of-day window, wraps midnight).
+    {filters, routes: [{route, directions: {name: [stop_id]}}], unavailable: [route], n,
+    stops: [{stop_id, code, name, lat, lon, n, mean_delay, routes: [{route, n, mean_delay}]}]}.
+    A stop on several routes/directions appears once; stops without coordinates are skipped;
+    routes whose stop list the server cannot give are named in `unavailable`."""
+    routes, info, unavailable, per_route, truncated = [], {}, [], {}, False
+    for r in (await _tracked(request))["routes"]:
+        lists, _src = await _order(request, r)
+        if lists is None:
+            unavailable.append(r)
+            continue
+        raw = await _directions(request, r)
+        routes.append({"route": r, "directions": lists})
+        for stops in raw.values():
+            for s in stops:
+                if isinstance(s.get("lat"), (int, float)) and isinstance(s.get("lon"), (int, float)):
+                    info.setdefault(_sid(s), s)
+        totals, trunc = await _heavy(request, p, "route = ?", [r], lambda p, r=r: _route_totals(request, r, p))
+        per_route[r], truncated = totals, truncated or trunc
+    merged: dict[str, dict] = {}
+    for r, totals in per_route.items():
+        for sid, (n, tot) in totals.items():
+            if sid not in info:
+                continue
+            m = merged.setdefault(sid, {"n": 0, "sum": 0, "routes": []})
+            m["n"] += n
+            m["sum"] += tot
+            m["routes"].append({"route": r, "n": n, "mean_delay": tot / n})
+    stops = []
+    for sid, s in info.items():
+        m = merged.get(sid)
+        stops.append({"stop_id": sid, "code": s.get("code"), "name": s.get("name"), "lat": s["lat"], "lon": s["lon"],
+                      "n": m["n"] if m else 0, "mean_delay": m["sum"] / m["n"] if m else None,
+                      "routes": m["routes"] if m else []})
+    return _clean({"filters": {**_filters(p), "truncated": truncated}, "minutes": p["minutes"], "routes": routes,
+                   "unavailable": unavailable,
+                   "n": sum(s["n"] for s in stops), "stops": stops})
