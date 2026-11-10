@@ -59,6 +59,14 @@ class ServerClient:
     async def route_stops(self, route: str) -> dict[str, list[dict]]:
         return (await self._get(f"/v1/routes/{quote(route, safe='')}/stops"))["directions"]
 
+    async def route_shape(self, route: str, direction: str | None = None) -> list[list[float]]:
+        """[[lat, lon], ...] of the route's most detailed shape (optionally for one direction id)."""
+        params = {"format": "points", **({"direction": direction} if direction is not None else {})}
+        pts = (await self._get(f"/v1/routes/{quote(route, safe='')}/shape", **params)).get("points")
+        if not isinstance(pts, list):
+            raise ServerUnavailable("shape response has no points")
+        return pts
+
     async def status(self) -> dict:
         return await self._get("/v1/status")
 

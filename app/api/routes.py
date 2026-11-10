@@ -858,3 +858,66 @@ async def map_data(request: Request, p: P):
     return _clean({"filters": {**_filters(p), "truncated": truncated}, "minutes": p["minutes"], "routes": routes,
                    "unavailable": unavailable,
                    "n": sum(s["n"] for s in stops), "stops": stops})
+
+
+# ---- map shapes ----
+
+SHAPE_TTL, SHAPE_TIMEOUT, SHAPE_MIN_GAP_M = 3600, 5.0, 4.0
+
+
+def _pt(p):
+    """[lat, lon] -> [lon, lat] rounded to 5 decimals (~1 m), or None for anything malformed."""
+    if isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in p):
+        return [round(p[1], 5), round(p[0], 5)]
+    return None
+
+
+def _thin(points) -> list[list[float]]:
+    """Shape points as [[lon, lat]], dropping points within SHAPE_MIN_GAP_M of the last kept one; the final
+    point is always kept. Malformed points are skipped."""
+    pts = [q for q in map(_pt, points) if q is not None]
+    out: list[list[float]] = []
+    for q in pts:
+        if not out or math.hypot((q[0] - out[-1][0]) * 66_000, (q[1] - out[-1][1]) * 111_000) >= SHAPE_MIN_GAP_M:
+            out.append(q)
+    if pts and out[-1] != pts[-1]:
+        out.append(pts[-1])
+    return out
+
+
+async def _shape(request, r, direction):
+    """Thinned [[lon, lat]] for a route direction, cached; None when the server has no shape for it."""
+    cache = getattr(request.app.state, "shape_cache", None)
+    if cache is None:
+        cache = request.app.state.shape_cache = _TTLCache(ttl=SHAPE_TTL, maxsize=512)
+    hit = cache.get((r, direction))
+    if hit is not None:
+        return hit
+    try:
+        raw = await asyncio.wait_for(request.app.state.client.route_shape(r, direction), SHAPE_TIMEOUT)
+    except (RouteNotFound, ServerUnavailable, KeyError, TypeError, AttributeError, ValueError, asyncio.TimeoutError):
+        return None
+    pts = _thin(raw)
+    if len(pts) < 2:
+        return None
+    cache.put((r, direction), pts)
+    return pts
+
+
+@router.get("/map/shapes")
+async def map_shapes(request: Request):
+    """{shapes: {route: {direction: [[lon, lat], ...]}}} for tracked routes: the real road geometry from the
+    server, thinned and cached for an hour. A direction the server has no shape for is simply absent (the page
+    then falls back to a line through that direction's stops)."""
+    out: dict[str, dict] = {}
+    for r in (await _tracked(request))["routes"]:
+        lists, _src = await _order(request, r)
+        if lists is None:
+            continue
+        per = {}
+        for d in lists:
+            pts = await _shape(request, r, d)
+            if pts:
+                per[d] = pts
+        out[r] = per
+    return {"shapes": out}

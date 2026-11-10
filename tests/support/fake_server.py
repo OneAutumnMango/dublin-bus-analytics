@@ -15,6 +15,10 @@ class FakeServer:
         self.arrivals: dict[str, dict[str, list[dict]]] = {}
         self.routes: list[dict] = []
         self.route_stops: dict[str, dict[str, list[dict]]] = {}
+        self.shapes: dict[tuple, list] = {}
+        self.shape_calls = 0
+        self.shapes: dict[tuple, list] = {}
+        self.shape_calls = 0
         self.status_code: int | None = None  # forced status for every request
         self.down = False
         self.requests: list[str] = []
@@ -27,6 +31,14 @@ class FakeServer:
 
     def set_route_stops(self, route, directions):
         self.route_stops[route] = directions
+
+    def set_shape(self, route, direction, points):
+        """points: [[lat, lon], ...] for one direction id (None = the route's default shape)."""
+        self.shapes[(route, direction)] = points
+
+    def set_shape(self, route, direction, points):
+        """points: [[lat, lon], ...]; direction None = the route's default shape."""
+        self.shapes[(route, direction)] = points
 
     def set_status(self, code: int | None):
         self.status_code = code
@@ -74,4 +86,8 @@ class FakeServer:
             if p[1] not in self.route_stops:
                 return nf
             return 200, {"routeId": p[1], "shortName": p[1], "directions": self.route_stops[p[1]]}
+        if len(p) == 3 and p[0] == "routes" and p[2] == "shape":
+            self.shape_calls += 1
+            pts = self.shapes.get((p[1], qs.get("direction", [None])[0]))
+            return (200, {"shapeId": "s", "pointCount": len(pts), "encodedPolyline": "", "points": pts}) if pts else nf
         return nf

@@ -2311,3 +2311,28 @@ def test_map_server_down_for_route_is_reported_not_fatal(env):
 def test_map_with_nothing_tracked(env):
     j = env.get("/api/map").json()
     assert j["routes"] == [] and j["stops"] == [] and j["n"] == 0
+
+
+# ---------- map shapes ----------
+
+def test_map_shapes_real_geometry_thinned_cached_and_missing_directions_absent(env):
+    env.c.put("/api/routes/tracked/15")
+    env.fake.set_route_stops("15", {"0": [_stop("a", "A", 53.3, -6.2)], "1": [_stop("b", "B", 53.31, -6.21)]})
+    line = [[53.30000, -6.20000], [53.300005, -6.200005], [53.30100, -6.20100], [53.30100, -6.20100], [53.30200, -6.20200], ["x", 1], [53.3, float("nan")]]
+    env.fake.set_shape("15", "0", line)  # direction "1" has no shape on the server
+    j = env.get("/api/map/shapes").json()
+    finite(j)
+    assert set(j["shapes"]["15"]) == {"0"}
+    pts = j["shapes"]["15"]["0"]
+    assert pts[0] == [-6.2, 53.3] and pts[-1] == [-6.202, 53.302]  # [lon, lat]; the final point is kept
+    assert len(pts) == 3, pts  # the 0.7 m neighbour and the duplicate are dropped; malformed points skipped
+    calls = env.fake.shape_calls
+    env.keep_cache = True
+    assert env.get("/api/map/shapes").json() == j
+    assert env.fake.shape_calls == calls + 1  # direction "0" cached; only the missing direction is asked again
+
+
+def test_map_shapes_nothing_tracked_and_unknown_route(env):
+    assert env.get("/api/map/shapes").json() == {"shapes": {}}
+    env.c.put("/api/routes/tracked/99")  # server knows nothing about it
+    assert env.get("/api/map/shapes").json() == {"shapes": {}}
