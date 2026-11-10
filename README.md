@@ -103,10 +103,10 @@ The image serves the UI as well as the API (`WEB_DIR=/srv/web`) and has a health
 
 ### Run with the server compose file
 
-The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this service:
+The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this service, behind the opt-in `analytics` profile (a plain `docker compose up -d` there starts only the server):
 
 ```bash
-cd ../dublin-bus-server && docker compose up -d --build
+cd ../dublin-bus-server && docker compose --profile analytics up -d --build
 ```
 
 Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
@@ -124,13 +124,21 @@ curl -X POST http://127.0.0.1:8081/api/backup
 curl -OJ http://127.0.0.1:8081/api/backup/download
 ```
 
-Restore: stop the app, extract the tar into `DATA_DIR` (`tar -xf analytics-<stamp>.tar -C "$DATA_DIR"`; check the tar contents with `tar -tf` first), start the app. Copies kept off the host are your responsibility.
+Restore:
+
+1. Stop the app.
+2. Delete any stale `meta.db-wal`, `meta.db-shm`, `samples-*.db-wal` and `samples-*.db-shm` in `DATA_DIR` (a crash-leftover WAL would otherwise be replayed over the restored database).
+3. A local `samples-YYYY-MM.db.gz` takes precedence over an extracted plain `samples-YYYY-MM.db`: delete the `.gz` for every month you want restored from the backup.
+4. Check the tar contents with `tar -tf`, extract with `tar -xf analytics-<stamp>.tar -C "$DATA_DIR"`, and start the app.
+
+Copies kept off the host are your responsibility. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
 
 ## Repo layout
 
 - `app/` FastAPI app: poller, tracker, stats, forecast, API, backup
 - `web/` static UI and its Node tests (`web/test/`)
-- `scripts/` `seed_demo.py` (demo data and fake server)
+- `scripts/` `seed_demo.py` (demo data and fake server), `smoke.sh` (full-stack check)
 - `tests/` pytest suite
+- `docs/verification.md` what is verified and what is still owed manually
 - `docs/specs/` design spec, `docs/plans/` implementation plan
 - `Dockerfile`, `docker-compose.example.yml`, `analytics.env.example`

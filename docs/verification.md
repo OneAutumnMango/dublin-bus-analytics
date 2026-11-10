@@ -4,7 +4,7 @@
 
 - `docker build` of the analytics image succeeds (504 MB on disk); it serves the UI (`/`, `/js/app.js`, `/css/style.css` with CSP headers), 404s `/package.json`, lists seeded routes at `/api/routes/tracked`, runs as uid 10001, and the HEALTHCHECK turns `healthy`.
 - With no data server reachable the poller logs "server unavailable" and the app stays up (`/api/health` ok).
-- `docker compose config` in the server repo renders the analytics service; `ANALYTICS_BACKUP_*` overrides and defaults (03:00, 7, true, /data/backups) both come through.
+- `docker compose --profile analytics config` in the server repo renders the analytics service (plain `docker compose config` omits it); `ANALYTICS_BACKUP_*` overrides and defaults (03:00, 7, true, /data/backups) both come through.
 - pytest (`tests/test_docs.py`, `tests/test_web.py`, `tests/test_health.py`) and `node --test web/test/`.
 
 ## NOT verified (owed manually)
@@ -17,7 +17,7 @@ Nothing below was run: it needs a real API key, the Kotlin build, or a browser.
 scripts/smoke.sh      # builds and starts both services, tracks route 15, waits for arrivals
 ```
 
-Passes when it prints `OK`. Stop with `docker compose down` in `../dublin-bus-server`.
+Passes when it prints `OK`. Stop with `docker compose --profile analytics down` in `../dublin-bus-server`.
 
 ### 2. Server `scheduledEpochSeconds` against the published timetable
 

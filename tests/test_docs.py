@@ -136,5 +136,6 @@ def test_server_compose_passes_backup_vars():
     if not f.exists():
         pytest.skip("sibling server repo not checked out")
     t = f.read_text()
+    assert re.search(r'^  dublin-bus-analytics:\n(?:    .*\n)*?    profiles: \["analytics"\]', t, re.M)
     for k in ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR"):
         assert re.search(rf'^\s+{k}: "\$\{{ANALYTICS_{k}:-', t, re.M), k

@@ -10,7 +10,7 @@ OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
 cd "$(dirname "$0")/../../dublin-bus-server"
-docker compose up -d --build
+docker compose --profile analytics up -d --build
 
 echo "waiting for $URL/api/health"
 for _ in $(seq 60); do
@@ -35,4 +35,4 @@ while :; do
   sleep 30
 done
 curl -fsS "$URL/api/health"; echo
-echo "OK. Stop with: (cd $(pwd) && docker compose down)"
+echo "OK. Stop with: (cd $(pwd) && docker compose --profile analytics down)"
