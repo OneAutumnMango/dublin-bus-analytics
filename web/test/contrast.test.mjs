@@ -55,3 +55,8 @@ test('manual dark theme block equals the media-query dark block', () => {
 test('low-n styling never reduces text opacity', () => {
   assert.ok(!/low-n[^{]*\{[^}]*opacity/.test(css), 'opacity on .low-n selectors');
 });
+
+test('map canvas sizing beats the later-loaded MapLibre stylesheet (.maplibregl-map is position: relative)', () => {
+  assert.match(css, /\.map-wrap > \.map-canvas \{[^}]*position: absolute[^}]*inset: 0/);
+  assert.ok(!/^\.map-canvas \{/m.test(css), 'a bare .map-canvas rule (specificity 0,1,0) would lose to .maplibregl-map');
+});
