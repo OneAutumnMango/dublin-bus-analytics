@@ -122,3 +122,19 @@ def test_readme_repo_paths_in_commands_exist():
 def test_readme_relative_links_exist():
     for target in re.findall(r"\]\((?!https?:|#)([^)#]+)", README):
         assert (ROOT / target).resolve().exists(), target
+
+
+def test_dockerfile_serves_ui_and_has_healthcheck():
+    d = (ROOT / "Dockerfile").read_text()
+    assert re.search(r"^COPY web/index\.html ", d, re.M) and "COPY web/css" in d and "COPY web/js" in d
+    assert "web/test" not in d and "ENV WEB_DIR=/srv/web" in d
+    assert re.search(r"^HEALTHCHECK .*\n?.*api/health", d, re.M)
+
+
+def test_server_compose_passes_backup_vars():
+    f = ROOT.parent / "dublin-bus-server" / "docker-compose.yml"
+    if not f.exists():
+        pytest.skip("sibling server repo not checked out")
+    t = f.read_text()
+    for k in ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR"):
+        assert re.search(rf'^\s+{k}: "\$\{{ANALYTICS_{k}:-', t, re.M), k

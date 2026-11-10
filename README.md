@@ -6,7 +6,7 @@ Polls a [dublin-bus-server](../dublin-bus-server/README.md) for arrivals on the 
 
 ## Run the website without the container (dev environment)
 
-Prerequisites: git, Python 3.12 (`python --version`; with pyenv: `pyenv install 3.12`, the repo-level `.python-version` selects it), and Node 18+ (`node --version`, only for the JS tests).
+Prerequisites: git, Python 3.12 (`python --version`; with pyenv: `pyenv install 3.12 && pyenv local 3.12` inside the repo), and Node 18+ (`node --version`, only for the JS tests).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -99,7 +99,17 @@ Or both services with compose (create `server.env` with `GTFSR_API_KEY` first, a
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
-NOTE: the Dockerfile must `COPY web ./web` and set `ENV WEB_DIR=/srv/web` for the image to serve the UI; until that lands (tracked in docs/plans, Task 11) the container serves the API only.
+The image serves the UI as well as the API (`WEB_DIR=/srv/web`) and has a healthcheck.
+
+### Run with the server compose file
+
+The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this service:
+
+```bash
+cd ../dublin-bus-server && docker compose up -d --build
+```
+
+Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
 
 ## Data and backups
 
