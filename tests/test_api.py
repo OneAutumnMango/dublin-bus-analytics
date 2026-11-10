@@ -15,8 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings as hsettings, strategies as st
 
-from app.config import Settings
-from app.db import open_meta
+from app.core.config import Settings
+from app.core.db import open_meta
 from app.main import create_app
 from app.serverclient import ServerClient
 from tests.fake_server import FakeServer
@@ -1361,7 +1361,7 @@ resource.setrlimit(resource.RLIMIT_AS, (2_500_000 * 1024,) * 2)
 sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 from fastapi.testclient import TestClient
-from app.config import Settings
+from app.core.config import Settings
 from app.main import create_app
 from app.serverclient import ServerClient
 from tests.fake_server import FakeServer
@@ -1720,7 +1720,7 @@ POINT_KEYS = {"ts", "due_min", "expected", "realtime"}
 
 def put_samples(env, rows, trip="T", stop="s1"):
     """rows = (seq, ts, due_min, expected, realtime); each goes to the UTC month file of its ts."""
-    from app.db import open_samples
+    from app.core.db import open_samples
     for seq, ts, due, exp, rt in rows:
         c = open_samples(env.s.data_dir, ts)
         with c:
@@ -1997,7 +1997,7 @@ def test_scan_open_failure_propagates_without_close(env, monkeypatch):
 # ---------- fix round 1: series selection, clamping, gz gate ----------
 
 def put_many(env, rows, trip="T", stop="s1"):
-    from app.db import open_samples, samples_path
+    from app.core.db import open_samples, samples_path
     by_month = {}
     for r in rows:
         by_month.setdefault(samples_path(env.s.data_dir, r[1]), []).append(r)

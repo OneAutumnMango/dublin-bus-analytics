@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app.db import open_meta, open_samples  # noqa: E402
+from app.core.db import open_meta, open_samples  # noqa: E402
 from app.forecast import HORIZONS  # noqa: E402
 from app.poller import ROUTE_RE  # noqa: E402
 

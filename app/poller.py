@@ -19,7 +19,7 @@ import re
 import time
 from pathlib import Path
 
-from app.db import open_meta
+from app.core.db import open_meta
 from app.serverclient import RouteNotFound, ServerUnavailable
 from app.tracker import Tracker
 

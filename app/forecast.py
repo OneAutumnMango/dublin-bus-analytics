@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from app.db import samples_path
+from app.core.db import samples_path
 
 HORIZONS = (30, 20, 10, 5, 2)
 

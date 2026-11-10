@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.models import Arrival
+from app.core.models import Arrival
 
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 

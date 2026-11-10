@@ -4,7 +4,7 @@ import httpx
 import pytest
 from hypothesis import given, strategies as st
 
-from app.models import Arrival
+from app.core.models import Arrival
 from app.serverclient import RouteNotFound, ServerClient, ServerUnavailable
 from tests.fake_server import FakeServer
 

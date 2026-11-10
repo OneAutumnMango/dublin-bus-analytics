@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
 
-from app.db import open_meta, open_samples
-from app.models import Arrival
+from app.core.db import open_meta, open_samples
+from app.core.models import Arrival
 from app.forecast import extract_forecasts
 from app.tracker import FINALISED_TTL_S, NEG_TTL_S, Tracker
 
@@ -1345,7 +1345,7 @@ async def test_rollover_without_any_checkpoint(tmp_path):
 async def test_crashed_previous_month_with_big_wal(tmp_path):
     import subprocess
     import sys
-    code = ("import os,sys\nfrom app.db import open_samples\n"
+    code = ("import os,sys\nfrom app.core.db import open_samples\n"
             "c=open_samples(sys.argv[1],int(sys.argv[2]))\nc.execute('pragma wal_autocheckpoint=0')\n"
             "c.executemany('insert into sample values(?,?,?,?,?,?,?)',[(%d,'t1','s1',0,5,%d,1),(%d,'t1','s1',0,5,%d,1)])\n"
             "c.commit()\nos._exit(0)" % (M - 1200, M + 700, M - 100, M + 650))

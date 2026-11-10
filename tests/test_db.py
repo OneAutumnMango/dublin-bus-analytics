@@ -4,8 +4,8 @@ import threading
 import pytest
 from hypothesis import given, strategies as st
 
-from app import db as _db
-from app.db import samples_path
+from app.core import db as _db
+from app.core.db import samples_path
 
 
 @pytest.fixture(autouse=True)

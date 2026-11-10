@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from hypothesis import given, settings, strategies as st
 
-from app.db import open_samples
+from app.core.db import open_samples
 from app.forecast import HORIZONS, extract_forecasts, open_previous_month
 
 ACT = 1_000_000

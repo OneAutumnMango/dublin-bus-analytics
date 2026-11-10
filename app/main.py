@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from app.api import router as api_router
 from app.backup_api import router as backup_router
-from app.config import Settings
+from app.core.config import Settings
 from app.poller import LazyTracker, Poller, seq_lookup
 from app.scheduler import BackupScheduler
 from app.serverclient import ServerClient

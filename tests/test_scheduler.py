@@ -111,8 +111,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app import backup
-from app.config import Settings
-from app.db import open_meta, open_samples
+from app.core.config import Settings
+from app.core.db import open_meta, open_samples
 from app.main import create_app
 from app.scheduler import BackupScheduler
 

@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
-from app.db import open_meta
+from app.core.config import Settings
+from app.core.db import open_meta
 from app.forecast import extract_forecasts
 from app.main import create_app
 

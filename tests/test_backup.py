@@ -20,8 +20,8 @@ from hypothesis import HealthCheck, given, settings as hset, strategies as st
 
 from app import backup
 from app.backup import compact_closed_months, list_backups, snapshot
-from app.config import Settings
-from app.db import open_meta, open_samples, open_samples_readonly, samples_path
+from app.core.config import Settings
+from app.core.db import open_meta, open_samples, open_samples_readonly, samples_path
 from app.main import create_app
 
 
@@ -730,7 +730,7 @@ def test_crash_wal_compaction_keeps_all_rows(tmp_path):
     d = tmp_path / "data"
     d.mkdir()
     code = (
-        "import os,sys\nfrom pathlib import Path\nfrom app.db import open_samples\n"
+        "import os,sys\nfrom pathlib import Path\nfrom app.core.db import open_samples\n"
         "c = open_samples(Path(sys.argv[1]), int(sys.argv[2]))\n"
         "c.execute('pragma wal_autocheckpoint=0')\n"
         "c.executemany('insert into sample values(?,?,?,?,?,?,?)', [(i,'t','s',i,1,i,1) for i in range(500)])\n"

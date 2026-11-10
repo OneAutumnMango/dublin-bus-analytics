@@ -40,7 +40,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
 from app import stats
-from app.db import open_meta, open_samples_readonly
+from app.core.db import open_meta, open_samples_readonly
 from app.poller import ROUTE_RE
 from app.serverclient import RouteNotFound, ServerUnavailable
 

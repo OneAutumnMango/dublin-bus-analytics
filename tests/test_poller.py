@@ -8,9 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings as hsettings, strategies as st
 
-from app.config import Settings
-from app.db import open_meta
-from app.models import Arrival
+from app.core.config import Settings
+from app.core.db import open_meta
+from app.core.models import Arrival
 from app.poller import LazyTracker, Poller, seq_lookup
 from app.serverclient import ServerClient
 from app.tracker import IngestResult, Tracker

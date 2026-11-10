@@ -37,8 +37,8 @@ from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from .forecast import HORIZONS, extract_forecasts, open_previous_month
-from .db import open_meta, open_samples, samples_path
-from .models import Arrival
+from app.core.db import open_meta, open_samples, samples_path
+from app.core.models import Arrival
 
 log = logging.getLogger(__name__)
 DUBLIN = ZoneInfo("Europe/Dublin")

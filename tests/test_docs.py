@@ -1,15 +1,15 @@
-"""Docs stay true: env example, sample compose and README agree with app/config.py and the repo."""
+"""Docs stay true: env example, sample compose and README agree with app/core/config.py and the repo."""
 import re
 from pathlib import Path
 
 import pytest
 
-from app.config import Settings
+from app.core.config import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text()
 COMPOSE_TXT = (ROOT / "docker-compose.example.yml").read_text()
-CONFIG_TXT = (ROOT / "app" / "config.py").read_text()
+CONFIG_TXT = (ROOT / "app" / "core" / "config.py").read_text()
 STATIC_TXT = (ROOT / "app" / "static.py").read_text()
 
 # app-level names read by the code: config.py via os.environ, static.py for WEB_DIR
