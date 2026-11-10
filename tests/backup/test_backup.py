@@ -735,7 +735,7 @@ def test_crash_wal_compaction_keeps_all_rows(tmp_path):
         "c.execute('pragma wal_autocheckpoint=0')\n"
         "c.executemany('insert into sample values(?,?,?,?,?,?,?)', [(i,'t','s',i,1,i,1) for i in range(500)])\n"
         "c.commit()\nos._exit(0)\n")
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent
     subprocess.run([sys.executable, "-c", code, str(d), str(ts(2026, 1, 5))], check=True, cwd=root,
                    env={**os.environ, "PYTHONPATH": str(root)})
     db = d / "samples-2026-01.db"

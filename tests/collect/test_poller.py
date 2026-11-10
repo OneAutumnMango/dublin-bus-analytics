@@ -14,7 +14,7 @@ from app.core.models import Arrival
 from app.collect.poller import LazyTracker, Poller, seq_lookup
 from app.collect.serverclient import ServerClient
 from app.collect.tracker import IngestResult, Tracker
-from tests.fake_server import FakeServer
+from tests.support.fake_server import FakeServer
 
 T0 = 1_760_000_000
 
@@ -556,7 +556,7 @@ def test_import_main_does_no_io(tmp_path, monkeypatch):
     import sys
     d = tmp_path / "nodata"
     r = subprocess.run([sys.executable, "-c", "import app.main"], env={"DATA_DIR": str(d), "PATH": ""},
-                       capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+                       capture_output=True, text=True, cwd=Path(__file__).parent.parent.parent)
     assert r.returncode == 0, r.stderr
     assert not d.exists()
 

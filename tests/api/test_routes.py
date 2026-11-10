@@ -19,7 +19,7 @@ from app.core.config import Settings
 from app.core.db import open_meta
 from app.main import create_app
 from app.collect.serverclient import ServerClient
-from tests.fake_server import FakeServer
+from tests.support.fake_server import FakeServer
 
 T0 = 1_760_000_000  # a Tuesday-ish base epoch; tests that need weekdays compute them
 
@@ -1364,7 +1364,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 from app.collect.serverclient import ServerClient
-from tests.fake_server import FakeServer
+from tests.support.fake_server import FakeServer
 fake = FakeServer()
 fake.set_route_stops("15", {"out": [{"id": f"s{i}"} for i in range(50)]})
 app = create_app(Settings("http://f", Path(sys.argv[2])), start_background=False,
@@ -1403,7 +1403,7 @@ def test_unwindowed_peak_memory_bounded_300k_rows(big_db, url, field):
     import subprocess
     import sys
     from pathlib import Path
-    root = str(Path(__file__).resolve().parent.parent)
+    root = str(Path(__file__).resolve().parent.parent.parent)
     out = subprocess.run([sys.executable, "-c", MEM_SCRIPT, root, str(big_db), url], capture_output=True,
                          text=True, timeout=600)
     assert out.returncode == 0, out.stderr[-2000:]

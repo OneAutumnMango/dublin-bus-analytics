@@ -1350,7 +1350,7 @@ async def test_crashed_previous_month_with_big_wal(tmp_path):
             "c.executemany('insert into sample values(?,?,?,?,?,?,?)',[(%d,'t1','s1',0,5,%d,1),(%d,'t1','s1',0,5,%d,1)])\n"
             "c.commit()\nos._exit(0)" % (M - 1200, M + 700, M - 100, M + 650))
     subprocess.run([sys.executable, "-c", code, str(tmp_path), str(M - 3600)], check=True,
-                   cwd=str(__import__("pathlib").Path(__file__).parent.parent), timeout=60)
+                   cwd=str(__import__("pathlib").Path(__file__).parent.parent.parent), timeout=60)
     assert (tmp_path / "samples-2025-10.db-wal").stat().st_size > 0
     t = Tracker(tmp_path, zero_lookup)
     await run(t, [(60, 600, 9, True), (590, 600, 0, True)], base=M)

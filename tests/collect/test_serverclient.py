@@ -6,7 +6,7 @@ from hypothesis import given, strategies as st
 
 from app.core.models import Arrival
 from app.collect.serverclient import RouteNotFound, ServerClient, ServerUnavailable
-from tests.fake_server import FakeServer
+from tests.support.fake_server import FakeServer
 
 
 def A(**kw):

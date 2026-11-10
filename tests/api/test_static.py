@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 
-WEB = Path(__file__).resolve().parent.parent / "web"
+WEB = Path(__file__).resolve().parent.parent.parent / "web"
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
