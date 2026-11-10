@@ -84,3 +84,47 @@ test('tooltip payloads', () => {
   const c = M.cellTipData({ stops: 4, n: 120, delay: -30 });
   assert.equal(c.sub, '4 stops with data'); assert.equal(c.head.sec, -30);
 });
+
+test('regions never move when other stops come and go (fixed projection origin)', () => {
+  const all = M.visibleStops(data(), new Set(['15', '46A']));
+  const near = all.filter((s) => s.stop_id !== 'c');
+  const farAway = [...near, { stop_id: 'z', lat: 53.5, lon: -6.0, n: 80, mean_delay: -90, routes: [] }];
+  const ring = (g) => JSON.stringify(g.features[0].geometry);
+  assert.equal(ring(M.hexCells(near)), ring(M.hexCells(farAway)), 'adding a distant stop must not shift the hexagon');
+  assert.equal(M.hexCells(near).features.length, 1);
+});
+
+test('circleCells: one disc per stop with data; smoothCells: bounded values, fading support, stable grid', () => {
+  const stops = M.visibleStops(data(), new Set(['15', '46A']));
+  const circles = M.circleCells(stops);
+  assert.equal(circles.features.length, 2);
+  assert.equal(circles.features[0].geometry.coordinates[0].length, 25);
+  noBad(circles);
+  const sm = M.smoothCells(stops);
+  assert.ok(sm.features.length > 20);
+  for (const f of sm.features) {
+    assert.ok(f.properties.delay >= 90 - 1e-6 && f.properties.delay <= 225 + 1e-6, 'a weighted mean stays between the stop means');
+    assert.ok(f.properties.support > 0 && f.properties.support <= 1);
+    assert.equal(f.geometry.coordinates[0].length, 5);
+  }
+  noBad(sm);
+  const key = (g) => g.features.map((f) => JSON.stringify(f.geometry)).sort()[0];
+  const moved = M.smoothCells([...stops, { stop_id: 'z', lat: 53.5, lon: -6.0, n: 80, mean_delay: -90, routes: [] }]);
+  const cells = new Set(sm.features.map((f) => JSON.stringify(f.geometry)));
+  assert.ok(moved.features.filter((f) => cells.has(JSON.stringify(f.geometry))).length > 0, 'grid cells keep their positions');
+  assert.ok(key(sm));
+  assert.equal(M.smoothCells([]).features.length, 0);
+  assert.ok(M.smoothCells(stops, { maxCells: 30 }).features.length <= 300, 'coarsens instead of exploding');
+  assert.equal(M.areaCells('off', stops).features.length, 0);
+  assert.equal(M.areaCells('hex', stops).features.length, 1);
+  assert.deepEqual(M.AREA_MODES.map((m) => m[0]), ['off', 'hex', 'circles', 'smooth']);
+});
+
+test('routeLines uses real shapes when given, stop lines otherwise', () => {
+  const real = [[-6.2, 53.3], [-6.201, 53.3004], [-6.2005, 53.3005]];
+  const lines = M.routeLines(data(), new Set(['15']), { 15: { out: real } });
+  const out = lines.features.find((f) => f.properties.dir === 'out'), back = lines.features.find((f) => f.properties.dir === 'back');
+  assert.deepEqual(out.geometry.coordinates, real);
+  assert.equal(back.geometry.coordinates.length, 2, 'direction without a shape falls back to its stops');
+  assert.equal(M.routeLines(data(), new Set(['15']), null).features.length, 2);
+});
