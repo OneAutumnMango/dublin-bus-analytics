@@ -1,0 +1,50 @@
+# Sample: dublin-bus-server plus analytics. Needs server.env (copy server.env.example from the
+# dublin-bus-server repo and set GTFSR_API_KEY). Both ports are published on 127.0.0.1 only: no auth.
+services:
+  dublin-bus-server:
+    image: ghcr.io/oneautumnmango/dublin-bus-server:latest
+    container_name: dublin-bus-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    env_file:
+      - server.env
+    environment:
+      FEEDS: "${FEEDS:-TRIP_UPDATES,VEHICLES}"
+      POLL_INTERVAL_MS: "${POLL_INTERVAL_MS:-}"
+      HISTORY_DEPTH: "${HISTORY_DEPTH:-30}"
+      GTFS_STATIC_PATH: /data/gtfs_static.json
+    volumes:
+      - gtfs-data:/data
+
+  dublin-bus-analytics:
+    build: .
+    image: dublin-bus-analytics:latest
+    container_name: dublin-bus-analytics
+    restart: unless-stopped
+    depends_on:
+      - dublin-bus-server
+    ports:
+      - "127.0.0.1:${ANALYTICS_PORT:-8081}:8081"
+    environment:
+      SERVER_URL: http://dublin-bus-server:8080
+      POLL_SECONDS: "${ANALYTICS_POLL_SECONDS:-30}"
+      BACKUP_ENABLED: "${ANALYTICS_BACKUP_ENABLED:-true}"
+      BACKUP_TIME: "${ANALYTICS_BACKUP_TIME:-03:00}"
+      BACKUP_KEEP: "${ANALYTICS_BACKUP_KEEP:-7}"
+      BACKUP_DIR: "${ANALYTICS_BACKUP_DIR:-/data/backups}"
+    volumes:
+      - analytics-data:/data
+      # Keep backups off the data volume: uncomment, and set ANALYTICS_BACKUP_DIR=/backups.
+      # The host directory must exist and be writable by uid 10001 (the container user).
+      # - ./backups:/backups
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8081/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  gtfs-data:
+  analytics-data:
