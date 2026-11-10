@@ -29,7 +29,8 @@ SERVER_URL=http://127.0.0.1:8765 DATA_DIR=./data/demo uvicorn app.main:app --rel
 
 Open http://127.0.0.1:8081. The pages (hash routes):
 
-- **Routes** (`#/`): tracked routes with status, a search box over the server's routes, a Backup card. Press **Track** on a route to start polling it, **Untrack** to stop (stored data is kept).
+- **Sidebar** (on every page): **Find a route** (searches as you type, exact matches first; Enter on an exact route number starts tracking it) above the list of tracked routes. Click a tracked route to open its analytics; **Untrack** stops polling (stored data is kept).
+- **Routes** (`#/`): welcome text and a Backup card.
 - **Route**: per-stop delay statistics in route order, with links to each stop and to analytics.
 - **Stop**: delay summary and histogram for one stop, and its most recent arrivals.
 - **Trip**: how the predictions for one trip at one stop evolved over time.

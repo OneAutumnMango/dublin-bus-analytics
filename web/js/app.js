@@ -2,6 +2,7 @@
 import { isAbort } from './api.js';
 import { errorBox, h, link, setStatus } from './dom.js';
 import { parseHash } from './lib.js';
+import { renderSidebar } from './sidebar.js';
 import * as analytics from './pages/analytics.js';
 import * as route from './pages/route.js';
 import * as routes from './pages/routes.js';
@@ -53,3 +54,5 @@ async function show() {
 
 globalThis.addEventListener('hashchange', show);
 show();
+const sidebar = globalThis.document.getElementById('sidebar');
+if (sidebar) renderSidebar(sidebar);
