@@ -95,3 +95,11 @@ export function stopTipData(p) { // p = feature properties of a stop plus `route
 export function cellTipData(p) {
   return { title: 'Area', sub: `${p.stops} stops with data`, head: head(p.delay), rows: [{ k: 'n', l: 'Samples', fmt: 'count', v: p.n }] };
 }
+
+// Colour saturation in seconds when the user has not fixed one: the 90th percentile of |mean| over stops with
+// n >= 10, kept between 2 and 10 minutes (5 minutes when nothing qualifies).
+export function autoCap(stops) {
+  const v = stops.filter((s) => s.n >= 10 && isNum(s.mean_delay)).map((s) => Math.abs(s.mean_delay)).sort((a, b) => a - b);
+  if (!v.length) return 300;
+  return Math.max(120, Math.min(600, v[Math.min(v.length - 1, Math.floor(v.length * 0.9))]));
+}

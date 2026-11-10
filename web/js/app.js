@@ -10,9 +10,10 @@ import * as routes from './pages/routes.js';
 import * as stop from './pages/stop.js';
 import * as trip from './pages/trip.js';
 import * as settings from './pages/settings.js';
+import * as map from './pages/map.js';
 import { onSettings } from './settings.js';
 
-const PAGES = { routes, route, stop, trip, analytics, settings };
+const PAGES = { routes, route, stop, trip, analytics, settings, map };
 const SITE = 'Dublin Bus Analytics';
 let ctl = null;
 let lastKey = null;

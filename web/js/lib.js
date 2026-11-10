@@ -215,7 +215,7 @@ export function parseQuery(str) {
   return out;
 }
 
-const ROUTES = { routes: [], route: ['route'], stop: ['route', 'stop'], trip: ['trip', 'stop'], analytics: ['route'], settings: [] };
+const ROUTES = { routes: [], route: ['route'], stop: ['route', 'stop'], trip: ['trip', 'stop'], analytics: ['route'], settings: [], map: [] };
 
 export function buildHash(name, params = {}, query = {}) {
   const segs = [name === 'routes' ? '' : name, ...(ROUTES[name] || []).map((k) => enc(params[k] ?? ''))];

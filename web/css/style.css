@@ -276,3 +276,43 @@ tbody tr:last-child td { border-bottom: 0; }
 .tip-grid { display: grid; grid-template-columns: auto auto; gap: 2px var(--s4); margin: var(--s2) 0 0; font-size: var(--fs-sm); }
 .tip-grid dt { color: var(--muted); } .tip-grid dd { margin: 0; text-align: right; font-family: var(--mono); }
 .tip-foot { margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--border); color: var(--warn); font-size: var(--fs-xs); }
+
+/* ---- map page ---- */
+.map-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--s5); align-items: start; }
+.map-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s4); display: grid; gap: var(--s3); position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow-y: auto; }
+.map-panel h2 { margin: var(--s2) 0 0; }
+.map-panel h2:first-child { margin-top: 0; }
+.map-wrap { position: relative; height: calc(100vh - 190px); min-height: 480px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface-2); }
+.map-canvas { position: absolute; inset: 0; }
+.map-canvas .empty, .map-canvas .notice { margin: var(--s5); }
+.map-legend { position: absolute; left: var(--s4); bottom: var(--s4); z-index: 2; width: 270px; padding: var(--s3) var(--s4); background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--fs-sm); box-shadow: var(--shadow); }
+.lg-title { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em; font-weight: 650; color: var(--muted); margin-bottom: var(--s2); }
+.lg-bar { height: 10px; border-radius: 5px; border: 1px solid var(--border); }
+.lg-ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; }
+.lg-nodata { display: flex; align-items: center; gap: var(--s2); color: var(--muted); font-size: var(--fs-xs); margin-top: var(--s2); }
+.lg-dot { width: 9px; height: 9px; border-radius: 50%; border: 1.2px solid var(--control-border); }
+.route-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chip { flex-direction: row; align-items: center; gap: var(--s2); padding: 3px var(--s3) 3px var(--s2); border: 1px solid var(--border); border-radius: 999px; color: var(--text); font-size: var(--fs); cursor: pointer; background: var(--bg); }
+.chip:hover { border-color: var(--accent); }
+.chip-swatch { width: 12px; height: 4px; border-radius: 2px; }
+.map-status { min-height: 1.2em; }
+.map-panel .attribution { font-size: var(--fs-xs); }
+.map-panel .hint { margin: 0; }
+.time-range { display: grid; gap: var(--s2); }
+.tr-label { font: 600 var(--fs-md)/1.2 var(--mono); }
+.tr-track { position: relative; height: 22px; }
+.tr-track::before { content: ""; position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: var(--surface-2); border: 1px solid var(--border); }
+.tr-fills { position: absolute; left: 0; right: 0; top: 9px; height: 4px; }
+.tr-fill { position: absolute; top: 0; bottom: 0; background: var(--early); border-radius: 2px; }
+.tr-input { position: absolute; left: 0; width: 100%; top: 0; height: 22px; margin: 0; padding: 0; background: none; border: 0; pointer-events: none; -webkit-appearance: none; appearance: none; min-height: 0; }
+.tr-input::-webkit-slider-runnable-track { background: none; height: 22px; }
+.tr-input::-moz-range-track { background: none; }
+.tr-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: auto; width: 16px; height: 16px; margin-top: 3px; border-radius: 50%; background: var(--surface); border: 2px solid var(--early); box-shadow: var(--shadow-sm); cursor: grab; }
+.tr-input::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--early); cursor: grab; }
+.tr-input:focus-visible { outline: none; }
+.tr-input:focus-visible::-webkit-slider-thumb { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tr-input:focus-visible::-moz-range-thumb { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tr-ticks { display: flex; justify-content: space-between; color: var(--muted); font: var(--fs-xs)/1 var(--mono); }
+.tr-presets { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.tr-preset { min-height: 24px; padding: 0 var(--s2); font-size: var(--fs-xs); }
+.maplibregl-ctrl-attrib { font-size: 10px; }
