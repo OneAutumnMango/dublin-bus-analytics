@@ -387,3 +387,22 @@ export function stopNameMap(directions) {
   }
   return m;
 }
+
+// Runs at most `max` async tasks at once, FIFO. A task whose signal aborted while queued is rejected unstarted.
+export function makeLimiter(max) {
+  let active = 0;
+  const queue = [];
+  const pump = () => {
+    while (active < max && queue.length) {
+      const { fn, res, rej, signal } = queue.shift();
+      if (signal && signal.aborted) { rej(new DOMException('aborted', 'AbortError')); continue; }
+      active++;
+      Promise.resolve().then(fn).then(res, rej).finally(() => { active--; pump(); });
+    }
+  };
+  return {
+    run: (fn, signal) => new Promise((res, rej) => { queue.push({ fn, res, rej, signal }); pump(); }),
+    get active() { return active; },
+    get queued() { return queue.length; },
+  };
+}

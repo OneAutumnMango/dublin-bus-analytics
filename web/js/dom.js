@@ -51,7 +51,7 @@ export function tile(label, value, { note, lowN, n } = {}) {
 
 // columns: [{label, num?, get(row) -> text|Node}]; rows may carry low_n for greying.
 export function dataTable({ caption, columns, rows }) {
-  return h('div', { class: 'table-wrap' }, h('table', {},
+  return h('div', { class: 'table-wrap', tabindex: 0, role: 'region', 'aria-label': caption }, h('table', {},
     h('caption', { text: caption }),
     h('thead', {}, h('tr', {}, columns.map((c) => h('th', { scope: 'col', class: c.num ? 'num' : null }, c.label)))),
     h('tbody', {}, rows.map((r) => h('tr', { class: r.low_n || r.lowN ? 'low-n' : null, title: r.low_n || r.lowN ? 'Fewer than 10 samples: treat with caution.' : null },
@@ -60,7 +60,7 @@ export function dataTable({ caption, columns, rows }) {
 
 let figId = 0;
 // A chart plus a toggleable data table (accessible alternative).
-export function figure({ title, svg, table, legend }) {
+export function figure({ title, svg, table, legend, level = 'h2' }) {
   const id = `fig${++figId}`;
   const tableBox = h('div', { id: `${id}-table`, hidden: true }, table);
   const btn = h('button', { class: 'btn btn-quiet', type: 'button', 'aria-expanded': 'false', 'aria-controls': `${id}-table`, on: { click: () => {
@@ -69,6 +69,7 @@ export function figure({ title, svg, table, legend }) {
     btn.textContent = open ? 'Hide data table' : 'Show data table';
     if (open) tableBox.removeAttribute('hidden'); else tableBox.setAttribute('hidden', '');
   } } }, 'Show data table');
-  return h('figure', { class: 'card' }, h('div', { class: 'figure-head' }, h('h2', {}, title), btn),
-    h('div', { class: 'chart-scroll' }, svg), legend || null, tableBox);
+  btn.setAttribute('title', 'The chart is a picture; the data table has the same numbers and links for keyboard and screen reader users.');
+  return h('figure', { class: 'card' }, h('div', { class: 'figure-head' }, h(level, {}, title), btn),
+    h('div', { class: 'chart-scroll', tabindex: 0, role: 'region', 'aria-label': `${title} chart` }, svg), legend || null, tableBox);
 }

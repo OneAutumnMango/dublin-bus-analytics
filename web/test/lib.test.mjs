@@ -400,3 +400,27 @@ test('toApiQuery sends fixed notation only', () => {
   assert.equal(L.fixed(1), '1');
   assert.equal(L.fixed(0), '0');
 });
+
+test('makeLimiter never exceeds the limit, keeps FIFO order, drops aborted queued tasks', async () => {
+  const lim = L.makeLimiter(2);
+  let running = 0, peak = 0;
+  const order = [];
+  const task = (i) => async () => { running++; peak = Math.max(peak, running); order.push(i); await new Promise((r) => setTimeout(r, 5)); running--; return i; };
+  const out = await Promise.all(Array.from({ length: 20 }, (_, i) => lim.run(task(i))));
+  assert.equal(peak, 2);
+  assert.deepEqual(out, [...out.keys()]);
+  assert.deepEqual(order, [...order.keys()]);
+  const ctl = new AbortController();
+  const lim2 = L.makeLimiter(1);
+  const started = [];
+  const p1 = lim2.run(async () => { started.push(1); await new Promise((r) => setTimeout(r, 10)); });
+  const p2 = lim2.run(async () => { started.push(2); }, ctl.signal);
+  ctl.abort();
+  await p1;
+  await assert.rejects(p2, (e) => e.name === 'AbortError');
+  assert.deepEqual(started, [1]);
+  await assert.rejects(L.makeLimiter(1).run(async () => { throw new Error('boom'); }), /boom/);
+  const lim3 = L.makeLimiter(1);
+  await assert.rejects(lim3.run(async () => { throw new Error('x'); }));
+  assert.equal(await lim3.run(async () => 7), 7, 'a failed task frees its slot');
+});

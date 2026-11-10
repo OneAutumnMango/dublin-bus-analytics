@@ -79,3 +79,14 @@ test('endpoint helpers encode path components and build queries', async () => {
   assert.equal(A.backupDownloadUrl('a b.tar'), '/api/backup/download?file=a%20b.tar');
   assert.equal(A.backupDownloadUrl(), '/api/backup/download');
 });
+
+test('backupAvailable probes with a Range header and maps statuses', async () => {
+  const seen = [];
+  const f = (status) => async (url, init) => { seen.push(init.headers.Range); return { status }; };
+  assert.equal(await A.backupAvailable({ fetchFn: f(200) }), true);
+  assert.equal(await A.backupAvailable({ fetchFn: f(206) }), true);
+  assert.equal(await A.backupAvailable({ fetchFn: f(404) }), false);
+  assert.equal(await A.backupAvailable({ fetchFn: f(500) }), null);
+  assert.equal(await A.backupAvailable({ fetchFn: async () => { throw new TypeError('x'); } }), null);
+  assert.ok(seen.every((r) => r === 'bytes=0-0'));
+});

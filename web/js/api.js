@@ -73,3 +73,20 @@ export function makeApi(fetchFn = globalThis.fetch) {
 
 export const api = makeApi((...a) => globalThis.fetch(...a)); // late-bound so tests can stub fetch
 export const backupDownloadUrl = (file) => `/api/backup/download${qs({ file })}`;
+
+// true: a backup can be downloaded; false: none yet (404); null: unknown. Reads headers only (Range 0-0, then aborts).
+export async function backupAvailable({ signal, fetchFn = globalThis.fetch } = {}) {
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort();
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const r = await fetchFn(backupDownloadUrl(), { method: 'GET', headers: { Range: 'bytes=0-0' }, signal: ctl.signal });
+    ctl.abort();
+    if (r.status === 404) return false;
+    return r.status === 200 || r.status === 206 ? true : null;
+  } catch {
+    return null;
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+}

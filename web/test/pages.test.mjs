@@ -198,32 +198,68 @@ const series = (over = {}) => ({ trip_id: 't1', stop_id: 's1', truncated: false,
     points: [{ ts: 1_699_999_900, due_min: 5, expected: 1_700_000_200, realtime: 1 }, { ts: 1_700_000_100, due_min: 1, expected: 1_700_000_150, realtime: 1 }] },
   { seq: 1_700_003_600, scheduled: 1_700_003_600, last_seen_ts: null, arrival: null, points: [] }], ...over });
 
-test('trip page: step chart, markers, visit selector, dropped bus, empty points', async () => {
-  installFetch({ 'GET /api/trips/t1/series': series() });
-  const { render } = await import('../js/pages/trip.js');
+const bySeq = (d) => (url) => {
+  const m = /[?&]seq=(\d+)/.exec(url);
+  return m ? { ...d, visits: d.visits.filter((v) => v.seq === Number(m[1])) } : d;
+};
+const tripPage = () => import('../js/pages/trip.js');
+
+test('trip page: seq present and found asks the API for that visit and shows its chart', async () => {
+  const calls = installFetch({ 'GET /api/trips/t1/series': bySeq(series()) });
   const ctx = ctxOf({ trip: 't1', stop: 's1' }, { seq: '1700000000', route: '15' });
-  await render(ctx);
+  await (await tripPage()).render(ctx);
+  assert.ok(calls.some((c) => /[?&]seq=1700000000(&|$)/.test(c.url)), 'seq is sent to the API');
   const svg = ctx.main.byTag('svg')[0];
   assert.ok(svg.byTag('path').some((p) => /step-line/.test(p.getAttribute('class')) && p.getAttribute('d').startsWith('M')));
   assert.equal(svg.byTag('line').filter((l) => /marker/.test(l.getAttribute('class'))).length, 2);
   assert.match(text(ctx.main), /arrived 2[0-9]:\d\d/);
+  assert.equal(ctx.main.byTag('select').length, 0);
+  assert.ok(ctx.main.byText('a', /Stop s1, route 15/).length === 1);
+  assert.ok(!/NaN|undefined|null/.test(text(ctx.main)));
+});
+
+test('trip page: a seq the API did not return gives a notice and no other visit (no silent fallback)', async () => {
+  installFetch({ 'GET /api/trips/t1/series': series() }); // ignores seq: returns other visits
+  const ctx = ctxOf({ trip: 't1', stop: 's1' }, { seq: '1600000000' });
+  await (await tripPage()).render(ctx);
+  assert.match(text(ctx.main), /was not found/);
+  assert.equal(ctx.main.byTag('svg').length, 0);
+  assert.equal(ctx.main.byTag('select').length, 0);
+  assert.ok(!/1700000000|disappeared/.test(text(ctx.main)));
+  const bad = ctxOf({ trip: 't1', stop: 's1' }, { seq: 'abc' });
+  await (await tripPage()).render(bad);
+  assert.match(text(bad.main), /not a valid scheduled time/);
+});
+
+test('trip page: without seq the NEWEST visit is shown and named; picker switches visits', async () => {
+  installFetch({ 'GET /api/trips/t1/series': series() });
+  const ctx = ctxOf({ trip: 't1', stop: 's1' });
+  await (await tripPage()).render(ctx);
+  assert.match(text(ctx.main), /most recent visit, scheduled 2023-11-14 2[23]:\d\d/);
+  assert.match(text(ctx.main), /disappeared from the feed/); // the newest fixture visit is the dropped one
   const sel = ctx.main.byTag('select')[0];
   assert.equal(sel.byTag('option').length, 2);
-  sel.value = '1';
+  assert.equal(sel.byTag('option')[1].selected, true);
+  sel.value = '0';
   sel.dispatch('change', { target: sel });
-  assert.match(text(ctx.main), /disappeared from the feed/);
-  assert.match(text(ctx.main), /no stored prediction samples/);
-  assert.equal(ctx.main.byTag('svg').length, 0);
-  assert.ok(ctx.main.byText('a', /Stop s1, route 15/).length === 1);
+  assert.equal(ctx.main.byTag('svg').length, 1);
+  assert.match(text(ctx.main), /selected visit/);
+});
+
+test('trip page: errors, truncation notice', async () => {
   installFetch({ 'GET /api/trips/t1/series': fail(404, 'no such trip/stop visit') });
   const c2 = ctxOf({ trip: 't1', stop: 's1' });
-  await render(c2);
+  await (await tripPage()).render(c2);
   assert.match(text(c2.main), /Not found: no such trip/);
   installFetch({ 'GET /api/trips/t1/series': series({ truncated: true, visits: [series().visits[0]] }) });
   const c3 = ctxOf({ trip: 't1', stop: 's1' });
-  await render(c3);
+  await (await tripPage()).render(c3);
   assert.match(text(c3.main), /Some visits or samples were left out/);
   assert.equal(c3.main.byTag('select').length, 0);
+  installFetch({ 'GET /api/trips/t1/series': series({ visits: [] }) });
+  const c4 = ctxOf({ trip: 't1', stop: 's1' });
+  await (await tripPage()).render(c4);
+  assert.match(text(c4.main), /No prediction samples/);
 });
 
 const heat = { route: '15', filters: filters(), n: 500, cells: [{ weekday: 0, hour: 8, n: 100, low_n: false, mean_delay: 300 }, { weekday: 5, hour: 3, n: 2, low_n: true, mean_delay: -120 }] };
