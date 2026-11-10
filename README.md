@@ -68,7 +68,7 @@ Invalid values stop the app at startup with a message naming the variable. See `
 
 - `ModuleNotFoundError` (for example `httpx`): the venv is not active; run `source .venv/bin/activate`.
 - `Address already in use`: pick another `--port`, or find the process with `ss -ltnp | grep 8081`.
-- Permission or read-only errors on `DATA_DIR`: locally it must be writable by your user; the container runs as uid 10001.
+- Permission or read-only errors on `DATA_DIR`: locally it must be writable by your user; the container runs as uid 1000.
 - Empty UI: nothing tracked (press Track), nothing seeded, or `SERVER_URL` wrong (the Routes search will show an error). The API alone: `curl -s http://127.0.0.1:8081/api/health`.
 - `order_source: none`: the server's stop list for the route is unavailable (wrong `SERVER_URL`, or the server is down).
 - Blank page with a 404: `web/` not found; set `WEB_DIR` to the directory containing `index.html`.

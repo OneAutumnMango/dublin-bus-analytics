@@ -36,7 +36,7 @@ services:
     volumes:
       - analytics-data:/data
       # Keep backups off the data volume: uncomment, and set ANALYTICS_BACKUP_DIR=/backups.
-      # The host directory must exist and be writable by uid 10001 (the container user).
+      # The host directory must exist and be writable by uid 1000 (the container user).
       # - ./backups:/backups
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8081/api/health', timeout=3)"]

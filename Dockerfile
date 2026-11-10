@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /srv
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir . && useradd -r -u 10001 app && mkdir /data && chown app /data
+RUN pip install --no-cache-dir . && useradd -r -u 1000 app && mkdir /data && chown app /data
 # only what app/api/static.py serves (not the JS tests or package.json)
 COPY web/index.html ./web/index.html
 COPY web/css ./web/css
