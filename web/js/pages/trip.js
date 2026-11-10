@@ -25,7 +25,11 @@ export async function render(ctx) {
 
 function draw(ctx, trip, stop, route, want, d, el) {
   const visits = d.visits || [];
-  if (d.truncated) put(el, notice('Some visits or samples were left out (the API caps the size of a series): older visits or samples were dropped, the most recent are shown.'));
+  if (d.truncated) {
+    const caps = 'Some visits or samples were left out (the API caps the size of a series): older visits or samples were dropped, the most recent are shown.';
+    // unpinned requests are also truncated when a newer month exists; the API does not say which, so name both
+    put(el, notice(want === null ? `${caps} If a newer month of data exists, newer visits may not be listed; open a visit from the stop page to see it.` : caps));
+  }
   if (want !== null) {
     const idx = visits.findIndex((v) => v.seq === want);
     put(el, h('p', { class: 'hint' }, link(buildHash('trip', { trip, stop }, route ? { route } : {}), 'Show all recent visits of this trip at this stop')));

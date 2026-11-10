@@ -340,6 +340,7 @@ test('trip page: errors, truncation notice', async () => {
   const c3 = ctxOf({ trip: 't1', stop: 's1' });
   await (await tripPage()).render(c3);
   assert.match(text(c3.main), /Some visits or samples were left out/);
+  assert.match(text(c3.main), /newer visits may not be listed; open a visit from the stop page to see it/);
   assert.equal(c3.main.byTag('select').length, 0);
   installFetch({ 'GET /api/trips/t1/series': series({ visits: [] }) });
   const c4 = ctxOf({ trip: 't1', stop: 's1' });
