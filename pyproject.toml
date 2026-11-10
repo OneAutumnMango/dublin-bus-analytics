@@ -6,10 +6,17 @@ build-backend = "setuptools.build_meta"
 name = "dublin-bus-analytics"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["fastapi", "uvicorn", "httpx", "numpy", "scipy"]
+dependencies = [
+  "fastapi>=0.162.2,<0.163",
+  "starlette>=1.10.0,<1.11",
+  "uvicorn>=0.54.0,<0.55",
+  "httpx>=0.28.1,<0.29",
+  "numpy>=2.5.4,<3",
+  "scipy>=1.18.1,<2",
+]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "hypothesis"]
+dev = ["pytest>=9.2.0,<10", "pytest-asyncio>=1.4.1,<2", "pytest-cov>=7.1.0,<8", "hypothesis>=6.170.15,<7"]
 
 [tool.setuptools]
 packages = ["app"]
@@ -24,3 +31,4 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+fail_under = 90
