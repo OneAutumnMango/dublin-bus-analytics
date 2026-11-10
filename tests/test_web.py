@@ -175,3 +175,21 @@ def test_js_modules_pass_node_check():
     for f in (WEB / "js").rglob("*.js"):
         r = subprocess.run(["node", "--check", str(f)], capture_output=True, text=True)
         assert r.returncode == 0, f"{f}: {r.stderr}"
+
+
+@pytest.mark.parametrize("path", ["/package.json", "/test/fakedom.mjs", "/test/lib.test.mjs", "/js", "/css/", "/nope"])
+def test_only_index_css_js_are_served(client, path):
+    assert client.get(path).status_code == 404
+
+
+def test_error_responses_carry_security_headers(client):
+    for r in (client.get("/nope"), client.post("/"), client.get("/package.json"), client.get("/api/nope")):
+        assert r.status_code in (404, 405)
+        assert r.headers["content-security-policy"] == CSP
+        assert r.headers["x-content-type-options"] == "nosniff"
+    assert client.get("/api/nope").json() == {"detail": "Not Found"}
+
+
+def test_static_responses_revalidate(client):
+    for p in ("/", "/js/app.js", "/css/style.css"):
+        assert client.get(p).headers["cache-control"] == "no-cache"
