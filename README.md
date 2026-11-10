@@ -102,6 +102,14 @@ docker compose -f docker-compose.example.yml up -d --build
 
 The image serves the UI as well as the API (`WEB_DIR=/srv/web`) and has a healthcheck.
 
+### Run the released image
+
+Tagging `X.Y.Z` (matching `version` in `pyproject.toml`) runs the tests and publishes `ghcr.io/oneautumnmango/dublin-bus-analytics:X.Y.Z` (also `X.Y`, `X` and `latest`, for amd64 and arm64). `docker-compose.release.yml` runs that image on an existing `caddy_net` network next to a running `dublin-bus-server`; the UI has no authentication, so keep it off the public internet.
+
+```bash
+docker compose -f docker-compose.release.yml up -d
+```
+
 ### Run with the server compose file
 
 The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this service, behind the opt-in `analytics` profile (a plain `docker compose up -d` there starts only the server):
