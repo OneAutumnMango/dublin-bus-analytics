@@ -184,3 +184,36 @@ def test_fake_server_serves_routes_and_stops():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_default_end_never_creates_future_rows(tmp_path):
+    import time
+    sd.seed(tmp_path, ["15"], 2)
+    c = open_meta(tmp_path)
+    assert c.execute("select max(actual), max(scheduled) from arrivals").fetchone()[0] < time.time()
+    assert c.execute("select count(*) from arrivals").fetchone()[0] > 0
+    c.close()
+    with pytest.raises(ValueError, match="before today"):
+        sd.seed(tmp_path / "x", ["15"], 1, 1, date.today())
+
+
+@pytest.mark.parametrize("port", ["0", "-1", "70000"])
+def test_bad_fake_server_port_fails_before_seeding(tmp_path, port, capsys):
+    with pytest.raises(SystemExit) as e:
+        sd.main([str(tmp_path / "d"), "--days", "1", "--end", "2026-01-05", "--fake-server", port])
+    assert e.value.code == 2
+    assert not (tmp_path / "d").exists(), "nothing seeded"
+    assert "PORT" in capsys.readouterr().err
+
+
+def test_occupied_fake_server_port_fails_before_seeding(tmp_path, capsys):
+    srv = sd.fake_server(0, ["15"])
+    try:
+        with pytest.raises(SystemExit) as e:
+            sd.main([str(tmp_path / "d"), "--days", "1", "--end", "2026-01-05", "--fake-server", str(srv.server_address[1])])
+        assert e.value.code == 2
+        assert not (tmp_path / "d").exists()
+        err = capsys.readouterr().err
+        assert "cannot listen" in err and "Traceback" not in err
+    finally:
+        srv.server_close()

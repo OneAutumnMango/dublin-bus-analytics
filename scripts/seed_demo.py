@@ -3,7 +3,7 @@
 
   scripts/seed_demo.py DATA_DIR [--routes 15,46A] [--days 14] [--end YYYY-MM-DD] [--seed 1] [--fake-server PORT]
 
-Deterministic for the same arguments (seeded random.Random, `--end` defaults to today: pass it for
+Deterministic for the same arguments (seeded random.Random, `--end` defaults to yesterday: pass it for
 reproducible output) and idempotent (INSERT OR IGNORE on the natural keys). Without a bus data server the
 route view shows `order_source: none`; `--fake-server PORT` then serves /v1/routes, /v1/routes/{r}/stops and
 empty arrivals on 127.0.0.1 so `SERVER_URL=http://127.0.0.1:PORT uvicorn app.main:app` gives the full UI."""
@@ -92,7 +92,10 @@ def _forecast(samples, actual):
 def seed(data_dir, routes, days, seed_value=1, end=None) -> dict:
     if days < 1 or days > MAX_DAYS:
         raise ValueError(f"--days must be 1..{MAX_DAYS}")
-    end = end or date.today()
+    if end is None:
+        end = date.today() - timedelta(days=1)  # whole days in the past: no arrival or forecast lies in the future
+    if end >= date.today():
+        raise ValueError("--end must be before today (demo rows must lie in the past)")
     rng = random.Random(seed_value)
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -190,18 +193,29 @@ def main(argv=None) -> int:
     ap.add_argument("--routes", default="15,46A")
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--end", type=date.fromisoformat, default=None, help="last day (YYYY-MM-DD), default today")
+    ap.add_argument("--end", type=date.fromisoformat, default=None, help="last day (YYYY-MM-DD, before today), default yesterday")
     ap.add_argument("--fake-server", type=int, metavar="PORT")
     a = ap.parse_args(argv)
+    srv = None
     try:
         routes = parse_routes(a.routes)
+        if a.days < 1 or a.days > MAX_DAYS:
+            raise ValueError(f"--days must be 1..{MAX_DAYS}")
+        if a.fake_server is not None:  # bind BEFORE seeding so a bad port fails fast
+            if not 1 <= a.fake_server <= 65535:
+                raise ValueError("--fake-server PORT must be 1..65535")
+            try:
+                srv = fake_server(a.fake_server, routes)
+            except OSError as e:
+                raise ValueError(f"cannot listen on 127.0.0.1:{a.fake_server}: {e.strerror or e}") from None
         res = seed(a.data_dir, routes, a.days, a.seed, a.end)
     except ValueError as e:
+        if srv:
+            srv.server_close()
         ap.error(str(e))
     print(f"seeded {a.data_dir}: {res['arrivals_inserted']} new arrivals for routes {', '.join(routes)}")
-    if a.fake_server:
-        srv = fake_server(a.fake_server, routes)
-        print(f"fake bus server on http://127.0.0.1:{a.fake_server} (Ctrl-C to stop)")
+    if srv:
+        print(f"fake bus server on http://127.0.0.1:{a.fake_server} (Ctrl-C to stop)", flush=True)
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
