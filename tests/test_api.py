@@ -1533,11 +1533,11 @@ def _run(fn, *a):
 
 
 def _get(fn, *a, timeout=5):
-    """Call fn in a helper thread and fail fast (instead of hanging) when it does not finish."""
+    """Call fn in a helper thread; returns None when it does not finish in time (fail fast, no hang). Callers
+    assert after the `with env.c:` block: raising through the TestClient portal exit can hang on teardown."""
     t, o = _run(fn, *a)
     t.join(timeout)
-    assert not t.is_alive(), "request starved / blocked"
-    return o[0]
+    return None if t.is_alive() else o[0]  # None = starved; asserted by the caller AFTER leaving `with env.c`
 
 
 def test_heavy_requests_are_serialised_by_the_gate(env, monkeypatch):
@@ -1559,11 +1559,10 @@ def test_heavy_requests_are_serialised_by_the_gate(env, monkeypatch):
         assert first_in.wait(10)
         t2, o2 = _run(env.c.get, "/api/routes/15/forecast")
         time.sleep(0.5)
-        try:
-            assert log == ["start"]  # second heavy request is parked on the gate
-        finally:
-            gate.set()
+        parked = list(log)
+        gate.set()
         t1.join(15), t2.join(15)
+    assert parked == ["start"]  # second heavy request is parked on the gate
     assert log == ["start", "end", "start", "end"]
     assert o1[0].status_code == 200 and o2[0].status_code == 200
 
@@ -1592,15 +1591,17 @@ def test_queued_heavy_requests_do_not_starve_light_ones_or_health(env, monkeypat
             light = _get(env.c.get, "/api/routes/16/heatmap")
             health = _get(env.c.get, "/api/health")
             took = time.perf_counter() - t
-            assert not inside.acquire(timeout=0.01)  # still only two running
+            third = inside.acquire(timeout=0.01)  # must stay False: only two running
             gate.set()
             for th, _ in runs:
                 th.join(20)
         finally:
             gate.set()
             _limiter(env, old)
+    assert light is not None and health is not None, "light request or health starved"
     assert light.status_code == 200 and light.json()["n"] == 1 and health.json() == {"ok": True}
     assert took < 1.0, took
+    assert not third
     assert [o[0].status_code for _, o in runs] == [200] * 6 and all(o[0].json()["n"] == 5 for _, o in runs)
 
 
@@ -1623,12 +1624,13 @@ def test_health_is_a_coroutine_and_answers_with_all_workers_busy(env, monkeypatc
         try:
             runs = [_run(env.c.get, "/api/routes/15/heatmap") for _ in range(2)]
             assert inside.acquire(timeout=10) and inside.acquire(timeout=10)
-            assert _get(env.c.get, "/api/health").json() == {"ok": True}  # a sync health would starve
+            health = _get(env.c.get, "/api/health")  # a sync health would starve
         finally:
             gate.set()
             for th, _ in runs:
                 th.join(20)
             _limiter(env, old)
+    assert health is not None and health.json() == {"ok": True}
 
 
 def test_heavy_slot_released_on_error(env, monkeypatch):
@@ -2128,11 +2130,10 @@ def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_
         assert first_in.wait(10)
         t2, o2 = _run(series, env, "G")
         time.sleep(0.5)
-        try:
-            assert log == ["start"]  # second gz read waits on the loop
-        finally:
-            gate.set()
+        parked = list(log)
+        gate.set()
         t1.join(15), t2.join(15)
+    assert parked == ["start"]  # second gz read waits on the loop
     assert log == ["start", "end", "start", "end"]
     assert [o[0].status_code for o in (o1, o2)] == [200, 200]
     assert all(len(o[0].json()["visits"][0]["points"]) == 1 for o in (o1, o2))
@@ -2156,13 +2157,13 @@ def test_series_plain_month_not_blocked_by_gz_read(env, monkeypatch):
         t1, o1 = _run(series, env, "G")
         assert first_in.wait(10)
         t = time.perf_counter()
-        try:
-            r = _get(series, env, "P")
-            assert r.status_code == 200 and len(r.json()["visits"][0]["points"]) == 1
-            assert time.perf_counter() - t < 1.0 and t1.is_alive()
-        finally:
-            gate.set()
+        r = _get(series, env, "P")
+        took, still_running = time.perf_counter() - t, t1.is_alive()
+        gate.set()
         t1.join(15)
+    assert r is not None, "plain-month series blocked by a gz read"
+    assert r.status_code == 200 and len(r.json()["visits"][0]["points"]) == 1
+    assert took < 1.0 and still_running
     assert o1[0].status_code == 200
 
 
@@ -2215,6 +2216,8 @@ def test_series_upper_margin_pulls_in_next_month(env):
     q = _utc(2025, 10, 31, 23, 55)  # arrival without an actual: only scheduled + 6 h reaches November
     env.add(trip="T", stop="s1", scheduled=q, delay=None)
     put_many(env, [(q, q - 900, 12, q, 1), (q, q + 1800, 0, q + 1800, 1)])  # second sample is in the Nov file
-    assert {p.name for p in env.s.data_dir.glob("samples-*.db")} == {"samples-2025-10.db", "samples-2025-11.db"}
+    put_many(env, [(1, _utc(2025, 12, 5), 0, 1, 1)], trip="other")  # newer month: Nov is not "the newest"
+    assert {p.name for p in env.s.data_dir.glob("samples-*.db")} == {
+        "samples-2025-10.db", "samples-2025-11.db", "samples-2025-12.db"}
     j = series(env).json()
     assert [p["ts"] for p in j["visits"][0]["points"]] == [q - 900, q + 1800]
