@@ -234,3 +234,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .sidebar .badge { font-size: var(--fs-xs); flex: none; }
 .sidebar .empty { padding: var(--s4) var(--s3); font-size: var(--fs-sm); }
 .sidebar .hint { margin: var(--s2); }
+
+/* whole tracked row is the link: the anchor stretches over the row, the buttons sit above it */
+.sidebar .route-list li { position: relative; }
+.sidebar li > .name.grow a::after { content: ""; position: absolute; inset: 0; border-radius: var(--radius-sm); }
+.sidebar li > .name.grow a:focus-visible { outline: none; }
+.sidebar li > .name.grow a:focus-visible::after { outline: 3px solid var(--focus); outline-offset: -2px; }
+.sidebar li:has(> .name.grow a) { cursor: pointer; }
+.sidebar .row-actions { position: relative; z-index: 1; display: inline-flex; gap: var(--s1); flex: none; }
+.sidebar .btn-danger.solid { opacity: 1; background: var(--err); color: var(--err-bg); border-color: var(--err); }
+.sidebar li:has(.btn-danger.solid) .btn-danger { opacity: 1; }

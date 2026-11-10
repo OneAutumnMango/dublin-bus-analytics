@@ -23,6 +23,13 @@ test('sidebar: tracked links are url-encoded, untrack works', async () => {
   assert.deepEqual(root.byTag('a').map((a) => a.getAttribute('href')), ['#/analytics/sA', '#/analytics/sA%2FB']);
   root.byText('button', /^Untrack$/)[1].dispatch('click');
   await settle();
+  assert.equal(tracked.length, 2, 'first click only asks for confirmation');
+  assert.equal(root.byText('button', /^Confirm$/).length, 1);
+  root.byText('button', /^Cancel$/)[0].dispatch('click');
+  assert.equal(root.byText('button', /^Confirm$/).length, 0, 'cancel restores the Untrack button');
+  root.byText('button', /^Untrack$/)[1].dispatch('click');
+  root.byText('button', /^Confirm$/)[0].dispatch('click');
+  await settle();
   assert.deepEqual(root.byTag('a').map((a) => a.getAttribute('href')), ['#/analytics/sA']);
 });
 

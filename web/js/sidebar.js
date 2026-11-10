@@ -26,6 +26,8 @@ export async function renderSidebar(root, { signal } = {}) {
   let busy = false;
   let timer = null;
   let mutButtons = [];
+  let confirming = null; // route whose Untrack awaits confirmation
+  let confirmTimer = null;
 
   const nameOf = (r) => String(r.shortName ?? r.id ?? '');
   const fail = (e) => { if (!isAbort(e)) { alertBox.replaceChildren(errorBox(e)); setStatus(e.message); } };
@@ -56,8 +58,19 @@ export async function renderSidebar(root, { signal } = {}) {
     links = [];
     trackedBox.replaceChildren(tracked.length
       ? h('ul', { class: 'route-list' }, tracked.map((r) => {
-        const btn = h('button', { class: 'btn btn-danger', type: 'button', 'aria-label': `Untrack route ${r}`, disabled: busy, on: { click: () => untrack(r) } }, 'Untrack');
-        mutButtons.push(btn);
+        const ask = (on) => {
+          clearTimeout(confirmTimer);
+          confirming = on ? r : null;
+          if (on) confirmTimer = setTimeout(() => { confirming = null; draw(); }, 5000); // an unanswered prompt reverts
+          draw();
+          if (on) globalThis.document.getElementById(`confirm-${r}`)?.focus?.();
+        };
+        const btns = confirming === r
+          ? [h('button', { id: `confirm-${r}`, class: 'btn btn-danger solid', type: 'button', 'aria-label': `Confirm untracking route ${r}`, disabled: busy, on: { click: () => { clearTimeout(confirmTimer); confirming = null; untrack(r); } } }, 'Confirm'),
+            h('button', { class: 'btn btn-quiet', type: 'button', 'aria-label': `Cancel untracking route ${r}`, on: { click: () => ask(false) } }, 'Cancel')]
+          : [h('button', { class: 'btn btn-danger', type: 'button', 'aria-label': `Untrack route ${r}`, disabled: busy, on: { click: () => ask(true) } }, 'Untrack')];
+        mutButtons.push(...btns.slice(0, 1));
+        const btn = h('span', { class: 'row-actions' }, btns);
         const a = link(buildHash('analytics', { route: r }), `Route ${r}`, { 'data-route': r });
         links.push(a);
         return h('li', {}, h('span', { class: 'name grow' }, a), btn);
