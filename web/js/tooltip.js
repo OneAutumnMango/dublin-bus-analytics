@@ -51,7 +51,7 @@ export function installTooltip(doc = globalThis.document) {
   };
   const inChart = (t) => t?.closest?.('svg.chart');
   doc.addEventListener('pointermove', (e) => { if (inChart(e.target)) show(e.target, e.clientX, e.clientY); else hide(); });
-  doc.addEventListener('pointerleave', hide);
+  doc.addEventListener('mouseout', (e) => { if (!e.relatedTarget) hide(); }); // pointer left the window
   doc.addEventListener('focusin', (e) => {
     if (!inChart(e.target)) return;
     const r = e.target.getBoundingClientRect();
