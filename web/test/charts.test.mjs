@@ -67,7 +67,7 @@ test('histogramGeometry: bars, zero at the 0 edge, markers clamp, ticks', () => 
   assert.equal(g.xOf(null), null);
   assert.ok(g.xTicks.some((t) => t.label === '0' && t.x === g.zeroX));
   assert.equal(g.empty, false);
-  assert.match(g.bars[0].label, /below -10/);
+  assert.match(g.bars[0].label, /below \u221210/);
   assert.match(g.bars[41].label, /30 min and above/);
 });
 
@@ -159,6 +159,29 @@ test('rangeSummary text', () => {
   assert.match(C.rangeSummary([]), /No stops/);
   const s = C.rangeSummary([item('A', 60, 0, 0, 0, 0), item('B', -120, 0, 0, 0, 0), item('C', null, 0, 0, 0, 0, 0)]);
   assert.match(s, /2 of 3 stops/);
-  assert.match(s, /-2\.0 min \(B\)/);
+  assert.match(s, /\u22122\.0 min \(B\)/);
   assert.match(s, /\+1\.0 min \(A\)/);
+});
+
+test('histogram y ticks are integers without duplicates (tiny counts)', () => {
+  const g = C.histogramGeometry([{ lo: null, hi: -600, count: 1 }, { lo: -600, hi: null, count: 0 }]);
+  const labels = g.yTicks.map((t) => t.label);
+  assert.deepEqual(labels, ['0', '1']);
+});
+
+test('accumulation geometry follows positions and breaks the line at gaps', () => {
+  const mk = (position, mean) => ({ stop_id: `s${position}`, position, mean_delay: mean, segment_delta: mean === null ? null : 10, n: 20, n_delta: 15 });
+  const g = C.accumulationGeometry([mk(0, 0), mk(1, 60), mk(3, 120), mk(4, null), mk(5, 30)]);
+  assert.equal((g.path.match(/M/g) || []).length, 3, 'gap at position 2 and a null mean both break the line');
+  assert.ok(g.pts[2].x - g.pts[1].x > g.pts[1].x - g.pts[0].x, 'x follows position, not index');
+  assert.deepEqual(g.xTicks.map((t) => t.label).slice(0, 3), ['1', '2', '4']);
+});
+
+test('rangeTip omits missing min/max and shows the band', () => {
+  const g = C.rangeGeometry([{ label: '30 min before', mean: 60, min: null, max: null, lo: -60, hi: 120, n: 1, low_n: true }]);
+  const tip = C.rangeTip(g.rows[0]);
+  assert.ok(!/min –|max –/.test(tip));
+  assert.match(tip, /band/);
+  assert.match(tip, /1 sample\b/);
+  assert.match(tip, /Fewer than 10/);
 });

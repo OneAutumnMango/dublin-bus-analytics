@@ -1,7 +1,7 @@
 // Chart geometry (pure, unit-tested) and thin SVG renderers. Colours come from CSS classes, never inline.
 // Delays in the data are seconds; chart axes are minutes. Negative = early (left/down), positive = late.
 import { isNum, extent, linearScale, niceTicks, niceDomain, divergingBucket, fmtNum, fmtDelay, fmtCount,
-  clockTime, LOW_N_NOTE, shorten } from './lib.js';
+  clockTime, LOW_N_NOTE, shorten, niceIntTicks, plural } from './lib.js';
 
 const r2 = (x) => (isNum(x) ? Math.round(x * 100) / 100 : x);
 const toMin = (s) => (isNum(s) ? s / 60 : null);
@@ -57,7 +57,7 @@ export function histogramGeometry(bins, o = {}) {
     const sec = bins[i].lo;
     if (isNum(sec) && sec % 300 === 0) xTicks.push({ x: r2(left + i * slot), label: fmtNum(sec / 60, 0) });
   }
-  const yTicks = niceTicks(0, max, 4).map((c) => ({ y: r2(top + plotH - (max ? (c / max) * plotH : 0)), label: fmtCount(c) }));
+  const yTicks = niceIntTicks(max, 4).map((c) => ({ y: r2(top + plotH - (max ? (c / max) * plotH : 0)), label: fmtCount(c) }));
   return { width, height, left, top, plotW, plotH, bars, xOf, xTicks, yTicks, zeroX: xOf(0), max, total, empty: total === 0 };
 }
 
@@ -95,11 +95,15 @@ export function linePath(points) {
 }
 
 // stops: API accumulation stops [{stop_id, position, mean_delay, segment_delta, n, n_delta, ...}], in route order.
+// x follows the route POSITION (not the list index) and the line breaks where positions are skipped or data is missing.
 export function accumulationGeometry(stops, o = {}) {
   const { width = 720, left = 52, right = 16, top = 14, panelH = 170, gap = 36, bottom = 22 } = o;
   const n = stops.length;
   const x0 = left, x1 = width - right;
-  const xs = (i) => (n <= 1 ? (x0 + x1) / 2 : x0 + (i / (n - 1)) * (x1 - x0));
+  const posOf = (s, i) => (isNum(s.position) ? s.position : i);
+  const pe = extent(stops.map(posOf));
+  const span = pe ? pe[1] - pe[0] : 0;
+  const xs = (p) => (span === 0 ? (x0 + x1) / 2 : x0 + ((p - pe[0]) / span) * (x1 - x0));
   const e1 = extent(stops.map((s) => toMin(s.mean_delay)));
   const [a0, a1] = niceDomain(e1 ? e1[0] : null, e1 ? e1[1] : null, 4, true);
   const ya = linearScale([a0, a1], [top + panelH, top]);
@@ -108,19 +112,21 @@ export function accumulationGeometry(stops, o = {}) {
   const [b0, b1] = niceDomain(-m2, m2, 4, true);
   const bTop = top + panelH + gap, bH = panelH * 0.7;
   const yb = linearScale([b0, b1], [bTop + bH, bTop]);
-  const pts = stops.map((s, i) => ({ x: r2(xs(i)), y: isNum(s.mean_delay) ? r2(ya(s.mean_delay / 60)) : null }));
-  const slot = n ? (x1 - x0) / Math.max(1, n) : 0;
+  const pts = stops.map((s, i) => ({ x: r2(xs(posOf(s, i))), y: isNum(s.mean_delay) ? r2(ya(s.mean_delay / 60)) : null, pos: posOf(s, i) }));
+  const withGaps = [];
+  pts.forEach((p, i) => { if (i && p.pos - pts[i - 1].pos !== 1) withGaps.push({ x: p.x, y: null }); withGaps.push(p); });
+  const slot = (x1 - x0) / (span + 1);
   const bars = stops.map((s, i) => {
-    const v = toMin(s.segment_delta);
-    if (!isNum(v)) return { x: r2(xs(i) - slot * 0.4), w: r2(slot * 0.8), y: r2(yb(0)), h: 0, delta: null };
+    const v = toMin(s.segment_delta), cx = xs(posOf(s, i));
+    if (!isNum(v)) return { x: r2(cx - slot * 0.4), w: r2(slot * 0.8), y: r2(yb(0)), h: 0, delta: null };
     const y = yb(v), z = yb(0);
-    return { x: r2(xs(i) - slot * 0.4), w: r2(Math.max(1, slot * 0.8)), y: r2(Math.min(y, z)), h: r2(Math.abs(z - y)), delta: s.segment_delta };
+    return { x: r2(cx - slot * 0.4), w: r2(Math.max(1, slot * 0.8)), y: r2(Math.min(y, z)), h: r2(Math.abs(z - y)), delta: s.segment_delta };
   });
   const every = Math.max(1, Math.ceil(n / 12));
-  return { width, height: bTop + bH + bottom, x0, x1, pts, path: linePath(pts), bars, zeroA: r2(ya(0)), zeroB: r2(yb(0)),
+  return { width, height: bTop + bH + bottom, x0, x1, pts, path: linePath(withGaps), bars, zeroA: r2(ya(0)), zeroB: r2(yb(0)),
     ticksA: niceTicks(a0, a1, 4).map((m) => ({ y: r2(ya(m)), label: fmtNum(m, Number.isInteger(m) ? 0 : 1) })),
     ticksB: niceTicks(b0, b1, 4).map((m) => ({ y: r2(yb(m)), label: fmtNum(m, Number.isInteger(m) ? 0 : 1) })),
-    xTicks: stops.map((s, i) => ({ x: r2(xs(i)), i, label: String(i + 1) })).filter((t) => t.i % every === 0 || t.i === n - 1),
+    xTicks: stops.map((s, i) => ({ x: r2(xs(posOf(s, i))), i, label: String(posOf(s, i) + 1) })).filter((t) => t.i % every === 0 || t.i === n - 1),
     panelA: { top, h: panelH }, panelB: { top: bTop, h: bH } };
 }
 
@@ -149,6 +155,14 @@ export function stepGeometry(steps, markers = [], o = {}) {
 }
 
 // ---------- alt text ----------
+export function rangeTip(r) {
+  if (r.empty) return `${r.label}: no data`;
+  const parts = [`mean ${fmtDelay(r.mean)}`];
+  if (isNum(r.min) && isNum(r.max)) parts.push(`min ${fmtDelay(r.min)}`, `max ${fmtDelay(r.max)}`);
+  if (isNum(r.lo) && isNum(r.hi)) parts.push(`band ${fmtDelay(r.lo)} to ${fmtDelay(r.hi)}`);
+  return `${r.label}: ${parts.join(', ')}, ${plural(r.n, 'sample')}${r.lowN ? `. ${LOW_N_NOTE}` : ''}`;
+}
+
 export function rangeSummary(items, what = 'stops') {
   const ok = items.filter((i) => isNum(i.mean));
   if (!ok.length) return `No ${what} with data.`;
@@ -172,7 +186,7 @@ function root(doc, w, h, title, desc, cls) {
   return svg;
 }
 
-export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs schedule', doc = globalThis.document } = {}) {
+export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs schedule', zeroLabel = 'on schedule', doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'range-chart');
   for (const t of geo.ticks) {
     svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.top - 6, y2: geo.height - 6 }),
@@ -182,10 +196,10 @@ export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs sch
     el(doc, 'text', { class: 'axis-label', x: geo.x0, y: 10 }, `← early    ${axisLabel}    late →  (dashed line = on schedule)`));
   for (const r of geo.rows) {
     const g = el(doc, 'g', { class: `row${r.lowN ? ' low-n' : ''}${r.empty ? ' empty' : ''}` });
-    const tip = r.empty ? `${r.label}: no data` : `${r.label}: mean ${fmtDelay(r.mean)}, min ${fmtDelay(r.min)}, max ${fmtDelay(r.max)}, n=${fmtCount(r.n)}${r.lowN ? `. ${LOW_N_NOTE}` : ''}`;
+    const tip = r.empty ? `${r.label}: no data` : rangeTip(r);
     g.append(el(doc, 'title', {}, tip));
     const label = el(doc, 'text', { class: 'row-label', x: geo.x0 - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 24));
-    if (r.href) { const a = el(doc, 'a', { href: r.href }); a.append(label); g.append(a); } else g.append(label);
+    if (r.href) { const a = el(doc, 'a', { href: r.href, tabindex: -1 }); a.append(label); g.append(a); } else g.append(label);
     g.append(el(doc, 'text', { class: 'n-label', x: geo.width - 4, y: r.cy + 4, 'text-anchor': 'end' }, `n=${fmtCount(r.n)}`));
     if (!r.empty) {
       if (r.xLo !== null && r.xHi !== null) g.append(el(doc, 'rect', { class: 'band', x: r.xLo, y: r.cy - 6, width: Math.max(1, r.xHi - r.xLo), height: 12, rx: 2 }));
@@ -225,7 +239,7 @@ export function renderHeatmap(grid, { title, desc, doc = globalThis.document } =
   for (let h = 0; h < 24; h += 2) svg.append(el(doc, 'text', { class: 'tick-label', x: grid.left + h * grid.cw + grid.cw / 2, y: grid.top - 8, 'text-anchor': 'middle' }, String(h).padStart(2, '0')));
   WEEKDAYS.forEach((d, i) => svg.append(el(doc, 'text', { class: 'tick-label', x: grid.left - 6, y: grid.top + i * grid.ch + grid.ch / 2 + 4, 'text-anchor': 'end' }, d)));
   for (const c of grid.cells) {
-    const g = el(doc, 'g', { class: 'cell', tabindex: 0, 'aria-label': `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00, ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}, n=${fmtCount(c.n)}` });
+    const g = el(doc, 'g', { class: 'cell' });
     const cls = c.empty ? 'hm-empty' : `hm-b${c.bucket < 0 ? 'n' : ''}${Math.abs(c.bucket)}`;
     g.append(el(doc, 'title', {}, `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00 - ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}, n=${fmtCount(c.n)}${c.lowN && !c.empty ? `. ${LOW_N_NOTE}` : ''}`),
       el(doc, 'rect', { class: `${cls}${c.lowN ? ' low-n' : ''}`, x: c.x, y: c.y, width: c.w, height: c.h, rx: 2 }));
@@ -242,13 +256,13 @@ export function renderAccumulation(geo, stops, { title, desc, doc = globalThis.d
   }
   svg.append(el(doc, 'line', { class: 'zero-line', x1: geo.x0, x2: geo.x1, y1: geo.zeroA, y2: geo.zeroA }),
     el(doc, 'line', { class: 'zero-line', x1: geo.x0, x2: geo.x1, y1: geo.zeroB, y2: geo.zeroB }),
-    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelA.top - 3 }, 'Cumulative mean delay (min, up = later)'),
-    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelB.top - 6 }, 'Segment change (min): above zero loses time, below gains'));
+    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelA.top - 3 }, 'Mean delay at each stop (min, up = later)'),
+    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelB.top - 6 }, 'Change from previous stop (min): above zero loses time, below gains'));
   svg.append(el(doc, 'path', { class: 'acc-line', d: geo.path, fill: 'none' }));
   stops.forEach((s, i) => {
     const p = geo.pts[i], b = geo.bars[i];
-    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.append(el(doc, 'title', {}, `Stop ${i + 1} ${s.stop_id}: cumulative ${fmtDelay(s.mean_delay)}, n=${fmtCount(s.n)}`)); svg.append(c); }
-    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1) }); r.append(el(doc, 'title', {}, `Into stop ${i + 1} ${s.stop_id}: ${fmtDelay(b.delta)}, n=${fmtCount(s.n_delta)}`)); svg.append(r); }
+    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${s.stop_id}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c); }
+    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1) }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${s.stop_id}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r); }
   });
   for (const t of geo.xTicks) svg.append(el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.height - 6, 'text-anchor': 'middle' }, t.label));
   return svg;

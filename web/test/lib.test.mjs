@@ -15,12 +15,12 @@ test('fmtMinutes: seconds below a minute, minutes with one decimal', () => {
   assert.equal(L.fmtMinutes(0), '0 s');
   assert.equal(L.fmtMinutes(-0.2), '0 s');
   assert.equal(L.fmtMinutes(45), '45 s');
-  assert.equal(L.fmtMinutes(-45), '-45 s');
+  assert.equal(L.fmtMinutes(-45), '\u221245 s');
   assert.equal(L.fmtMinutes(59.4), '59 s');
   assert.equal(L.fmtMinutes(59.6), '1.0 min');
   assert.equal(L.fmtMinutes(60), '1.0 min');
   assert.equal(L.fmtMinutes(210), '3.5 min');
-  assert.equal(L.fmtMinutes(-210), '-3.5 min');
+  assert.equal(L.fmtMinutes(-210), '\u22123.5 min');
   assert.equal(L.fmtMinutes(210, { signed: true }), '+3.5 min');
   assert.equal(L.fmtMinutes(0, { signed: true }), '0 s');
   assert.equal(L.fmtMinutes(30, { signed: true }), '+30 s');
@@ -37,7 +37,7 @@ test('fmtMinutes huge values never produce exponent notation', () => {
 
 test('fmtDelay is always signed', () => {
   assert.equal(L.fmtDelay(180), '+3.0 min');
-  assert.equal(L.fmtDelay(-180), '-3.0 min');
+  assert.equal(L.fmtDelay(-180), '\u22123.0 min');
   assert.equal(L.fmtDelay(null), '–');
 });
 
@@ -64,7 +64,7 @@ test('fmtPct / fmtCount', () => {
   assert.equal(L.fmtCount(1234567), '1,234,567');
   assert.equal(L.fmtCount(0), '0');
   assert.equal(L.fmtCount(null), '–');
-  assert.equal(L.fmtCount(-1234), '-1,234');
+  assert.equal(L.fmtCount(-1234), '\u22121,234');
 });
 
 test('dueAt clamps at zero and floors', () => {
@@ -246,9 +246,9 @@ test('controls: defaults, validation and API mapping', () => {
   const c = { ...L.DEFAULT_CONTROLS };
   assert.deepEqual(L.validateControls(c), []);
   const q = L.toApiQuery(c, 1_700_000_000);
-  assert.equal(q.ci, 0.95);
-  assert.equal(q.pct_lo, 0.05);
-  assert.equal(q.pct_hi, 0.95);
+  assert.equal(q.ci, '0.95');
+  assert.equal(q.pct_lo, '0.05');
+  assert.equal(q.pct_hi, '0.95');
   assert.equal(q.window_lo, -60);
   assert.equal(q.window_hi, 300);
   assert.equal(q.since, 1_700_000_000 - 90 * 86400); // explicit since by default
@@ -257,7 +257,7 @@ test('controls: defaults, validation and API mapping', () => {
   const c2 = { ...c, ci: 99.9, pLo: 10, pHi: 90, winLo: -2.5, winHi: 10, since: '2025-01-01', until: '2025-01-31',
     weekdays: [0, 4], hFrom: 22, hTo: 1, confirmed: false };
   const q2 = L.toApiQuery(c2, 1_700_000_000);
-  assert.equal(q2.ci, 0.999);
+  assert.equal(q2.ci, '0.999');
   assert.equal(q2.window_lo, -150);
   assert.equal(q2.min_confidence, 0);
   assert.deepEqual(q2.weekdays, [0, 4]);
@@ -351,4 +351,52 @@ test('stopNameMap tolerates odd shapes', () => {
   const m = L.stopNameMap({ out: [{ id: 'a', name: 'Alpha' }, { stopId: 'b', stopName: 'Beta' }, { id: 'c' }, null, { id: 5, name: 'x' }], back: [{ id: 'a', name: 'Other' }, 'junk'] });
   assert.deepEqual([...m], [['a', 'Alpha'], ['b', 'Beta']]);
   for (const bad of [null, undefined, 3, [], { x: 'y' }]) assert.equal(L.stopNameMap(bad).size, 0);
+});
+
+test('fmtNum uses a typographic minus', () => {
+  assert.equal(L.fmtNum(-2.5), '\u22122.5');
+  assert.equal(L.fmtNum(-0.04), '0.0');
+});
+
+test('fmtPctile ordinals and rounding', () => {
+  const c = { 0.01: '1st', 0.02: '2nd', 0.03: '3rd', 0.04: '4th', 0.05: '5th', 0.11: '11th', 0.12: '12th', 0.13: '13th', 0.21: '21st', 0.22: '22nd', 0.23: '23rd',
+    0.025: '2.5th', 0.95: '95th', 1: '100th', 0: '0th', 0.101: '10.1th', 0.111: '11.1th' };
+  for (const [k, v] of Object.entries(c)) assert.equal(L.fmtPctile(Number(k)), v, k);
+  assert.equal(L.fmtPctile(null), '–');
+});
+
+test('fmtLevel never rounds 99.9 up to 100', () => {
+  assert.equal(L.fmtLevel(0.999), '99.9%');
+  assert.equal(L.fmtLevel(0.95), '95%');
+  assert.equal(L.fmtLevel(0.9999), '99.99%');
+  assert.equal(L.fmtLevel(0.5), '50%');
+  assert.equal(L.fmtLevel(NaN), '–');
+});
+
+test('describeRange near zero', () => {
+  assert.equal(L.describeRange(-0.2, 0.3), 'about on time');
+  assert.equal(L.describeRange(0, 0), 'about on time');
+  assert.equal(L.describeRange(-0.4, 120), '0 s to 2.0 min late');
+  assert.ok(!/on time to on time/.test(L.describeRange(-0.9, 0.9)));
+});
+
+test('plural and niceIntTicks', () => {
+  assert.equal(L.plural(1, 'arrival'), '1 arrival');
+  assert.equal(L.plural(0, 'arrival'), '0 arrivals');
+  assert.equal(L.plural(1234, 'trip'), '1,234 trips');
+  assert.deepEqual(L.niceIntTicks(1), [0, 1]);
+  assert.deepEqual(L.niceIntTicks(0), [0]);
+  assert.deepEqual(L.niceIntTicks(null), [0]);
+  assert.deepEqual(L.niceIntTicks(2), [0, 1, 2]);
+  for (const m of [3, 7, 40, 1234]) { const t = L.niceIntTicks(m); assert.ok(t.every(Number.isInteger) && new Set(t).size === t.length && t.length >= 2, String(m)); }
+});
+
+test('toApiQuery sends fixed notation only', () => {
+  const q = L.toApiQuery({ ...L.DEFAULT_CONTROLS, ci: 0.00001, pLo: 0.00001, pHi: 99.99999 }, 1_700_000_000);
+  assert.equal(q.ci, '0.0000001');
+  assert.equal(q.pct_lo, '0.0000001');
+  for (const k of ['ci', 'pct_lo', 'pct_hi']) assert.ok(!/e/i.test(q[k]), q[k]);
+  assert.equal(L.fixed(0.5), '0.5');
+  assert.equal(L.fixed(1), '1');
+  assert.equal(L.fixed(0), '0');
 });

@@ -7,20 +7,23 @@ export const LOW_N_NOTE = 'Fewer than 10 samples: treat this number with caution
 export const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 // ---------- formatting ----------
+export const MINUS = '\u2212'; // typographic minus for visible and spoken text
+const neg = (s) => (s.startsWith('-') ? MINUS + s.slice(1) : s);
+
 export function fmtNum(v, digits = 1) {
   if (!isNum(v)) return DASH;
   const s = v.toFixed(digits);
-  return /^-0(\.0*)?$/.test(s) ? s.slice(1) : s;
+  return /^-0(\.0*)?$/.test(s) ? s.slice(1) : neg(s);
 }
 
 export function fmtMinutes(sec, { signed = false } = {}) {
   if (!isNum(sec)) return DASH;
   const r = Math.round(Math.abs(sec));
-  const sign = r === 0 ? '' : sec < 0 ? '-' : signed ? '+' : '';
+  const sign = r === 0 ? '' : sec < 0 ? MINUS : signed ? '+' : '';
   if (r < 60) return `${sign}${r} s`;
   const m = Math.abs(sec) / 60;
-  if (m >= 1e6) return sec < 0 ? '<-1,000,000 min' : '>1,000,000 min';
-  return `${sec < 0 ? '-' : signed ? '+' : ''}${m.toFixed(1)} min`;
+  if (m >= 1e6) return sec < 0 ? `<${MINUS}1,000,000 min` : '>1,000,000 min';
+  return `${sec < 0 ? MINUS : signed ? '+' : ''}${m.toFixed(1)} min`;
 }
 
 export const fmtDelay = (sec) => fmtMinutes(sec, { signed: true });
@@ -41,14 +44,32 @@ export function delayClass(sec) {
 export function describeRange(lo, hi) {
   if (!isNum(lo) || !isNum(hi)) return DASH;
   if (lo > hi) [lo, hi] = [hi, lo];
+  if (Math.round(lo) === 0 && Math.round(hi) === 0) return 'about on time';
   if (lo === hi) return describeDelay(lo);
-  if (lo < 0 && hi > 0) return `${describeDelay(lo)} to ${describeDelay(hi)}`;
+  const near = (x) => (Math.abs(x) < 1 ? '0 s' : describeDelay(x));
+  if (lo < 0 && hi > 0) return `${near(lo)} to ${near(hi)}`;
   const side = lo >= 0 ? 'late' : 'early';
   const [a, b] = lo >= 0 ? [lo, hi] : [-hi, -lo];
   const secs = b < 60;
   const f = (x) => (secs ? String(Math.round(x)) : (x / 60).toFixed(1));
   return `${f(a)} to ${f(b)} ${secs ? 's' : 'min'} ${side}`;
 }
+
+// 0.05 -> "5th", 0.025 -> "2.5th", 0.01 -> "1st", 0.11 -> "11th"
+export function fmtPctile(frac) {
+  if (!isNum(frac)) return DASH;
+  const n = Number((frac * 100).toFixed(1));
+  if (!Number.isInteger(n)) return `${n}th`;
+  const t = n % 100;
+  return `${n}${t >= 11 && t <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+}
+
+// 0.999 -> "99.9%", 0.95 -> "95%"
+export function fmtLevel(frac) {
+  return isNum(frac) ? `${Number((frac * 100).toFixed(2))}%` : DASH;
+}
+
+export const plural = (n, word) => `${fmtCount(n)} ${word}${n === 1 ? '' : 's'}`;
 
 export function fmtPct(v) {
   return isNum(v) ? `${v.toFixed(1)}%` : DASH;
@@ -57,7 +78,7 @@ export function fmtPct(v) {
 export function fmtCount(n) {
   if (!isNum(n)) return DASH;
   const r = Math.round(n);
-  return (r < 0 ? '-' : '') + String(Math.abs(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (r < 0 ? MINUS : '') + String(Math.abs(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 export function shorten(text, max) {
@@ -145,6 +166,13 @@ export function niceTicks(min, max, count = 5) {
   const out = [];
   for (let k = Math.ceil(lo / step - 1e-9); k <= Math.floor(hi / step + 1e-9); k++) out.push(r12(k * step));
   return out;
+}
+
+// Integer ticks only (counts): never '0, 0.5, 1' rounded into duplicates.
+export function niceIntTicks(max, count = 4) {
+  if (!isNum(max) || max <= 0) return [0];
+  const t = niceTicks(0, max, count).filter(Number.isInteger);
+  return t.length >= 2 ? t : [0, Math.ceil(max)];
 }
 
 export function niceDomain(min, max, count = 5, includeZero = false) {
@@ -276,9 +304,14 @@ export function validateControls(c) {
   return [...new Set(e)];
 }
 
+// Fixed notation, at most 10 decimals, no exponent (the API's number regex rejects 1e-7).
+export function fixed(x) {
+  return x.toFixed(10).replace(/\.?0+$/, '');
+}
+
 // Always sends an explicit `since` (default: now - 90 days) so unwindowed heavy requests are avoided.
 export function toApiQuery(c, nowSec) {
-  const p100 = (x) => Number((x / 100).toPrecision(10));
+  const p100 = (x) => fixed(x / 100);
   const since = blank(c.since) ? null : dateToEpoch(c.since);
   const until = blank(c.until) ? null : dateToEpoch(c.until, true);
   return {

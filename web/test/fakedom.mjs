@@ -31,7 +31,7 @@ export function installDom() {
   const main = new FNode('main'); main.setAttribute('id', 'main');
   body.append(status, main);
   const doc = {
-    createElement: (t) => new FNode(t), createElementNS: (ns, t) => new FNode(t), createTextNode: (t) => new FText(t),
+    createElement: (t) => Object.assign(new FNode(t), { ns: 'html' }), createElementNS: (ns, t) => Object.assign(new FNode(t), { ns }), createTextNode: (t) => new FText(t),
     getElementById: (id) => body.all((n) => n.getAttribute('id') === id)[0] || null, title: '', body,
   };
   const listeners = {};

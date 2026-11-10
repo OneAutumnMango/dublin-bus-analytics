@@ -1,7 +1,7 @@
 /* Palette: blue = early, orange = late (colour-blind safe). Every colour is a token; dark theme redefines them. */
 :root {
   --bg: #f6f7f9; --surface: #ffffff; --surface-2: #eef1f5; --text: #1b2330; --muted: #556070;
-  --border: #c9d1dc; --accent: #1a5fb4; --accent-contrast: #ffffff; --focus: #b35900;
+  --border: #c9d1dc; --control-border: #6b7685; --accent: #1a5fb4; --accent-contrast: #ffffff; --focus: #b35900;
   --early: #1b6bb3; --late: #a84a00; --ok: #1d6b3a; --err-bg: #fdecec; --err: #9b1c1c; --warn-bg: #fff4dc; --warn: #6b4600;
   --grid: #e1e6ed; --band: #b9d6ee; --band-line: #1b6bb3;
   --hm-n5: #1a5490; --hm-n5t: #ffffff; --hm-n4: #5a97d0; --hm-n4t: #1b2330; --hm-n3: #8dbae3; --hm-n3t: #1b2330;
@@ -16,7 +16,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #10151c; --surface: #18202a; --surface-2: #212a36; --text: #e8edf4; --muted: #a6b1c0;
-    --border: #344154; --accent: #8bbcff; --accent-contrast: #10151c; --focus: #ffb454;
+    --border: #344154; --control-border: #8190a4; --accent: #8bbcff; --accent-contrast: #10151c; --focus: #ffb454;
     --early: #78b4f0; --late: #f2a25c; --ok: #6fd19a; --err-bg: #3a1c1f; --err: #ffb3b3; --warn-bg: #36290f; --warn: #f3d28b;
     --grid: #263140; --band: #2c527c; --band-line: #78b4f0;
     --hm-n5: #9cc6f2; --hm-n5t: #10151c; --hm-n4: #6ea6e0; --hm-n4t: #10151c; --hm-n3: #346195; --hm-n3t: #e8edf4;
@@ -28,7 +28,7 @@
 }
 :root[data-theme="dark"] {
   --bg: #10151c; --surface: #18202a; --surface-2: #212a36; --text: #e8edf4; --muted: #a6b1c0;
-  --border: #344154; --accent: #8bbcff; --accent-contrast: #10151c; --focus: #ffb454;
+  --border: #344154; --control-border: #8190a4; --accent: #8bbcff; --accent-contrast: #10151c; --focus: #ffb454;
   --early: #78b4f0; --late: #f2a25c; --ok: #6fd19a; --err-bg: #3a1c1f; --err: #ffb3b3; --warn-bg: #36290f; --warn: #f3d28b;
   --grid: #263140; --band: #2c527c; --band-line: #78b4f0;
   --hm-n5: #9cc6f2; --hm-n5t: #10151c; --hm-n4: #6ea6e0; --hm-n4t: #10151c; --hm-n3: #346195; --hm-n3t: #e8edf4;
@@ -74,7 +74,7 @@ nav a { margin-right: var(--s3); }
 .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
 .btn-quiet { background: transparent; color: var(--accent); }
 .btn-danger { background: transparent; color: var(--err); border-color: var(--err); }
-input, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: var(--s2); min-height: 36px; max-width: 100%; }
+input, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--control-border); border-radius: 6px; padding: var(--s2); min-height: 36px; max-width: 100%; }
 input[type="number"] { width: 6.5em; }
 input[type="checkbox"] { min-height: 0; width: 1.1em; height: 1.1em; }
 label { display: inline-flex; flex-direction: column; gap: var(--s1); font-size: var(--fs-sm); color: var(--muted); }
@@ -130,9 +130,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart .band { fill: var(--band); stroke: var(--band-line); stroke-width: 0.5; }
 .chart .mean { stroke: var(--bg); stroke-width: 1; fill: var(--text); }
 .chart .mean.early { fill: var(--early); } .chart .mean.late { fill: var(--late); }
-.chart .row.low-n { opacity: 0.45; }
+.chart .row.low-n .row-label, .chart .row.low-n .n-label { fill: var(--muted); font-style: italic; }
 .chart .row.low-n .mean { fill: none; stroke: var(--muted); stroke-width: 1.5; }
-.chart .row.empty { opacity: 0.6; }
+.chart .row.low-n .band { fill: none; stroke-dasharray: 3 2; stroke-width: 1; stroke: var(--muted); }
+.chart .row.empty .row-label { fill: var(--muted); font-style: italic; }
 .chart .bar { fill: var(--muted); } .chart .bar.early { fill: var(--early); } .chart .bar.late { fill: var(--late); }
 .chart .ci-band { fill: var(--band); opacity: 0.7; }
 .chart .marker { stroke: var(--text); stroke-width: 1.5; }
@@ -143,7 +144,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart .cell:focus-visible rect { outline: none; stroke: var(--focus); stroke-width: 3; }
 .chart .cell { outline: none; }
 .chart .cell-text { font-size: 9px; pointer-events: none; }
-.chart rect.low-n { opacity: 0.55; }
+.chart rect.low-n { stroke: var(--text); stroke-width: 1; stroke-dasharray: 2 2; }
 .chart rect[class*="hm-b"] { fill: var(--bg-cell); }
 .chart text.cell-text { fill: var(--fg-cell); }
 .chart .hm-empty { fill: none; stroke: var(--border); stroke-dasharray: 2 2; }
