@@ -341,3 +341,16 @@ export function paginate(total, page, size) {
   const start = (p - 1) * size;
   return { page: p, pages, start, end: Math.min(total, start + size) };
 }
+
+// {direction: [{id|stopId, name|stopName}]} -> Map(stop id -> display name) for labelling.
+export function stopNameMap(directions) {
+  const m = new Map();
+  for (const list of Object.values(directions && typeof directions === 'object' ? directions : {})) {
+    for (const s of Array.isArray(list) ? list : []) {
+      const id = s?.id ?? s?.stopId;
+      const name = s?.name ?? s?.stopName ?? s?.stop_name;
+      if (typeof id === 'string' && typeof name === 'string' && name && !m.has(id)) m.set(id, name);
+    }
+  }
+  return m;
+}

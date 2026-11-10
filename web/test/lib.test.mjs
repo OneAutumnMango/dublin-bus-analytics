@@ -346,3 +346,9 @@ test('delayClass', () => {
   assert.equal(L.delayClass(-90), 'early');
   assert.equal(L.delayClass(90), 'late');
 });
+
+test('stopNameMap tolerates odd shapes', () => {
+  const m = L.stopNameMap({ out: [{ id: 'a', name: 'Alpha' }, { stopId: 'b', stopName: 'Beta' }, { id: 'c' }, null, { id: 5, name: 'x' }], back: [{ id: 'a', name: 'Other' }, 'junk'] });
+  assert.deepEqual([...m], [['a', 'Alpha'], ['b', 'Beta']]);
+  for (const bad of [null, undefined, 3, [], { x: 'y' }]) assert.equal(L.stopNameMap(bad).size, 0);
+});
