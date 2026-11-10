@@ -1532,6 +1532,14 @@ def _run(fn, *a):
     return t, out
 
 
+def _get(fn, *a, timeout=5):
+    """Call fn in a helper thread and fail fast (instead of hanging) when it does not finish."""
+    t, o = _run(fn, *a)
+    t.join(timeout)
+    assert not t.is_alive(), "request starved / blocked"
+    return o[0]
+
+
 def test_heavy_requests_are_serialised_by_the_gate(env, monkeypatch):
     api = _heavy_env(env, monkeypatch, slots=1)
     log, gate, first_in = [], threading.Event(), threading.Event()
@@ -1551,8 +1559,10 @@ def test_heavy_requests_are_serialised_by_the_gate(env, monkeypatch):
         assert first_in.wait(10)
         t2, o2 = _run(env.c.get, "/api/routes/15/forecast")
         time.sleep(0.5)
-        assert log == ["start"]  # second heavy request is parked on the gate
-        gate.set()
+        try:
+            assert log == ["start"]  # second heavy request is parked on the gate
+        finally:
+            gate.set()
         t1.join(15), t2.join(15)
     assert log == ["start", "end", "start", "end"]
     assert o1[0].status_code == 200 and o2[0].status_code == 200
@@ -1579,8 +1589,8 @@ def test_queued_heavy_requests_do_not_starve_light_ones_or_health(env, monkeypat
             assert inside.acquire(timeout=10) and inside.acquire(timeout=10)  # both permits taken
             time.sleep(0.3)  # the other four are queued
             t = time.perf_counter()
-            light = env.c.get("/api/routes/16/heatmap")
-            health = env.c.get("/api/health")
+            light = _get(env.c.get, "/api/routes/16/heatmap")
+            health = _get(env.c.get, "/api/health")
             took = time.perf_counter() - t
             assert not inside.acquire(timeout=0.01)  # still only two running
             gate.set()
@@ -1592,6 +1602,33 @@ def test_queued_heavy_requests_do_not_starve_light_ones_or_health(env, monkeypat
     assert light.status_code == 200 and light.json()["n"] == 1 and health.json() == {"ok": True}
     assert took < 1.0, took
     assert [o[0].status_code for _, o in runs] == [200] * 6 and all(o[0].json()["n"] == 5 for _, o in runs)
+
+
+def test_health_is_a_coroutine_and_answers_with_all_workers_busy(env, monkeypatch):
+    import inspect
+    api = _heavy_env(env, monkeypatch, slots=2)
+    ep = next(r.endpoint for r in env.app.routes if getattr(r, "path", "") == "/api/health")
+    assert inspect.iscoroutinefunction(ep)
+    gate, inside = threading.Event(), threading.Semaphore(0)
+    orig = api._scan
+
+    def spy(request, sql, args, fn, size=None):
+        inside.release()
+        assert gate.wait(15)
+        orig(request, sql, args, fn, size)
+
+    monkeypatch.setattr(api, "_scan", spy)
+    with env.c:
+        old = _limiter(env, 2)  # exactly the two running heavy requests
+        try:
+            runs = [_run(env.c.get, "/api/routes/15/heatmap") for _ in range(2)]
+            assert inside.acquire(timeout=10) and inside.acquire(timeout=10)
+            assert _get(env.c.get, "/api/health").json() == {"ok": True}  # a sync health would starve
+        finally:
+            gate.set()
+            for th, _ in runs:
+                th.join(20)
+            _limiter(env, old)
 
 
 def test_heavy_slot_released_on_error(env, monkeypatch):
@@ -2075,12 +2112,14 @@ def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_
     log, gate, first_in = [], threading.Event(), threading.Event()
     orig = api._read_month
 
-    def spy(*a):
+    def spy(data_dir, m, *a):
+        if m != 2025 * 12 + 9:  # only the gz month (October); the newest plain month is read too
+            return orig(data_dir, m, *a)
         log.append("start")
         first_in.set()
         if len(log) == 1:
             assert gate.wait(10)
-        orig(*a)
+        orig(data_dir, m, *a)
         log.append("end")
 
     monkeypatch.setattr(api, "_read_month", spy)
@@ -2089,8 +2128,10 @@ def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_
         assert first_in.wait(10)
         t2, o2 = _run(series, env, "G")
         time.sleep(0.5)
-        assert log == ["start"]  # second gz read waits on the loop
-        gate.set()
+        try:
+            assert log == ["start"]  # second gz read waits on the loop
+        finally:
+            gate.set()
         t1.join(15), t2.join(15)
     assert log == ["start", "end", "start", "end"]
     assert [o[0].status_code for o in (o1, o2)] == [200, 200]
@@ -2115,9 +2156,65 @@ def test_series_plain_month_not_blocked_by_gz_read(env, monkeypatch):
         t1, o1 = _run(series, env, "G")
         assert first_in.wait(10)
         t = time.perf_counter()
-        r = series(env, "P")
-        assert r.status_code == 200 and len(r.json()["visits"][0]["points"]) == 1
-        assert time.perf_counter() - t < 1.0 and t1.is_alive()
-        gate.set()
+        try:
+            r = _get(series, env, "P")
+            assert r.status_code == 200 and len(r.json()["visits"][0]["points"]) == 1
+            assert time.perf_counter() - t < 1.0 and t1.is_alive()
+        finally:
+            gate.set()
         t1.join(15)
     assert o1[0].status_code == 200
+
+
+# ---------- fix round 2 ----------
+
+def test_series_newest_sample_only_visit_in_newer_month_is_returned(env):
+    jan, mar = _utc(2026, 1, 10, 8), _utc(2026, 3, 10, 8)
+    env.add(trip="T", stop="s1", scheduled=jan, delay=0)
+    put_many(env, [(jan, jan, 0, jan, 1), (mar, mar - 600, 12, mar, 1)])  # March: dropped bus, no arrivals row
+    j = series(env).json()
+    assert [v["seq"] for v in j["visits"]] == [jan, mar] and j["truncated"] is True  # newest month may hide more
+    assert j["visits"][1]["arrival"] is None and len(j["visits"][1]["points"]) == 1
+
+
+def test_series_newest_disk_month_selected_is_not_truncated(env):
+    q = _utc(2026, 3, 10, 8)
+    env.add(trip="T", stop="s1", scheduled=q, delay=0)
+    put_many(env, [(q, q, 0, q, 1)])
+    put_many(env, [(q, q, 0, q, 1)], trip="other")
+    assert series(env).json()["truncated"] is False
+    assert series(env, seq=str(q)).json()["truncated"] is False
+
+
+def test_series_newer_month_pinned_by_filters_is_not_flagged(env):
+    jan = _utc(2026, 1, 10, 8)
+    env.add(trip="T", stop="s1", scheduled=jan, delay=0)
+    put_many(env, [(jan, jan, 0, jan, 1), (_utc(2026, 3, 10), _utc(2026, 3, 10), 0, 0, 1)], trip="other")
+    assert series(env, since=str(jan - 1)).json()["truncated"] is False
+
+
+def test_series_newest_month_not_added_when_visit_needs_two_months(env):
+    b = _utc(2025, 10, 1)  # visit spans Sep+Oct; a Dec file exists too: no room for it
+    env.add(trip="T", stop="s1", scheduled=b + 600, delay=0)
+    put_many(env, [(b + 600, b - 900, 25, b + 600, 1), (b + 600, b + 100, 8, b + 620, 1)])
+    put_many(env, [(1, _utc(2025, 12, 5), 0, 1, 1)], trip="other")
+    j = series(env).json()
+    assert [len(v["points"]) for v in j["visits"]] == [2] and j["truncated"] is True
+
+
+@pytest.mark.parametrize("name", ["samples-0000-01.db", "samples-9999-12.db", "samples-1969-12.db",
+                                  "samples-0000-01.db.gz"])
+def test_series_ignores_out_of_range_year_files(env, name):
+    seed_countdown(env)
+    (env.s.data_dir / name).write_bytes(b"junk")
+    r = series(env)
+    assert r.status_code == 200 and len(r.json()["visits"][0]["points"]) == 3
+
+
+def test_series_upper_margin_pulls_in_next_month(env):
+    q = _utc(2025, 10, 31, 23, 55)  # arrival without an actual: only scheduled + 6 h reaches November
+    env.add(trip="T", stop="s1", scheduled=q, delay=None)
+    put_many(env, [(q, q - 900, 12, q, 1), (q, q + 1800, 0, q + 1800, 1)])  # second sample is in the Nov file
+    assert {p.name for p in env.s.data_dir.glob("samples-*.db")} == {"samples-2025-10.db", "samples-2025-11.db"}
+    j = series(env).json()
+    assert [p["ts"] for p in j["visits"][0]["points"]] == [q - 900, q + 1800]

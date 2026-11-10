@@ -625,7 +625,7 @@ def _forecast_db(request, r, p):
 MAX_VISITS, MAX_POINTS, MAX_SERIES_MONTHS = 50, 2000, 2
 SERIES_MARGIN_S = 6 * 3600  # samples lie within an hour or so of a visit's scheduled..actual; 6 h slack each side
 TS_MAX = 4_102_444_800  # 2100-01-01: epochs are clamped to 1970..2100 before any calendar arithmetic
-_MONTH_FILE = re.compile(r"samples-([0-9]{4})-(0[1-9]|1[0-2])\.db(\.gz)?")
+_MONTH_FILE = re.compile(r"samples-(19[7-9][0-9]|20[0-9][0-9])-(0[1-9]|1[0-2])\.db(\.gz)?")
 TripP = Annotated[str, Path(min_length=1, max_length=64)]
 SeriesStop = Annotated[str, Query(min_length=1, max_length=64)]
 
@@ -690,21 +690,30 @@ def _series_plan(request, trip_id, stop, want_seq, lo, hi) -> dict:
                  f"{cond} order by seq, ts", "args": [trip_id, stop, *cargs]}
     disk = _disk_months(request.app.state.settings.data_dir)
     if arr:
-        used: set[int] = set()
-        for sq, sch, act, dly, conf, rt, sd in arr[:MAX_VISITS]:  # newest first
+        needs = []
+        for sq, sch, act, *_ in arr[:MAX_VISITS]:  # newest first
             ts = [t for t in (sq, sch, act) if t is not None]
             need = {m for m in range(_month_no(min(ts) - SERIES_MARGIN_S), _month_no(max(ts) + SERIES_MARGIN_S) + 1)
                     if m in disk}
             if len(need) > MAX_SERIES_MONTHS:
                 need = set(sorted(need)[-MAX_SERIES_MONTHS:])
                 st["truncated"] = True
+            needs.append(need)
+        # unpinned: the newest month on disk may hold a newer, sample-only (dropped bus) visit: read it too
+        newest = max(disk) if disk and want_seq is None and lo is None and hi is None else None
+        used: set[int] = {newest} if newest is not None and len(needs[0] | {newest}) <= MAX_SERIES_MONTHS else set()
+        wanted: set[int] = set()
+        for (sq, sch, act, dly, conf, rt, sd), need in zip(arr, needs):
             if len(used | need) > MAX_SERIES_MONTHS:  # older visits would need a month we may not read
                 st["truncated"] = True
                 break
             used |= need
+            wanted |= need
             st["visits"].setdefault(sq, {"seq": sq, "scheduled": sch, "last_seen_ts": None, "points": [],
                                          "arrival": {"actual": act, "delay": dly, "confidence": conf,
                                                      "realtime": rt, "service_date": sd}})
+        if newest is not None and newest not in wanted:
+            st["truncated"] = True  # a month newer than any kept visit's exists: newer visits may be missing
         months = sorted(used)
     else:  # no arrivals row: months on disk within since/until (an exact seq narrows it), else the latest
         if want_seq is not None:
@@ -755,7 +764,9 @@ async def trip_series(request: Request, trip_id: TripP, stop: SeriesStop, seq: Q
     MAX_SERIES_MONTHS month files are read, chosen from the kept visits, and older visits whose months
     would not fit are dropped, so a returned visit never lacks points merely because its month was not
     read; at most MAX_POINTS points per visit (the earliest; `last_seen_ts` is still the true latest).
-    Months come from the arrivals rows (scheduled/actual +- 6 h) or, with no arrivals row, from the months
+    Months come from the arrivals rows (scheduled/actual +- 6 h; the tracker accepts predictions up to 24 h
+    ahead, so a first sample more than 6 h before scheduled, in an earlier month, can be missing: known
+    limitation) plus, when unpinned, the newest month on disk (else `truncated`) or, with no arrivals row, from the months
     on disk within since/until/seq (else the most recent ones), so a sample-only visit is found only in
     those months. Reading a gzipped month decompresses it to a temp file; only one such read runs at a time.
     404 when no visit matched; an arrivals row without samples gives 200 with empty points."""
