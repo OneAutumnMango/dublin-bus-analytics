@@ -1,21 +1,17 @@
-// Floating tooltip for charts. Reads the text of the SVG <title> elements the renderers already emit, so screen
-// readers keep their labels. While a tip is shown its <title> is detached so the browser's native tooltip
-// does not double up; it is restored on leave.
-const TAG = new Set(['g', 'rect', 'circle', 'path']);
+// One tooltip for everything hoverable. On first hover, native tooltips are converted to data-tip so the browser's
+// own bubble never shows alongside ours: inner SVG <title> elements (the chart root keeps its title/desc for screen
+// readers) and HTML title attributes.
+const MAX_UP = 5;
 
-// Text of the first direct <title> child of el, or of the nearest ancestor (max 3 levels, never past the svg).
+// Text to show for el: nearest data-tip, else a direct <title> child (SVG), within a few ancestors.
 export function tipText(el) {
-  return titleNode(el)?.textContent || null;
-}
-
-function titleNode(el) {
   let n = el;
-  for (let i = 0; n && i < 4; i++, n = n.parentNode ?? null) {
-    if (n.tag === 'svg' || n.tagName === 'svg') return null;
-    const name = n.tag ?? n.tagName;
-    if (!TAG.has(name)) continue;
+  for (let i = 0; n && i < MAX_UP; i++, n = n.parentNode ?? null) {
+    const own = n.getAttribute?.('data-tip');
+    if (own) return own;
     const t = (n.children ? [...n.children] : [...(n.childNodes || [])]).find((c) => (c.tag ?? c.tagName) === 'title');
-    if (t) return t;
+    if (t?.textContent) return t.textContent;
+    if ((n.tag ?? n.tagName) === 'svg') break;
   }
   return null;
 }
@@ -28,6 +24,24 @@ export function placeTip(x, y, w, h, vw, vh) {
   return { left: Math.max(8, left), top: Math.max(8, top) };
 }
 
+// Moves native tooltip sources inside a chart svg to data-tip (idempotent); keeps the chart's own accessible title.
+export function stripChart(svg) {
+  for (const t of svg.querySelectorAll('title')) {
+    const p = t.parentNode;
+    if (!p || p === svg) continue;
+    p.setAttribute('data-tip', t.textContent);
+    t.remove();
+  }
+}
+
+// HTML title="" attributes on the hovered element or its ancestors become data-tip.
+export function stripAttr(el) {
+  for (let n = el; n && n.getAttribute && n.tagName !== 'BODY'; n = n.parentNode) {
+    const t = n.getAttribute('title');
+    if (t) { n.setAttribute('data-tip', t); n.removeAttribute('title'); }
+  }
+}
+
 export function installTooltip(doc = globalThis.document) {
   if (typeof doc?.addEventListener !== 'function') return null; // non-browser host (tests)
   const tip = doc.createElement('div');
@@ -35,27 +49,26 @@ export function installTooltip(doc = globalThis.document) {
   tip.setAttribute('role', 'presentation');
   tip.hidden = true;
   doc.body.append(tip);
-  let held = null; // { parent, node } title detached while its tip is visible
 
-  const restore = () => { if (held) { held.parent.append(held.node); held = null; } };
-  const hide = () => { restore(); tip.hidden = true; };
+  const hide = () => { tip.hidden = true; };
   const show = (target, x, y) => {
-    const node = titleNode(target);
-    if (!node) { hide(); return; }
-    if (!held || held.node !== node) { restore(); tip.textContent = node.textContent; held = { parent: node.parentNode, node }; node.remove(); }
+    const text = tipText(target);
+    if (!text) { hide(); return; }
+    if (tip.textContent !== text) tip.textContent = text;
     tip.hidden = false;
     const { width, height } = tip.getBoundingClientRect();
     const p = placeTip(x, y, width, height, globalThis.innerWidth, globalThis.innerHeight);
     tip.style.left = `${p.left}px`;
     tip.style.top = `${p.top}px`;
   };
-  const inChart = (t) => t?.closest?.('svg.chart');
-  doc.addEventListener('pointermove', (e) => { if (inChart(e.target)) show(e.target, e.clientX, e.clientY); else hide(); });
+  const prep = (t) => { const svg = t?.closest?.('svg.chart'); if (svg) stripChart(svg); stripAttr(t); };
+  doc.addEventListener('pointerover', (e) => prep(e.target), true);
+  doc.addEventListener('pointermove', (e) => show(e.target, e.clientX, e.clientY));
   doc.addEventListener('mouseout', (e) => { if (!e.relatedTarget) hide(); }); // pointer left the window
   doc.addEventListener('focusin', (e) => {
-    if (!inChart(e.target)) return;
-    const r = e.target.getBoundingClientRect();
-    show(e.target, r.left + r.width / 2, r.top + r.height / 2);
+    prep(e.target);
+    const r = e.target.getBoundingClientRect?.();
+    if (r) show(e.target, r.left + r.width / 2, r.top + r.height / 2);
   });
   doc.addEventListener('focusout', hide);
   return tip;

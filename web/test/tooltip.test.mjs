@@ -18,3 +18,8 @@ test('tipText: title of the element or nearest chart ancestor, null when none', 
   assert.equal(tipText(bare), null);
   assert.equal(tipText(null), null);
 });
+
+test('tipText: data-tip attribute wins and is read from the element itself', () => {
+  const r = new FNode('rect'); r.setAttribute('data-tip', 'exact value');
+  assert.equal(tipText(r), 'exact value');
+});
