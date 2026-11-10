@@ -2,7 +2,7 @@
 import { api, isAbort } from '../api.js';
 import { renderRangeChart, rangeDomain, rangeGeometry, rangeSummary } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, tile, put } from '../dom.js';
-import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, paginate, stopNameMap, describeDelay } from '../lib.js';
+import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPctile, paginate, plural, stopNameMap, describeDelay } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
@@ -27,7 +27,8 @@ export async function render(ctx) {
     ]);
     return { summary, names: stopNameMap(stops?.directions) };
   };
-  await region(box, ctx.signal).load(fetcher, ({ summary, names }, el) => draw(ctx, route, s, summary, names, dir, page, el));
+  await region(box, ctx.signal).load(fetcher, ({ summary, names }, el) => draw(ctx, route, s, summary, names, dir, page, el),
+    { announce: ({ summary }) => `Route ${route}: loaded ${plural((summary.stops || []).length, 'stop')}` });
 }
 
 function draw(ctx, route, s, data, names, dir, page, el) {
@@ -57,7 +58,7 @@ function draw(ctx, route, s, data, names, dir, page, el) {
   const slice = items.slice(p.start, p.end);
   const geo = rangeGeometry(slice, domain);
   const f = data.filters;
-  const band = `${fmtNum(f.pct_lo * 100, 0)}th to ${fmtNum(f.pct_hi * 100, 0)}th percentile`;
+  const band = `${fmtPctile(f.pct_lo)} to ${fmtPctile(f.pct_hi)} percentile`;
   const svg = renderRangeChart(geo, { title: `Delay by stop, route ${route}`, desc: `${rangeSummary(slice)} Whiskers show min and max, the bar the ${band}.` });
   const table = dataTable({ caption: `Delay per stop, route ${route} (seconds shown as minutes; negative = early)`, rows: slice,
     columns: [
@@ -70,7 +71,7 @@ function draw(ctx, route, s, data, names, dir, page, el) {
       { label: 'On time', num: true, get: (r) => fmtPct(r.raw.on_time_pct) },
       { label: 'Reliability', num: true, get: (r) => fmtNum(r.raw.reliability, 1) },
     ] });
-  const legend = h('p', { class: 'legend' }, `Bar: ${band} · whiskers: min to max · diamond: mean (hollow and faded: fewer than 10 samples) · dashed line: exactly on schedule · left of it early, right of it late`);
+  const legend = h('p', { class: 'legend' }, `Bar: ${band} · whiskers: min to max · diamond: mean (hollow diamond, dashed bar and italic label: fewer than 10 samples) · dashed line: exactly on schedule · left of it early, right of it late`);
   if (p.pages > 1) {
     put(el, h('nav', { class: 'pager', 'aria-label': 'Stop pages' },
       p.page > 1 ? link(hashFor({ page: p.page - 1 }), '← Previous') : null,

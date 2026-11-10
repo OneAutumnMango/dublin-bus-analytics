@@ -26,8 +26,8 @@ export function controlsForm(initial, onApply) {
       Array.from({ length: 24 }, (_, i) => h('option', { value: String(i), selected: String(v) === String(i) }, String(i).padStart(2, '0'))));
     return { sel, node: h('label', { for: f(name) }, label, sel) };
   };
-  const hf = hour('hf', 'From hour (Dublin)', initial.hFrom);
-  const ht = hour('ht', 'To hour (inclusive)', initial.hTo);
+  const hf = hour('hf', 'From hour (Dublin time)', initial.hFrom);
+  const ht = hour('ht', 'To hour (Dublin time, inclusive)', initial.hTo);
   const days = DAYS.map((d, i) => ({ i, box: h('input', { type: 'checkbox', id: f(`wd${i}`), checked: initial.weekdays.includes(i) }) }));
   const confirmed = h('input', { type: 'checkbox', id: f('conf'), checked: initial.confirmed });
   const errors = h('div', { class: 'error', role: 'alert', hidden: true });
@@ -58,7 +58,7 @@ export function controlsForm(initial, onApply) {
     h('fieldset', {}, h('legend', {}, 'Percentile band of arrivals'), h('div', { class: 'fields' }, parts.pLo.node, parts.pHi.node)),
     h('fieldset', {}, h('legend', {}, 'On-time window'), h('div', { class: 'fields' }, parts.winLo.node, parts.winHi.node)),
     h('fieldset', {}, h('legend', {}, 'Date range (UTC)'), h('div', { class: 'fields' },
-      h('label', { for: f('since') }, 'From', since), h('label', { for: f('until') }, 'To', until)),
+      h('label', { for: f('since') }, 'From (UTC date)', since), h('label', { for: f('until') }, 'To (UTC date)', until)),
     h('span', { class: 'hint' }, `Blank start = last ${DEFAULT_DAYS} days`)),
     h('fieldset', {}, h('legend', {}, 'Weekdays (none = all)'), h('div', { class: 'fields' },
       days.map((d) => h('label', { class: 'inline', for: f(`wd${d.i}`) }, d.box, DAYS[d.i])))),

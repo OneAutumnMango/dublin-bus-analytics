@@ -2,10 +2,11 @@
 import { api, isAbort } from '../api.js';
 import { accumulationGeometry, heatmapGrid, renderAccumulation, renderHeatmap, renderRangeChart, rangeDomain, rangeGeometry, WEEKDAYS } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, notice, put } from '../dom.js';
-import { buildHash, fmtCount, fmtDelay, fmtNum, stopNameMap } from '../lib.js';
+import { buildHash, fmtCount, fmtDelay, fmtNum, plural, stopNameMap } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
+export const forecastQuery = ({ pct_lo, pct_hi, ...rest }) => rest;
 const BUCKETS = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5];
 
 export async function render(ctx) {
@@ -21,19 +22,20 @@ export async function render(ctx) {
   const [heat, acc, fc] = sections.map((el) => region(el, ctx.signal));
   const q = s.apiQuery, o = (signal) => ({ signal });
   await Promise.all([
-    heat.load((sig) => api.heatmap(route, q, o(sig)), (d, el) => drawHeat(route, d, el)),
+    heat.load((sig) => api.heatmap(route, q, o(sig)), (d, el) => drawHeat(route, d, el), { announce: (d) => `Route ${route} heatmap: loaded ${plural((d.cells || []).length, 'cell')}` }),
     acc.load(async (sig) => {
       const [d, stops] = await Promise.all([api.accumulation(route, q, o(sig)), api.stopsOf(route, o(sig)).catch((e) => { if (isAbort(e)) throw e; return null; })]);
       return { d, names: stopNameMap(stops?.directions) };
-    }, ({ d, names }, el) => drawAcc(route, d, names, el)),
-    fc.load((sig) => api.forecast(route, q, o(sig)), (d, el) => drawForecast(route, d, el)),
+    }, ({ d, names }, el) => drawAcc(route, d, names, el), { announce: ({ d }) => `Route ${route} delay accumulation: loaded ${plural(d.groups.length, 'group')}` }),
+    // the forecast endpoint always reports the 5th and 95th percentiles: the percentile setting does not apply
+    fc.load((sig) => api.forecast(route, forecastQuery(q), o(sig)), (d, el) => drawForecast(route, d, el), { announce: () => `Route ${route} forecast accuracy loaded` }),
   ]);
 }
 
-function legend() {
+function legend(maxAbs) {
   return h('div', { class: 'legend', 'aria-label': 'Colour legend' }, h('span', {}, 'early (blue)'),
     h('span', { class: 'swatches' }, BUCKETS.map((b) => h('span', { class: `swatch hm-b${b < 0 ? 'n' : ''}${Math.abs(b)}` }, b === 0 ? '0' : b < 0 ? '−' : '+'))),
-    h('span', {}, 'late (orange)'), h('span', { class: 'key' }, 'Dashed outline: no data · faded: fewer than 10 samples · each cell shows mean delay in minutes'));
+    h('span', {}, 'late (orange)'), h('span', { class: 'key' }, `Colour saturates at ±${fmtNum(maxAbs / 60, 1)} min · empty outline: no data · dashed outline and italic table row: fewer than 10 samples · each cell shows the mean delay in minutes`));
 }
 
 function drawHeat(route, d, el) {
@@ -43,10 +45,10 @@ function drawHeat(route, d, el) {
   const grid = heatmapGrid(cells);
   const svg = renderHeatmap(grid, { title: `Mean delay by weekday and hour, route ${route}`,
     desc: `${cells.length} weekday and hour combinations have data (n=${fmtCount(d.n)} arrivals). Colour runs from blue (early) through grey (on time) to orange (late); the cell text is the mean delay in minutes. Colour saturates at ${fmtNum(grid.maxAbs / 60, 1)} min.` });
-  const table = dataTable({ caption: 'Mean delay per weekday and hour (Dublin time)', rows: cells.filter((c) => c.n > 0), columns: [
+  const table = dataTable({ caption: 'Mean delay per weekday and hour (Dublin time; negative = early)', rows: cells.filter((c) => c.n > 0), columns: [
     { label: 'Weekday', get: (c) => WEEKDAYS[c.weekday] }, { label: 'Hour', get: (c) => `${String(c.hour).padStart(2, '0')}:00` },
     { label: 'n', num: true, get: (c) => fmtCount(c.n) }, { label: 'Mean delay', num: true, get: (c) => fmtDelay(c.mean_delay) }] });
-  put(el, figure({ title: 'Heatmap', svg, table, legend: legend() }), h('p', { class: 'hint' }, windowText(d)));
+  put(el, figure({ title: 'Heatmap', svg, table, legend: legend(grid.maxAbs), level: 'h3' }), h('p', { class: 'hint' }, windowText(d)));
 }
 
 function drawAcc(route, d, names, el) {
@@ -57,19 +59,19 @@ function drawAcc(route, d, names, el) {
     const name = g.fallback ? 'Unmatched trips' : `Direction: ${g.direction}`;
     const head = h('h3', {}, `${name} · ${fmtCount(g.n)} trips`);
     if (g.fallback || !g.stops.length) {
-      put(el, head, notice(`${fmtCount(g.n)} trips could not be matched to a single direction of the server’s stop list, so no per-stop numbers are shown for them.`, 'info'));
+      put(el, head, notice(`${plural(g.n, 'trip')} could not be matched to a single direction of the server’s stop list, so no per-stop numbers are shown for them.`, 'info'));
       continue;
     }
     const geo = accumulationGeometry(g.stops);
     const label = (x) => names.get(x.stop_id) || x.stop_id;
     const svg = renderAccumulation(geo, g.stops, { title: `Delay accumulation, ${name}`,
-      desc: `Cumulative mean delay over ${g.stops.length} stops, from ${fmtDelay(g.stops[0].mean_delay)} at the first to ${fmtDelay(g.stops[g.stops.length - 1].mean_delay)} at the last. Bars below show how much each segment adds (positive) or recovers (negative).` });
-    const table = dataTable({ caption: `${name}: mean delay per stop and change from the previous stop`, rows: g.stops, columns: [
+      desc: `Mean delay at each of ${g.stops.length} stops, from ${fmtDelay(g.stops[0].mean_delay)} at the first to ${fmtDelay(g.stops[g.stops.length - 1].mean_delay)} at the last. Bars below show the change from the previous stop, measured on trips seen at both: positive loses time, negative gains it.` });
+    const table = dataTable({ caption: `${name}: mean delay at each stop and change from the previous stop (negative = early)`, rows: g.stops, columns: [
       { label: '#', num: true, get: (x) => String(x.position + 1) }, { label: 'Stop', get: label },
       { label: 'n', num: true, get: (x) => fmtCount(x.n) }, { label: 'Mean delay', num: true, get: (x) => fmtDelay(x.mean_delay) },
       { label: 'Change from previous stop', num: true, get: (x) => fmtDelay(x.segment_delta) }, { label: 'n (segment)', num: true, get: (x) => fmtCount(x.n_delta) }] });
-    put(el, head, figure({ title: name, svg, table,
-      legend: h('p', { class: 'legend' }, `Line: cumulative mean delay (up = later) · bars: change from the previous stop (up = loses time, down = gains time). Segment changes use trips seen at both stops (up to n=${fmtCount(g.n_delta)}).`) }));
+    put(el, head, figure({ title: name, svg, table, level: 'h4',
+      legend: h('p', { class: 'legend' }, `Line: mean delay at each stop (up = later) · bars: change from the previous stop (up = loses time, down = gains time). The bars come from trips observed at both stops (up to ${plural(g.n_delta, 'trip')}), so they need not add up to the line, which averages different trips at each stop.`) }));
   }
 }
 
@@ -79,12 +81,13 @@ function drawForecast(route, d, el) {
   if (!hs.some((x) => x.n > 0)) { put(el, emptyState('No forecast data for this selection yet. Forecast accuracy needs arrivals with stored predictions.')); return; }
   const items = hs.map((x) => ({ label: `${x.horizon_min} min before`, n: x.n, low_n: x.low_n, mean: x.mean_error, min: null, max: null, lo: x.p_low, hi: x.p_high }));
   const geo = rangeGeometry(items, rangeDomain(items));
-  const svg = renderRangeChart(geo, { title: 'Prediction error by horizon', axisLabel: 'minutes: actual minus predicted',
-    desc: `Mean prediction error per horizon: ${hs.map((x) => `${x.horizon_min} minutes before: ${fmtDelay(x.mean_error)} (n=${x.n})`).join('; ')}. Positive means the bus came later than predicted.` });
+  const svg = renderRangeChart(geo, { title: 'Prediction error by horizon', axisLabel: 'minutes: actual minus predicted', zeroLabel: 'exactly as predicted',
+    desc: `Mean prediction error per horizon: ${hs.map((x) => `${x.horizon_min} minutes before: ${fmtDelay(x.mean_error)} (${plural(x.n, 'sample')})`).join('; ')}. Positive means the bus came later than predicted.` });
   const table = dataTable({ caption: 'Error = actual arrival minus the prediction shown that long before (positive = bus later than predicted)', rows: hs, columns: [
     { label: 'Horizon', get: (x) => `${x.horizon_min} min before` }, { label: 'n', num: true, get: (x) => fmtCount(x.n) },
     { label: 'Mean error', num: true, get: (x) => fmtDelay(x.mean_error) }, { label: 'Mean absolute error', num: true, get: (x) => fmtDelay(x.mae) },
-    { label: `${fmtNum(d.filters.pct_lo * 100, 0)}th to ${fmtNum(d.filters.pct_hi * 100, 0)}th percentile`, num: true, get: (x) => `${fmtDelay(x.p_low)} to ${fmtDelay(x.p_high)}` }] });
-  put(el, figure({ title: 'Forecast accuracy', svg, table,
-    legend: h('p', { class: 'legend' }, 'Diamond: mean error · bar: percentile band of errors · right of the dashed line the bus came later than predicted, left it came earlier. The table adds the mean absolute error (typical size of a miss).') }));
+    { label: '5th to 95th percentile (fixed)', num: true, get: (x) => `${fmtDelay(x.p_low)} to ${fmtDelay(x.p_high)}` }] });
+  put(el, figure({ title: 'Forecast accuracy', svg, table, level: 'h3',
+    legend: h('p', { class: 'legend' }, 'Diamond: mean error \u00b7 bar: 5th to 95th percentile of errors \u00b7 right of the dashed line the bus came later than predicted (positive = bus later than predicted), left of it earlier. The table adds the mean absolute error (typical size of a miss).') }),
+  h('p', { class: 'hint' }, 'The percentile setting in the filters does not apply to forecasts: this view always reports the 5th and 95th percentiles.'));
 }

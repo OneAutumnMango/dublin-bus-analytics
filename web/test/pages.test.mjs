@@ -410,3 +410,87 @@ test('router: stale responses from a superseded navigation are ignored; unknown 
   await settle();
   assert.match(text(main), /Page not found/);
 });
+
+import { dateTime } from '../js/lib.js';
+
+const levels = (root) => root.all((n) => /^h[1-6]$/.test(n.tag)).map((n) => Number(n.tag[1]));
+
+test('analytics: forecast is requested without percentile params and labelled as fixed 5th-95th', async () => {
+  const calls = installFetch({ 'GET /api/routes/15/heatmap': heat, 'GET /api/routes/15/forecast': fc,
+    'GET /api/routes/15/accumulation': acc([{ direction: 'out', fallback: false, n: 40, low_n: false, n_delta: 25, stops: stopRows }]) });
+  const ctx = ctxOf({ route: '15' }, { plo: '25', phi: '75' });
+  await (await import('../js/pages/analytics.js')).render(ctx);
+  const fcCall = calls.find((c) => c.url.includes('/forecast'));
+  assert.ok(!/pct_lo|pct_hi/.test(fcCall.url), fcCall.url);
+  assert.ok(calls.find((c) => c.url.includes('/heatmap')).url.includes('pct_lo=0.25'), 'other endpoints still get the percentiles');
+  const t = text(ctx.main);
+  assert.match(t, /5th to 95th percentile \(fixed\)/);
+  assert.match(t, /percentile setting in the filters does not apply to forecasts/);
+  assert.match(t, /positive = bus later than predicted/);
+  assert.match(t, /dashed line = exactly as predicted/);
+  assert.ok(!/25th/.test(t.split('How accurate')[1] || ''));
+});
+
+test('analytics: heading hierarchy has no skipped levels, one h1; regions are keyboard reachable', async () => {
+  installFetch({ 'GET /api/routes/15/heatmap': heat, 'GET /api/routes/15/forecast': fc,
+    'GET /api/routes/15/accumulation': acc([{ direction: 'out', fallback: false, n: 40, low_n: false, n_delta: 25, stops: stopRows }]) });
+  const ctx = ctxOf({ route: '15' });
+  await (await import('../js/pages/analytics.js')).render(ctx);
+  const lv = levels(ctx.main);
+  assert.equal(lv.filter((l) => l === 1).length, 1);
+  lv.forEach((l, i) => { if (i) assert.ok(l <= lv[i - 1] + 1, `heading jump in ${lv}`); });
+  const regions = ctx.main.all((n) => n.getAttribute?.('role') === 'region');
+  assert.ok(regions.length >= 6 && regions.every((r) => r.getAttribute('tabindex') === '0' && r.getAttribute('aria-label')));
+});
+
+test('analytics: heatmap weekdays run Mon..Sun top to bottom, hour labels, saturation shown, accumulation sign classes', async () => {
+  installFetch({ 'GET /api/routes/15/heatmap': { ...heat, cells: [{ weekday: 0, hour: 8, n: 100, low_n: false, mean_delay: 300 }, { weekday: 6, hour: 22, n: 50, low_n: false, mean_delay: -90 }] },
+    'GET /api/routes/15/forecast': fc, 'GET /api/routes/15/accumulation': acc([{ direction: 'out', fallback: false, n: 40, low_n: false, n_delta: 25, stops: [...stopRows, { ...stopRows[1], stop_id: 's3', position: 2, segment_delta: -60 }] }]) });
+  const ctx = ctxOf({ route: '15' });
+  await (await import('../js/pages/analytics.js')).render(ctx);
+  const hm = ctx.main.byTag('svg')[0];
+  const labels = hm.byTag('text').filter((t) => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/.test(t.textContent));
+  assert.deepEqual(labels.map((t) => t.textContent), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
+  const ys = labels.map((t) => Number(t.getAttribute('y')));
+  assert.deepEqual([...ys].sort((a, b) => a - b), ys);
+  assert.deepEqual(hm.byTag('text').filter((t) => /^\d\d$/.test(t.textContent)).map((t) => t.textContent), ['00', '02', '04', '06', '08', '10', '12', '14', '16', '18', '20', '22']);
+  const monCell = hm.all((n) => n.tag === 'g' && /^Mon 08:00/.test(n.byTag('title')[0]?.textContent || ''));
+  assert.equal(monCell.length, 1);
+  assert.match(monCell[0].byTag('title')[0].textContent, /mean \+5\.0 min, n=100/);
+  assert.match(text(ctx.main), /Colour saturates at ±5\.0 min/);
+  const bars = ctx.main.byTag('svg')[1].byTag('rect').filter((r) => /\bbar\b/.test(r.getAttribute('class')));
+  assert.deepEqual(bars.map((b) => /late/.test(b.getAttribute('class')) ? 'late' : /early/.test(b.getAttribute('class')) ? 'early' : '?'), ['late', 'early']);
+  assert.match(text(ctx.main), /need not add up to the line/);
+  assert.match(text(ctx.main), /Mean delay at each stop/);
+  assert.ok(!/Cumulative/.test(text(ctx.main)));
+});
+
+test('route page: truncated notice names the effective since; announces; errors use role=alert; on-time tile', async () => {
+  const since = 1_699_000_000;
+  installFetch({ 'GET /api/routes/15/summary': { route: '15', filters: filters({ truncated: true, since }), order_source: 'server', n: 40, low_n: false, stops: [stat('s1')] } });
+  const ctx = ctxOf({ route: '15' });
+  await (await routePage()).render(ctx);
+  assert.ok(text(ctx.main).includes(`Data before ${dateTime(since)}`), text(ctx.main));
+  assert.equal(globalThis.document.getElementById('status').textContent, 'Route 15: loaded 1 stop');
+  installFetch({ 'GET /api/routes/15/summary': fail(422, 'ci must satisfy') });
+  const c2 = ctxOf({ route: '15' });
+  await (await routePage()).render(c2);
+  const alerts = c2.main.all((n) => n.getAttribute?.('role') === 'alert' && /ci must satisfy/.test(n.textContent));
+  assert.equal(alerts.length, 1);
+  assert.match(globalThis.document.getElementById('status').textContent, /Error: Invalid request/);
+});
+
+test('stop page: on-time tile shows the on-time percentage, reliability its own tile; ordinals and level', async () => {
+  installFetch({ 'GET /api/stops/s1/stats': stopStats({ filters: filters({ ci: 0.999, pct_lo: 0.025, pct_hi: 0.975 }) }) });
+  const ctx = ctxOf({ route: '15', stop: 's1' });
+  await (await import('../js/pages/stop.js')).render(ctx);
+  const tiles = ctx.main.all((n) => /\btile\b/.test(n.getAttribute?.('class') || ''));
+  const on = tiles.find((t) => /^On time/.test(t.textContent));
+  assert.match(on.textContent, /85\.0%/);
+  assert.ok(!/72\.0/.test(on.textContent));
+  assert.match(tiles.find((t) => /^Reliability/.test(t.textContent)).textContent, /72\.0/);
+  const t = text(ctx.main);
+  assert.match(t, /99\.9% confidence interval/);
+  assert.match(t, /2\.5th to 97\.5th percentile/);
+  assert.ok(!/100%/.test(t));
+});

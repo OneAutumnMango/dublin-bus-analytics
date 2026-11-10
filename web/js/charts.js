@@ -193,7 +193,7 @@ export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs sch
       el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.top - 12, 'text-anchor': 'middle' }, t.label));
   }
   svg.append(el(doc, 'line', { class: 'zero-line', x1: geo.zeroX, x2: geo.zeroX, y1: geo.top - 6, y2: geo.height - 6 }),
-    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: 10 }, `← early    ${axisLabel}    late →  (dashed line = on schedule)`));
+    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: 10 }, `← early    ${axisLabel}    late →  (dashed line = ${zeroLabel})`));
   for (const r of geo.rows) {
     const g = el(doc, 'g', { class: `row${r.lowN ? ' low-n' : ''}${r.empty ? ' empty' : ''}` });
     const tip = r.empty ? `${r.label}: no data` : rangeTip(r);
