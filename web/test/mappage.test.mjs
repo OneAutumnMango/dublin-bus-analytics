@@ -127,3 +127,16 @@ test('darkenStyle recolours background and fills', async () => {
   assert.equal(m.paint['water.fill-color'], '#080b10');
   assert.ok(rec.maps.length >= 1);
 });
+
+test('map page: stops table is available as the accessible/fallback view', async () => {
+  stubMapLibre();
+  installFetch({ 'GET /api/map': mapResp });
+  const ctx = ctxOf();
+  const { render } = await import('../js/pages/map.js');
+  const done = render(ctx);
+  await settle(); globalThis.maplibregl.Map && 0; await done; await settle();
+  const t = ctx.main.textContent;
+  assert.match(t, /Stops as a table \(3\)/);
+  assert.match(t, /Beta \(7\)/);
+  assert.ok(!/NaN|undefined/.test(t));
+});

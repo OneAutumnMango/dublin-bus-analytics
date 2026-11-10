@@ -316,3 +316,4 @@ tbody tr:last-child td { border-bottom: 0; }
 .tr-presets { display: flex; flex-wrap: wrap; gap: var(--s1); }
 .tr-preset { min-height: 24px; padding: 0 var(--s2); font-size: var(--fs-xs); }
 .maplibregl-ctrl-attrib { font-size: 10px; }
+.map-table-host { margin-top: var(--s4); } .map-table summary { cursor: pointer; font-weight: 500; color: var(--muted); margin-bottom: var(--s2); }

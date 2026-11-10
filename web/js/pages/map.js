@@ -1,8 +1,8 @@
 // Map page: tracked routes on an OpenFreeMap basemap (like the Android app), stops coloured by mean delay
 // (Okabe-Ito blue early .. orange late), optional hex regions, route toggles, time-of-day window, stat-card tooltips.
 import { api, isAbort } from '../api.js';
-import { emptyState, errorBox, h, link, notice, put } from '../dom.js';
-import { fmtNum, makeLatest } from '../lib.js';
+import { dataTable, emptyState, errorBox, h, link, notice, put } from '../dom.js';
+import { fmtCount, fmtDelay, fmtNum, makeLatest } from '../lib.js';
 import { autoCap, BLUE, cellTipData, colourStops, hexCells, NEUTRAL, ORANGE, routeColour, routeLines, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
 import { getSettings } from '../settings.js';
 import { hideTip, showTip } from '../tooltip.js';
@@ -55,11 +55,12 @@ export async function render(ctx) {
   const s = setup(ctx);
   const panel = h('aside', { class: 'map-panel', 'aria-label': 'Map controls' });
   const status = h('div', { class: 'map-status', role: 'status' });
+  const tableHost = h('div', { class: 'map-table-host' });
   const canvas = h('div', { class: 'map-canvas', 'data-tip-host': '' });
   const legend = h('div', { class: 'map-legend' });
   put(main, h('h1', {}, 'Map'),
     h('p', { class: 'subtitle' }, 'Your tracked routes. Stops are coloured by how early (blue) or late (orange) buses arrive there.'),
-    h('div', { class: 'map-layout' }, panel, h('div', { class: 'map-wrap' }, canvas, legend)));
+    h('div', { class: 'map-layout' }, panel, h('div', { class: 'map-wrap' }, canvas, legend)), tableHost);
 
   const st = { data: null, visible: new Set(), regions: true, win: [0, MAX], cap: 300, map: null, ready: false, stopsById: new Map() };
   const latest = makeLatest(signal);
@@ -97,9 +98,21 @@ export async function render(ctx) {
   }
 
   const summary = h('p', { class: 'hint' });
+  const tableBox = h('details', { class: 'map-table' });
   function drawSummary(stops) {
     const withData = stops.filter((x) => x.n > 0).length;
+    drawTable(stops);
     summary.textContent = `${stops.length} stops on ${st.visible.size} route${st.visible.size === 1 ? '' : 's'}, ${withData} with data · ${windowLabel(...st.win)} · ${windowText(st.data)}`;
+  }
+
+  // Accessible alternative to the canvas, and the fallback when the map cannot load.
+  function drawTable(stops) {
+    const rows = [...stops].sort((a, b) => (b.mean_delay ?? -Infinity) - (a.mean_delay ?? -Infinity)).slice(0, 300);
+    tableBox.replaceChildren(h('summary', {}, `Stops as a table (${stops.length}${stops.length > 300 ? ', first 300 by mean delay' : ''})`),
+      dataTable({ caption: 'Mean delay per stop for the routes shown (negative = early)', rows, columns: [
+        { label: 'Stop', get: (x) => (x.code ? `${x.name || x.stop_id} (${x.code})` : x.name || x.stop_id) },
+        { label: 'Routes', get: (x) => x.routes.map((r) => r.route).join(', ') || '–' },
+        { label: 'n', num: true, get: (x) => fmtCount(x.n) }, { label: 'Mean delay', num: true, get: (x) => fmtDelay(x.mean_delay) }] }));
   }
 
   function drawPanel() {
@@ -143,7 +156,7 @@ export async function render(ctx) {
       st.visible = first ? new Set(routes) : new Set(routes.filter((r) => st.visible.has(r)));
       st.data = data;
       status.replaceChildren();
-      if (first) { drawPanel(); }
+      if (first) { drawPanel(); tableHost.replaceChildren(tableBox); }
       if (first && !routes.length) { canvas.replaceChildren(); put(canvas, emptyState('No tracked routes with known stops yet. Track a route in the sidebar and let the poller collect arrivals.')); return; }
       refresh();
       if (first) fit();
@@ -155,7 +168,8 @@ export async function render(ctx) {
 
   function wireTips(m) {
     m.on('mousemove', (e) => {
-      const hit = m.queryRenderedFeatures(e.point, { layers: ['stops', 'stops-nodata'] })[0];
+      const { x: px, y: py } = e.point, pad = 7; // padded hover box so small stops are easy to hit
+      const hit = m.queryRenderedFeatures([[px - pad, py - pad], [px + pad, py + pad]], { layers: ['stops', 'stops-nodata'] })[0];
       const cell = hit ? null : m.queryRenderedFeatures(e.point, { layers: ['regions'] })[0];
       m.getCanvas().style.cursor = hit || cell ? 'pointer' : '';
       const x = e.originalEvent?.clientX ?? 0, y = e.originalEvent?.clientY ?? 0;
