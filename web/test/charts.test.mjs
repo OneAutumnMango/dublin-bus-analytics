@@ -185,3 +185,25 @@ test('rangeTip omits missing min/max and shows the band', () => {
   assert.match(tip, /1 sample\b/);
   assert.match(tip, /Fewer than 10/);
 });
+
+test('areaPath: closed fill per contiguous run, empty when nothing to fill', async () => {
+  assert.equal(C.areaPath([{ x: 0, y: 10 }, { x: 10, y: 20 }], 100), 'M0 10L10 20V100H0Z');
+  assert.equal(C.areaPath([{ x: 0, y: null }, { x: 5, y: 3 }], 100), '');
+  assert.equal(C.areaPath([], 100), '');
+  const d = C.areaPath([{ x: 0, y: 1 }, { x: 1, y: null }, { x: 2, y: 2 }, { x: 3, y: 3 }], 9);
+  assert.equal((d.match(/M/g) || []).length, 1);
+  assert.ok(!/NaN/.test(d));
+});
+
+test('renderAccumulation draws an area fill with a gradient and no NaN attributes', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const stops = [0, 1, 2].map((i) => ({ stop_id: `s${i}`, position: i, mean_delay: 60 * i, segment_delta: 30, n: 20, n_delta: 20 }));
+  const svg = C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc });
+  assert.equal(svg.all((n) => n.getAttribute?.('class') === 'acc-area').length, 1);
+  assert.equal(svg.byTag('linearGradient').length, 1);
+  assert.ok(svg.all((n) => [...(n.attrs?.values?.() || [])].some((v) => /NaN/.test(v))).length === 0);
+  const one = [{ stop_id: 'a', position: 0, mean_delay: null, segment_delta: null, n: 0, n_delta: 0 }];
+  const svg1 = C.renderAccumulation(C.accumulationGeometry(one), one, { title: 't', desc: 'd', doc });
+  assert.equal(svg1.all((n) => n.getAttribute?.('class') === 'acc-area').length, 0);
+});

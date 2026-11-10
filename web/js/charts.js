@@ -94,6 +94,18 @@ export function linePath(points) {
   return d;
 }
 
+// Closed fill down to baseY for each contiguous run (null y breaks a run) of at least 2 points.
+export function areaPath(points, baseY) {
+  let d = '', run = [];
+  const flush = () => {
+    if (run.length >= 2) d += `M${r2(run[0].x)} ${r2(run[0].y)}${run.slice(1).map((p) => `L${r2(p.x)} ${r2(p.y)}`).join('')}V${r2(baseY)}H${r2(run[0].x)}Z`;
+    run = [];
+  };
+  for (const p of points) { if (p && isNum(p.x) && isNum(p.y)) run.push(p); else flush(); }
+  flush();
+  return d;
+}
+
 // stops: API accumulation stops [{stop_id, position, mean_delay, segment_delta, n, n_delta, ...}], in route order.
 // x follows the route POSITION (not the list index) and the line breaks where positions are skipped or data is missing.
 export function accumulationGeometry(stops, o = {}) {
@@ -258,6 +270,16 @@ export function renderAccumulation(geo, stops, { title, desc, doc = globalThis.d
     el(doc, 'line', { class: 'zero-line', x1: geo.x0, x2: geo.x1, y1: geo.zeroB, y2: geo.zeroB }),
     el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelA.top - 3 }, 'Mean delay at each stop (min, up = later)'),
     el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.panelB.top - 6 }, 'Change from previous stop (min): above zero loses time, below gains'));
+  const gid = `${svg.getAttribute('aria-labelledby').split(' ')[0].slice(0, -1)}g`;
+  const gaps = [];
+  geo.pts.forEach((p, i) => { if (i && p.pos - geo.pts[i - 1].pos !== 1) gaps.push({ x: p.x, y: null }); gaps.push(p); });
+  const area = areaPath(gaps, geo.panelA.top + geo.panelA.h);
+  if (area) {
+    const grad = el(doc, 'linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+    grad.append(el(doc, 'stop', { class: 'acc-stop-a', offset: '0%' }), el(doc, 'stop', { class: 'acc-stop-b', offset: '100%' }));
+    svg.append(el(doc, 'defs', {}), el(doc, 'path', { class: 'acc-area', d: area, fill: `url(#${gid})` }));
+    svg.children[svg.children.length - 2].append(grad);
+  }
   svg.append(el(doc, 'path', { class: 'acc-line', d: geo.path, fill: 'none' }));
   stops.forEach((s, i) => {
     const p = geo.pts[i], b = geo.bars[i];
