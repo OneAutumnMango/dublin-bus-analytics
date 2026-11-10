@@ -1804,7 +1804,7 @@ def test_trip_series_same_trip_two_service_dates_and_filters(env):
 
 @pytest.mark.filterwarnings("error::ResourceWarning")
 def test_trip_series_reads_gzipped_month(env, tmp_private):
-    from app.backup import compact_closed_months
+    from app.backup.backup import compact_closed_months
     seed_countdown(env)
     assert compact_closed_months(env.s.data_dir, S + 90 * 86400)
     assert not list(env.s.data_dir.glob("samples-*.db")) and list(env.s.data_dir.glob("samples-*.db.gz"))
@@ -2102,7 +2102,7 @@ def test_series_out_of_range_db_values_do_not_crash(env):
 
 def gz_two_months(env):
     """Oct 2025 gzipped (closed), Nov 2025 plain; returns (oct seq, nov seq)."""
-    from app.backup import compact_closed_months
+    from app.backup.backup import compact_closed_months
     o, n = _utc(2025, 10, 10, 8), _utc(2025, 11, 10, 8)
     for q, trip in ((o, "G"), (n, "P")):
         env.add(trip=trip, stop="s1", scheduled=q, delay=0)

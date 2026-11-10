@@ -5,7 +5,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from app import backup
+from app.backup import backup
 
 TZ = ZoneInfo("Europe/Dublin")
 UTC = timezone.utc

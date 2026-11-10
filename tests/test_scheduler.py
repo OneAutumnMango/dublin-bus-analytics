@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from hypothesis import given, settings as hsettings, strategies as st
 
-from app.scheduler import next_run
+from app.backup.scheduler import next_run
 
 DUB = ZoneInfo("Europe/Dublin")
 UTC = timezone.utc
@@ -110,11 +110,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app import backup
+from app.backup import backup
 from app.core.config import Settings
 from app.core.db import open_meta, open_samples
 from app.main import create_app
-from app.scheduler import BackupScheduler
+from app.backup.scheduler import BackupScheduler
 
 
 class Stop(BaseException):  # BaseException: must escape the loop's `except Exception`
@@ -511,7 +511,7 @@ async def test_loop_survives_sleep_fn_failure_once(tmp_path):
 
 
 async def test_loop_survives_next_run_failure_once(tmp_path, monkeypatch):
-    import app.scheduler as m
+    import app.backup.scheduler as m
     spy = Spy()
     real, first = m.next_run, [True]
 

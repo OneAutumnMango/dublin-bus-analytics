@@ -4,7 +4,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.backup import _stamp, list_backups, newest_backup, snapshot
+from app.backup.backup import _stamp, list_backups, newest_backup, snapshot
 
 router = APIRouter()
 MIN_BACKUP_INTERVAL_S = 60

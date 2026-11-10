@@ -18,8 +18,8 @@ import pytest
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings as hset, strategies as st
 
-from app import backup
-from app.backup import compact_closed_months, list_backups, snapshot
+from app.backup import backup
+from app.backup.backup import compact_closed_months, list_backups, snapshot
 from app.core.config import Settings
 from app.core.db import open_meta, open_samples, open_samples_readonly, samples_path
 from app.main import create_app

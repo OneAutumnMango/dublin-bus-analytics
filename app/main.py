@@ -6,10 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import router as api_router
-from app.backup_api import router as backup_router
+from app.backup.api import router as backup_router
 from app.core.config import Settings
 from app.collect.poller import LazyTracker, Poller, seq_lookup
-from app.scheduler import BackupScheduler
+from app.backup.scheduler import BackupScheduler
 from app.collect.serverclient import ServerClient
 from app.api.static import static_app
 
