@@ -62,6 +62,7 @@ export function makeApi(fetchFn = globalThis.fetch) {
     track: (r, o) => request(`/api/routes/tracked/${enc(r)}`, { ...o, method: 'PUT', fetchFn }),
     untrack: (r, o) => request(`/api/routes/tracked/${enc(r)}`, { ...o, method: 'DELETE', fetchFn }),
     map: (q, o) => get(`/api/map${qs(q)}`, o),
+    mapShapes: (o) => get('/api/map/shapes', o),
     stopsOf: (r, o) => get(`/api/routes/${enc(r)}/stops`, o),
     summary: (r, q, o) => get(`/api/routes/${enc(r)}/summary${qs(q)}`, o),
     heatmap: (r, q, o) => get(`/api/routes/${enc(r)}/heatmap${qs(q)}`, o),

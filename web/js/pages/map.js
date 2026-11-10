@@ -3,7 +3,7 @@
 import { api, isAbort } from '../api.js';
 import { dataTable, emptyState, errorBox, h, link, notice, put } from '../dom.js';
 import { fmtCount, fmtDelay, fmtNum, makeLatest } from '../lib.js';
-import { autoCap, BLUE, cellTipData, colourStops, hexCells, NEUTRAL, ORANGE, routeColour, routeLines, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
+import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
 import { getSettings } from '../settings.js';
 import { hideTip, showTip } from '../tooltip.js';
 import { timeRangeSlider, MAX } from '../slider.js';
@@ -35,11 +35,22 @@ const isDark = () => {
 };
 
 // The positron style is light; for the dark theme recolour its background, fills, lines and labels.
+// Light theme: buildings keep their fill but lose the hard outline that gets harsh when zoomed in.
+export function softenBuildings(map) {
+  for (const l of map.getStyle()?.layers || []) {
+    if (l.type === 'fill' && /building/.test(l.id)) { try { map.setPaintProperty(l.id, 'fill-outline-color', 'rgba(0,0,0,0)'); } catch { /* none */ } }
+  }
+}
+
 export function darkenStyle(map) {
   for (const l of map.getStyle()?.layers || []) {
     try {
       if (l.type === 'background') map.setPaintProperty(l.id, 'background-color', '#0d1117');
-      else if (l.type === 'fill') map.setPaintProperty(l.id, 'fill-color', /water/.test(l.id) ? '#080b10' : '#151c26');
+      else if (l.type === 'fill') {
+        const c = /water/.test(l.id) ? '#080b10' : /building/.test(l.id) ? '#1a222d' : '#151c26';
+        map.setPaintProperty(l.id, 'fill-color', c);
+        map.setPaintProperty(l.id, 'fill-outline-color', c); // the light style's pale outlines would glare on dark fills (buildings)
+      }
       else if (l.type === 'line') map.setPaintProperty(l.id, 'line-color', '#27313f');
       else if (l.type === 'symbol') { map.setPaintProperty(l.id, 'text-color', '#8a97a8'); map.setPaintProperty(l.id, 'text-halo-color', '#0d1117'); }
       else if (l.type === 'raster') map.setPaintProperty(l.id, 'raster-opacity', 0.08);
@@ -62,7 +73,7 @@ export async function render(ctx) {
     h('p', { class: 'subtitle' }, 'Your tracked routes. Stops are coloured by how early (blue) or late (orange) buses arrive there.'),
     h('div', { class: 'map-layout' }, panel, h('div', { class: 'map-wrap' }, canvas, legend)), tableHost);
 
-  const st = { data: null, visible: new Set(), regions: true, stops: true, win: [0, MAX], cap: 300, map: null, ready: false, stopsById: new Map() };
+  const st = { data: null, visible: new Set(), areas: 'hex', shapes: {}, stops: true, win: [0, MAX], cap: 300, map: null, ready: false, stopsById: new Map() };
   const latest = makeLatest(signal);
   const query = () => ({ ...s.apiQuery, ...(st.win[0] === 0 && st.win[1] === MAX ? {} : { minutes_from: st.win[0], minutes_to: st.win[1] }) });
 
@@ -91,10 +102,11 @@ export async function render(ctx) {
     const m = st.map;
     if (!m || !st.ready) return;
     m.getSource('stops').setData(stopFeatures(stops));
-    m.getSource('routes').setData(routeLines(st.data, st.visible));
-    m.getSource('regions').setData(hexCells(stops));
+    m.getSource('routes').setData(routeLines(st.data, st.visible, st.shapes));
+    m.getSource('regions').setData(areaCells(st.areas, stops));
+    m.setPaintProperty('regions', 'fill-opacity', st.areas === 'smooth' ? ['*', 0.6, ['coalesce', ['get', 'support'], 1]] : st.areas === 'circles' ? 0.3 : 0.4);
     for (const id of ['stops', 'regions']) m.setPaintProperty(id, id === 'stops' ? 'circle-color' : 'fill-color', colourExpr(st.cap));
-    m.setLayoutProperty('regions', 'visibility', st.regions ? 'visible' : 'none');
+    m.setLayoutProperty('regions', 'visibility', st.areas === 'off' ? 'none' : 'visible');
     for (const id of ['stops', 'stops-nodata']) m.setLayoutProperty(id, 'visibility', st.stops ? 'visible' : 'none');
   }
 
@@ -135,7 +147,8 @@ export async function render(ctx) {
         h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => fit() } }, 'Fit to routes')),
       h('h2', {}, 'Layers'),
       h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.stops, on: { change: (e) => { st.stops = e.target.checked; refresh(); } } }), 'Show stops'),
-      h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.regions, on: { change: (e) => { st.regions = e.target.checked; refresh(); } } }), 'Colour areas where nearby stops run early or late'),
+      h('label', { for: 'areas' }, 'Colour areas where nearby stops run early or late',
+        h('select', { id: 'areas', on: { change: (e) => { st.areas = e.target.value; refresh(); } } }, AREA_MODES.map(([v, l]) => h('option', { value: v, selected: v === st.areas }, l)))),
       h('h2', {}, 'Time of day'), slider.el, status, summary,
       h('p', { class: 'hint attribution' }, 'Basemap loaded from tiles.openfreemap.org · © OpenMapTiles · data © OpenStreetMap contributors. Date range follows the default window; change it on a route’s analytics page.'));
     if (st.data && !routes.length) put(panel, st.data.unavailable?.length ? notice(`The bus data server could not list stops for ${st.data.unavailable.join(', ')}.`) : null);
@@ -152,7 +165,9 @@ export async function render(ctx) {
     const tok = latest.start();
     status.replaceChildren(h('span', { class: 'muted' }, 'Loading…'));
     try {
-      const data = await api.map(query(), { signal: tok.signal });
+      const [data, sh] = await Promise.all([api.map(query(), { signal: tok.signal }),
+        first ? api.mapShapes({ signal: tok.signal }).catch((e) => { if (isAbort(e)) throw e; return null; }) : null]);
+      if (first) st.shapes = sh?.shapes || {}; // no shapes: lines through the stops instead
       if (!tok.isCurrent()) return;
       const routes = data.routes.map((r) => r.route);
       st.visible = first ? new Set(routes) : new Set(routes.filter((r) => st.visible.has(r)));
@@ -190,7 +205,7 @@ export async function render(ctx) {
     st.map = m;
     m.addControl(new lib.NavigationControl({ showCompass: false }), 'top-right');
     m.on('load', () => {
-      if (dark) darkenStyle(m);
+      if (dark) darkenStyle(m); else softenBuildings(m);
       m.addSource('regions', { type: 'geojson', data: empty }); m.addSource('routes', { type: 'geojson', data: empty }); m.addSource('stops', { type: 'geojson', data: empty });
       m.addLayer({ id: 'regions', type: 'fill', source: 'regions', paint: { 'fill-color': colourExpr(st.cap), 'fill-opacity': dark ? 0.42 : 0.38, 'fill-outline-color': 'rgba(0,0,0,0)' } });
       m.addLayer({ id: 'routes', type: 'line', source: 'routes', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'colour'], 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.2, 15, 3], 'line-opacity': 0.75 } });
