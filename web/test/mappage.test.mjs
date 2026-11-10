@@ -13,9 +13,12 @@ function stubMapLibre() {
     on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
     fire(ev, e) { for (const f of this.handlers[ev] || []) f(e); }
     addControl() { rec.controls++; }
-    addSource(id, o) { this.sources[id] = { data: o.data, setData: (d) => { this.sources[id].data = d; } }; }
+    addSource(id, o) { this.sources[id] = { data: o.data, spec: o, setData: (d) => { this.sources[id].data = d; } }; }
     getSource(id) { return this.sources[id]; }
-    addLayer(l) { this.layers[l.id] = l; }
+    getLayer(id) { return this.layers[id]; }
+    removeLayer(id) { delete this.layers[id]; }
+    removeSource(id) { delete this.sources[id]; }
+    addLayer(l, before) { this.layers[l.id] = l; if (before) this.layers[l.id].before = before; }
     setLayoutProperty(id, k, v) { this.layout[`${id}.${k}`] = v; }
     setPaintProperty(id, k, v) { this.paint[`${id}.${k}`] = v; }
     getStyle() { return { layers: [{ id: 'bg', type: 'background' }, { id: 'water', type: 'fill' }] }; }
@@ -40,6 +43,7 @@ const names = (g) => g.features.map((f) => f.properties.name ?? f.properties.rou
 
 test('map page: layers, sources, legend, route toggles, regions toggle', async () => {
   const rec = stubMapLibre();
+  (await import('../js/pages/map.js')).hooks.makeCanvas = (r) => ({ width: r.width, height: r.height });
   const calls = installFetch({ 'GET /api/map': mapResp, 'GET /api/map/shapes': { shapes: { 15: { out: [[-6.2, 53.3], [-6.201, 53.3004], [-6.2005, 53.3005]] } } } });
   const ctx = ctxOf();
   const { render } = await import('../js/pages/map.js');
@@ -79,10 +83,15 @@ test('map page: layers, sources, legend, route toggles, regions toggle', async (
   areas.value = 'circles'; areas.dispatch('change', { target: areas });
   assert.equal(map.sources.regions.data.features.length, 2);
   areas.value = 'smooth'; areas.dispatch('change', { target: areas });
-  assert.ok(map.sources.regions.data.features.length > 20);
-  assert.ok(Array.isArray(map.paint['regions.fill-opacity']), 'smooth mode fades with support');
+  assert.equal(map.sources.regions.data.features.length, 0, 'smooth mode draws a raster, not polygons');
+  assert.equal(map.sources.smooth.spec.type, 'canvas');
+  assert.equal(map.sources.smooth.spec.coordinates.length, 4);
+  assert.equal(map.layers.smooth.type, 'raster');
+  assert.equal(map.layers.smooth.before, 'routes', 'under the route lines');
+  assert.equal(map.layers.smooth.paint['raster-resampling'], 'linear');
   areas.value = 'off'; areas.dispatch('change', { target: areas });
   assert.equal(map.layout['regions.visibility'], 'none');
+  assert.equal(map.layers.smooth, undefined, 'raster removed when leaving smooth mode');
   areas.value = 'hex'; areas.dispatch('change', { target: areas });
   assert.equal(map.layout['regions.visibility'], 'visible');
   ctx.main.byText('button', /^None$/)[0].dispatch('click');

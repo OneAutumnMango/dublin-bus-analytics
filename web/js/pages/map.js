@@ -3,7 +3,7 @@
 import { api, isAbort } from '../api.js';
 import { dataTable, emptyState, errorBox, h, link, notice, put } from '../dom.js';
 import { fmtCount, fmtDelay, fmtNum, makeLatest } from '../lib.js';
-import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
+import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, smoothRaster, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
 import { getSettings } from '../settings.js';
 import { hideTip, showTip } from '../tooltip.js';
 import { timeRangeSlider, MAX } from '../slider.js';
@@ -58,6 +58,19 @@ export function darkenStyle(map) {
   }
 }
 
+// Seams for tests (no canvas in node): turn a smoothRaster into a canvas element for MapLibre's canvas source, which draws
+// from the element directly (no fetch, so the page CSP needs nothing extra).
+export const hooks = {
+  makeCanvas(r) {
+    const c = globalThis.document.createElement('canvas');
+    c.width = r.width; c.height = r.height;
+    const g = c.getContext?.('2d');
+    if (!g) return null;
+    g.putImageData(new globalThis.ImageData(r.data, r.width, r.height), 0, 0);
+    return c;
+  },
+};
+
 const colourExpr = (cap) => ['interpolate', ['linear'], ['get', 'delay'], ...colourStops(cap).flat()];
 
 export async function render(ctx) {
@@ -104,10 +117,25 @@ export async function render(ctx) {
     m.getSource('stops').setData(stopFeatures(stops));
     m.getSource('routes').setData(routeLines(st.data, st.visible, st.shapes));
     m.getSource('regions').setData(areaCells(st.areas, stops));
-    m.setPaintProperty('regions', 'fill-opacity', st.areas === 'smooth' ? ['*', 0.6, ['coalesce', ['get', 'support'], 1]] : st.areas === 'circles' ? 0.3 : 0.4);
+    drawSmooth(stops);
+    m.setPaintProperty('regions', 'fill-opacity', st.areas === 'circles' ? 0.3 : 0.4);
     for (const id of ['stops', 'regions']) m.setPaintProperty(id, id === 'stops' ? 'circle-color' : 'fill-color', colourExpr(st.cap));
-    m.setLayoutProperty('regions', 'visibility', st.areas === 'off' ? 'none' : 'visible');
+    m.setLayoutProperty('regions', 'visibility', st.areas === 'hex' || st.areas === 'circles' ? 'visible' : 'none');
     for (const id of ['stops', 'stops-nodata']) m.setLayoutProperty(id, 'visibility', st.stops ? 'visible' : 'none');
+  }
+
+  // Smooth mode: a continuous colour raster under the route lines; rebuilt on each change (cheap, and a fresh canvas source
+  // always draws its first frame).
+  function drawSmooth(stops) {
+    const m = st.map;
+    if (m.getLayer('smooth')) m.removeLayer('smooth');
+    if (m.getSource('smooth')) m.removeSource('smooth');
+    if (st.areas !== 'smooth') return;
+    const r = smoothRaster(stops, { cap: st.cap });
+    const canvas = r && hooks.makeCanvas(r);
+    if (!canvas) return;
+    m.addSource('smooth', { type: 'canvas', canvas, coordinates: r.coordinates, animate: false });
+    m.addLayer({ id: 'smooth', type: 'raster', source: 'smooth', paint: { 'raster-opacity': 1, 'raster-resampling': 'linear', 'raster-fade-duration': 0 } }, 'routes');
   }
 
   const summary = h('p', { class: 'hint' });
