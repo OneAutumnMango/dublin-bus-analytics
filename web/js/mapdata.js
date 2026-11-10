@@ -98,45 +98,50 @@ export function circleCells(stops, { radiusM = 300 } = {}) {
   }));
 }
 
-// Regions, mode "smooth": a fine grid (cellM) of distance-weighted mean delay (Gaussian, reach radiusM) that fades out
-// away from stops (`support` 0..1 drives the opacity). Grid is aligned to the fixed origin, so it never shifts.
-export function smoothCells(stops, { cellM = 120, radiusM = 450, minSupport = 0.06, maxCells = 40000 } = {}) {
+// Regions, mode "smooth": a continuous colour field. Every stop adds a Gaussian bump (reach radiusM, weight sqrt(n)); each
+// pixel's colour is the weighted mean delay and its opacity fades with the summed bump height, so the surface melts into
+// the basemap away from stops. Returned as an RGBA raster (pxM metres per pixel) for the map to stretch with linear
+// resampling: no cell edges at any zoom. coordinates = [NW, NE, SE, SW] as [lon, lat].
+export function smoothRaster(stops, { pxM = 50, radiusM = 450, maxPx = 1100, cap = 300, alpha = 0.7 } = {}) {
   const used = withData(stops);
-  if (!used.length) return fc([]);
-  let cell = cellM;
-  const build = () => {
-    const sigma = radiusM / 2, acc = new Map(), reach = Math.ceil(radiusM / cell);
-    for (const s of used) {
-      const [x, y] = toXY(s), ci = Math.floor(x / cell), cj = Math.floor(y / cell), w0 = Math.sqrt(s.n);
-      for (let i = ci - reach; i <= ci + reach; i++) {
-        for (let j = cj - reach; j <= cj + reach; j++) {
-          const dx = (i + 0.5) * cell - x, dy = (j + 0.5) * cell - y, d2 = dx * dx + dy * dy;
-          if (d2 > radiusM * radiusM) continue;
-          const k = Math.exp(-d2 / (sigma * sigma)), key = `${i},${j}`;
-          const a = acc.get(key) || { i, j, w: 0, wd: 0, k: 0 };
-          a.w += w0 * k; a.wd += w0 * k * s.mean_delay; a.k += k;
-          acc.set(key, a);
-        }
+  if (!used.length) return null;
+  const pts = used.map(toXY);
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  let px = pxM, x0, y1, w, h;
+  const dims = () => {
+    x0 = Math.floor((Math.min(...xs) - radiusM) / px) * px; y1 = Math.ceil((Math.max(...ys) + radiusM) / px) * px;
+    w = Math.ceil((Math.max(...xs) + radiusM - x0) / px) + 1; h = Math.ceil((y1 - (Math.min(...ys) - radiusM)) / px) + 1;
+  };
+  dims();
+  while ((w > maxPx || h > maxPx) && px < 4000) { px *= 1.5; dims(); } // big networks: coarser pixels, same smooth look
+  const W = new Float32Array(w * h), WD = new Float32Array(w * h), K = new Float32Array(w * h);
+  const sigma2 = (radiusM / 2) ** 2, reach = Math.ceil(radiusM / px);
+  used.forEach((s, n) => {
+    const [x, y] = pts[n], ci = Math.floor((x - x0) / px), cj = Math.floor((y1 - y) / px), w0 = Math.sqrt(s.n);
+    for (let j = Math.max(0, cj - reach); j <= Math.min(h - 1, cj + reach); j++) {
+      for (let i = Math.max(0, ci - reach); i <= Math.min(w - 1, ci + reach); i++) {
+        const dx = x0 + (i + 0.5) * px - x, dy = y1 - (j + 0.5) * px - y, d2 = dx * dx + dy * dy;
+        if (d2 > radiusM * radiusM) continue;
+        const k = Math.exp(-d2 / sigma2), idx = j * w + i;
+        W[idx] += w0 * k; WD[idx] += w0 * k * s.mean_delay; K[idx] += k;
       }
     }
-    return acc;
-  };
-  let acc = build();
-  while (acc.size > maxCells && cell < 2000) { cell *= 2; acc = build(); } // keep the layer light for very large networks
-  const features = [];
-  for (const a of acc.values()) {
-    const support = Math.min(1, a.k);
-    if (support < minSupport || !(a.w > 0)) continue;
-    const x0 = a.i * cell, y0 = a.j * cell;
-    features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[toLL(x0, y0), toLL(x0 + cell, y0), toLL(x0 + cell, y0 + cell), toLL(x0, y0 + cell), toLL(x0, y0)]] },
-      properties: { delay: a.wd / a.w, support: Math.round(support * 100) / 100, n: 0, stops: 0 } });
+  });
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const support = Math.min(1, K[i]);
+    if (support < 0.02 || !(W[i] > 0)) continue;
+    const c = rgb(delayColour(WD[i] / W[i], cap));
+    data.set([c[0], c[1], c[2], Math.round(255 * alpha * support)], i * 4);
   }
-  return fc(features);
+  const x1 = x0 + w * px, y0 = y1 - h * px;
+  return { width: w, height: h, data, pxM: px, coordinates: [toLL(x0, y1), toLL(x1, y1), toLL(x1, y0), toLL(x0, y0)] };
 }
 
 export const AREA_MODES = [['off', 'Off'], ['hex', 'Hex grid'], ['circles', 'Circles'], ['smooth', 'Smooth gradient']];
+// GeoJSON regions for the vector modes; 'smooth' is a raster (smoothRaster) and 'off' draws nothing.
 export function areaCells(mode, stops) {
-  return mode === 'hex' ? hexCells(stops) : mode === 'circles' ? circleCells(stops) : mode === 'smooth' ? smoothCells(stops) : fc([]);
+  return mode === 'hex' ? hexCells(stops) : mode === 'circles' ? circleCells(stops) : fc([]);
 }
 
 const head = (sec) => (isNum(sec) ? { sec } : null);

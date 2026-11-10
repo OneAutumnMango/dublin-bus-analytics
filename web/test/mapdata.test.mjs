@@ -94,30 +94,42 @@ test('regions never move when other stops come and go (fixed projection origin)'
   assert.equal(M.hexCells(near).features.length, 1);
 });
 
-test('circleCells: one disc per stop with data; smoothCells: bounded values, fading support, stable grid', () => {
+test('circleCells: one disc per stop with data', () => {
   const stops = M.visibleStops(data(), new Set(['15', '46A']));
   const circles = M.circleCells(stops);
   assert.equal(circles.features.length, 2);
   assert.equal(circles.features[0].geometry.coordinates[0].length, 25);
   noBad(circles);
-  const sm = M.smoothCells(stops);
-  assert.ok(sm.features.length > 20);
-  for (const f of sm.features) {
-    assert.ok(f.properties.delay >= 90 - 1e-6 && f.properties.delay <= 225 + 1e-6, 'a weighted mean stays between the stop means');
-    assert.ok(f.properties.support > 0 && f.properties.support <= 1);
-    assert.equal(f.geometry.coordinates[0].length, 5);
-  }
-  noBad(sm);
-  const key = (g) => g.features.map((f) => JSON.stringify(f.geometry)).sort()[0];
-  const moved = M.smoothCells([...stops, { stop_id: 'z', lat: 53.5, lon: -6.0, n: 80, mean_delay: -90, routes: [] }]);
-  const cells = new Set(sm.features.map((f) => JSON.stringify(f.geometry)));
-  assert.ok(moved.features.filter((f) => cells.has(JSON.stringify(f.geometry))).length > 0, 'grid cells keep their positions');
-  assert.ok(key(sm));
-  assert.equal(M.smoothCells([]).features.length, 0);
-  assert.ok(M.smoothCells(stops, { maxCells: 30 }).features.length <= 300, 'coarsens instead of exploding');
   assert.equal(M.areaCells('off', stops).features.length, 0);
+  assert.equal(M.areaCells('smooth', stops).features.length, 0, 'smooth is a raster, not GeoJSON');
   assert.equal(M.areaCells('hex', stops).features.length, 1);
   assert.deepEqual(M.AREA_MODES.map((m) => m[0]), ['off', 'hex', 'circles', 'smooth']);
+});
+
+test('smoothRaster: continuous field, colour from weighted mean, fades away from stops, bounded size', () => {
+  const stops = [{ stop_id: 'a', lat: 53.3, lon: -6.2, n: 100, mean_delay: -300 }, { stop_id: 'b', lat: 53.304, lon: -6.2, n: 100, mean_delay: 300 }];
+  const r = M.smoothRaster(stops, { cap: 300 });
+  assert.equal(r.data.length, r.width * r.height * 4);
+  assert.equal(r.coordinates.length, 4);
+  const px = (lon, lat) => {
+    const [[w, n], [e], [, s]] = r.coordinates;
+    const i = Math.floor(((lon - w) / (e - w)) * r.width), j = Math.floor(((n - lat) / (n - s)) * r.height);
+    const o = (j * r.width + i) * 4; return [...r.data.slice(o, o + 4)];
+  };
+  const early = px(-6.2, 53.3), late = px(-6.2, 53.304), mid = px(-6.2, 53.302);
+  assert.ok(early[2] > early[0] && early[3] > 100, 'blue-ish and opaque at the early stop');
+  assert.ok(late[0] > late[2] && late[3] > 100, 'orange-ish and opaque at the late stop');
+  assert.ok(mid[3] > 0 && Math.abs(mid[0] - 0xc9) < 40, 'between them the colour passes through neutral (no hard edge)');
+  assert.equal(r.data[3], 0, 'corner pixels are transparent');
+  // smoothness: neighbouring pixels along a row never jump more than a small amount
+  let worst = 0;
+  const row = Math.floor(r.height / 2);
+  for (let i = 1; i < r.width; i++) worst = Math.max(worst, Math.abs(r.data[(row * r.width + i) * 4 + 3] - r.data[(row * r.width + i - 1) * 4 + 3]));
+  assert.ok(worst < 40, `opacity steps are gentle (${worst})`);
+  assert.equal(M.smoothRaster([]), null);
+  const wide = M.smoothRaster([...stops, { stop_id: 'z', lat: 53.6, lon: -5.8, n: 50, mean_delay: 0 }], { maxPx: 300 });
+  assert.ok(wide.width <= 300 && wide.height <= 300 && wide.pxM > 50, 'coarsens instead of exploding');
+  noBad(r.coordinates);
 });
 
 test('routeLines uses real shapes when given, stop lines otherwise', () => {
