@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir . && useradd -r -u 10001 app && mkdir /data && ch
 COPY web/index.html ./web/index.html
 COPY web/css ./web/css
 COPY web/fonts ./web/fonts
+COPY web/vendor ./web/vendor
 COPY web/js ./web/js
 ENV WEB_DIR=/srv/web
 USER app

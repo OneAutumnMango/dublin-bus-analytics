@@ -12,7 +12,9 @@ from app.core.config import Settings
 from app.main import create_app
 
 WEB = Path(__file__).resolve().parent.parent.parent / "web"
-CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+CSP = ("default-src 'self'; img-src 'self' data: blob: https://tiles.openfreemap.org; "
+       "connect-src 'self' https://tiles.openfreemap.org; worker-src 'self' blob:; "
+       "style-src 'self'; script-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 

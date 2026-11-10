@@ -9,7 +9,11 @@ from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
 HEADERS = {
-    "Content-Security-Policy": ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    # The map page loads the OpenFreeMap basemap (style, vector tiles, sprites, glyphs) from one host; MapLibre
+    # runs its tile workers from a blob: URL. Nothing else is allowed off-site.
+    "Content-Security-Policy": ("default-src 'self'; img-src 'self' data: blob: https://tiles.openfreemap.org; "
+                                "connect-src 'self' https://tiles.openfreemap.org; worker-src 'self' blob:; "
+                                "style-src 'self'; script-src 'self'; "
                                 "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
