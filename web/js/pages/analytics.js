@@ -1,4 +1,5 @@
 // Analytics view: weekday x hour heatmap, delay accumulation along the route, forecast accuracy by horizon.
+import { getSettings } from '../settings.js';
 import { forecastTipData } from '../tipdata.js';
 import { api, isAbort } from '../api.js';
 import { accumulationGeometry, heatmapGrid, renderAccumulation, renderHeatmap, renderRangeChart, rangeDomain, rangeGeometry, WEEKDAYS } from '../charts.js';
@@ -43,7 +44,7 @@ function drawHeat(route, d, el) {
   put(el, h('h2', {}, 'When is the route late? Mean delay by weekday and hour'), ...filterNotices(d));
   const cells = (d.cells || []);
   if (!cells.length) { put(el, emptyState('No data for this selection.')); return; }
-  const grid = heatmapGrid(cells);
+  const grid = heatmapGrid(cells, { cap: getSettings().charts.heatCap * 60 });
   const svg = renderHeatmap(grid, { title: `Mean delay by weekday and hour, route ${route}`,
     desc: `${cells.length} weekday and hour combinations have data (n=${fmtCount(d.n)} arrivals). Colour runs from blue (early) through grey (on time) to orange (late); the cell text is the mean delay in minutes. Colour saturates at ${fmtNum(grid.maxAbs / 60, 1)} min.` });
   const table = dataTable({ caption: 'Mean delay per weekday and hour (Dublin time; negative = early)', rows: cells.filter((c) => c.n > 0), columns: [

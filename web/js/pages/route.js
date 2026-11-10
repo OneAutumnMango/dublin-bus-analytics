@@ -1,5 +1,6 @@
 // Route view: every stop in route order with mean delay, min/max whiskers, percentile band against the zero line.
 import { api, isAbort } from '../api.js';
+import { getSettings } from '../settings.js';
 import { rangeTipData } from '../tipdata.js';
 import { renderRangeChart, rangeDomain, rangeGeometry, rangeSummary } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, tile, put } from '../dom.js';
@@ -7,7 +8,6 @@ import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPcti
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
-const PAGE = 40;
 
 export async function render(ctx) {
   const { route } = ctx.params;
@@ -56,7 +56,7 @@ function draw(ctx, route, s, data, names, codes, dirs, dir, page, el) {
     n: x.n, low_n: x.low_n, mean: x.mean, min: x.min, max: x.max, lo: x.p_low, hi: x.p_high, raw: x }));
   for (const it of items) it.tip = rangeTipData(it, it.raw);
   const domain = rangeDomain(items);
-  const p = paginate(items.length, page, PAGE);
+  const p = paginate(items.length, page, getSettings().charts.pageSize);
   const slice = items.slice(p.start, p.end);
   const geo = rangeGeometry(slice, domain);
   const f = data.filters;

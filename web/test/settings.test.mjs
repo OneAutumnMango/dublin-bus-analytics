@@ -73,3 +73,16 @@ test('settings page: routes, renders controls, applies and resets', async () => 
   main.byText('button', /Reset/)[0].dispatch('click');
   assert.equal(S.getSettings().density, 'comfortable');
 });
+
+test('figure honours the table-toggle setting (table stays for screen readers)', async () => {
+  const { installDom, FNode } = await import('./fakedom.mjs');
+  installDom(); withStore(mem());
+  const { figure } = await import('../js/dom.js');
+  const mkFig = () => figure({ title: 'T', svg: new FNode('svg'), table: new FNode('table') });
+  assert.equal(mkFig().byText('button', /Show data table/).length, 1);
+  S.setSettings({ charts: { tableToggle: false } });
+  const f = mkFig();
+  assert.equal(f.byTag('button').length, 0);
+  assert.equal(f.byTag('table').length, 1);
+  assert.equal(f.all((n) => n.getAttribute?.('class') === 'sr-only').length, 1);
+});

@@ -234,6 +234,17 @@ test('marks carry rich tip payloads and padded hit targets', async () => {
   assert.ok(row);
   const hit = row.all((n) => n.getAttribute?.('class') === 'hit')[0];
   assert.equal(hit.getAttribute('height'), String(geo.rowH));
+  assert.equal(hit.getAttribute('x'), String(geo.x0), 'hit area must not cover the row label link');
   const hm = C.renderHeatmap(C.heatmapGrid([{ weekday: 0, hour: 8, n: 12, mean_delay: 300 }]), { title: 't', desc: 'd', doc });
   assert.match(hm.all((n) => /cell/.test(n.getAttribute?.('class') || '') && /Mon 08:00/.test(n.getAttribute('data-tip-json') || ''))[0].getAttribute('data-tip-json'), /Mon 08:00/);
+});
+
+test('heatmapGrid: fixed cap overrides auto saturation', () => {
+  const cells = [{ weekday: 0, hour: 1, n: 20, mean_delay: 120 }, { weekday: 0, hour: 2, n: 20, mean_delay: 1200 }];
+  const auto = C.heatmapGrid(cells), capped = C.heatmapGrid(cells, { cap: 300 });
+  assert.equal(capped.maxAbs, 300);
+  assert.ok(auto.maxAbs >= 1200);
+  const b = (g, h) => g.cells.find((c) => c.wd === 0 && c.hour === h).bucket;
+  assert.ok(Math.abs(b(capped, 1)) > Math.abs(b(auto, 1)), 'a 2 min delay looks stronger with a 5 min cap');
+  assert.equal(b(capped, 2), 5);
 });

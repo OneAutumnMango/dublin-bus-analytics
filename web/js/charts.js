@@ -68,7 +68,7 @@ export function histogramGeometry(bins, o = {}) {
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 // cells: API cells [{weekday, hour, n, low_n, mean_delay}]. Scale saturates at max(|mean|, minAbs) seconds.
 export function heatmapGrid(cells, o = {}) {
-  const { left = 44, top = 24, cw = 28, ch = 26, minAbs = 60 } = o;
+  const { left = 44, top = 24, cw = 28, ch = 26, minAbs = 60, cap = 0 } = o;
   const byKey = new Map();
   for (const c of cells || []) if (c && c.weekday >= 0 && c.weekday <= 6 && c.hour >= 0 && c.hour <= 23) byKey.set(`${c.weekday}:${c.hour}`, c);
   let maxAbs = minAbs;
@@ -82,6 +82,7 @@ export function heatmapGrid(cells, o = {}) {
         lowN: !c || !!c.low_n, empty: mean === null, bucket: divergingBucket(mean, maxAbs) });
     }
   }
+  if (cap > 0) { maxAbs = cap; for (const c of out) c.bucket = divergingBucket(c.mean, maxAbs); } // fixed saturation from settings
   return { cells: out, maxAbs, width: left + 24 * cw + 8, height: top + 7 * ch + 4, left, top, cw, ch };
 }
 
@@ -226,7 +227,7 @@ export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs sch
       g.append(el(doc, 'path', { class: `mean ${r.mean < 0 ? 'early' : r.mean > 0 ? 'late' : 'ontime'}`, d: `M${r.xMean} ${r.cy - 5}l5 5l-5 5l-5-5z` }));
     }
     if (r.tip) g.setAttribute('data-tip-json', tipJson(r.tip));
-    g.append(el(doc, 'rect', { class: 'hit', x: 0, y: r.y, width: geo.width, height: geo.rowH })); // whole row is the hover target
+    g.append(el(doc, 'rect', { class: 'hit', x: geo.x0, y: r.y, width: geo.width - geo.x0, height: geo.rowH })); // full row height; starts right of the label so its link stays clickable
     svg.append(g);
   }
   return svg;

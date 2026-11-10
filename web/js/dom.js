@@ -1,5 +1,6 @@
 // Small DOM builders. Text always goes through textContent / text nodes, never HTML parsing.
 import { fmtCount } from './lib.js';
+import { getSettings } from './settings.js';
 
 export function h(tag, props, ...children) {
   const doc = globalThis.document;
@@ -62,7 +63,9 @@ let figId = 0;
 // A chart plus a toggleable data table (accessible alternative).
 export function figure({ title, svg, table, legend, level = 'h2' }) {
   const id = `fig${++figId}`;
-  const tableBox = h('div', { id: `${id}-table`, hidden: true }, table);
+  const toggle = getSettings().charts.tableToggle;
+  // toggle off: the table stays in the page for keyboard and screen reader users, just not visible
+  const tableBox = toggle ? h('div', { id: `${id}-table`, hidden: true }, table) : h('div', { id: `${id}-table`, class: 'sr-only' }, table);
   const btn = h('button', { class: 'btn btn-quiet', type: 'button', 'aria-expanded': 'false', 'aria-controls': `${id}-table`, on: { click: () => {
     const open = btn.getAttribute('aria-expanded') !== 'true';
     btn.setAttribute('aria-expanded', String(open));
@@ -70,6 +73,6 @@ export function figure({ title, svg, table, legend, level = 'h2' }) {
     if (open) tableBox.removeAttribute('hidden'); else tableBox.setAttribute('hidden', '');
   } } }, 'Show data table');
   btn.setAttribute('title', 'The chart is a picture; the data table has the same numbers and links for keyboard and screen reader users.');
-  return h('figure', { class: 'card' }, h('div', { class: 'figure-head' }, h(level, {}, title), btn),
+  return h('figure', { class: 'card' }, h('div', { class: 'figure-head' }, h(level, {}, title), toggle ? btn : null),
     h('div', { class: 'chart-scroll', tabindex: 0, role: 'region', 'aria-label': `${title} chart` }, svg), legend || null, tableBox);
 }
