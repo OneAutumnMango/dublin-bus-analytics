@@ -16,37 +16,120 @@ const stat = (id, over = {}) => ({ stop_id: id, position: 0, direction: 'out', d
 const filters = (over = {}) => ({ ci: 0.95, pct_lo: 0.05, pct_hi: 0.95, window_lo: -60, window_hi: 300, since: 1_690_000_000, until: null, weekdays: null, hours: null, min_confidence: 1, truncated: false, realtime_only: true, ...over });
 const stopsResp = { route: '15', directions: { out: [{ id: 's1', name: '<img src=x onerror=alert(1)>' }, { id: 's2', name: 'Two' }], back: [{ id: 's2' }] } };
 
+const NOBACKUP = { 'GET /api/backup/download': fail(404, 'no such backup') };
+
 test('routes page: lists tracked routes, untrack, search + track, status text', async () => {
-  const tracked = ['15', '15/A'];
+  const tracked = ['sA', 'sA/B'];
   const calls = installFetch({
+    ...NOBACKUP,
     'GET /api/health': { ok: true }, 'GET /api/routes/tracked': () => ({ routes: [...tracked] }),
-    'GET /api/routes/15/summary': { n: 1200, stops: [{}, {}], filters: filters() }, 'GET /api/routes/15%2FA/summary': { n: 0, stops: [], filters: filters() },
-    'DELETE /api/routes/tracked/15%2FA': () => { tracked.splice(1, 1); return { routes: [...tracked] }; },
+    'GET /api/routes/sA/summary': { n: 1200, stops: [{}, {}], filters: filters() }, 'GET /api/routes/sA%2FB/summary': { n: 0, stops: [], filters: filters() },
+    'DELETE /api/routes/tracked/sA%2FB': () => { tracked.splice(1, 1); return { routes: [...tracked] }; },
     'PUT /api/routes/tracked/46A': () => { tracked.push('46A'); return { routes: [...tracked] }; },
-    'GET /api/routes': [{ id: 'r1', shortName: '46A', longName: 'Phoenix Park <b>x</b>' }, { id: 'r2', shortName: '15', longName: 'Ballycullen' }],
+    'GET /api/routes/46A/summary': { n: 3, stops: [{}], filters: filters() },
+    'GET /api/routes': [{ id: 'r1', shortName: '46A', longName: 'Phoenix Park <b>x</b>' }, { id: 'r2', shortName: 'sA', longName: 'Ballycullen' }],
   });
   const ctx = ctxOf({});
   await (await import('../js/pages/routes.js')).render(ctx);
   await settle();
   const links = ctx.main.byTag('a').map((a) => a.getAttribute('href'));
-  assert.ok(links.includes('#/route/15%2FA'));
-  assert.ok(links.includes('#/analytics/15'));
-  assert.match(text(ctx.main), /1,200 arrivals logged/);
-  assert.match(text(ctx.main), /No arrivals logged yet/);
+  assert.ok(links.includes('#/route/sA%2FB'));
+  assert.ok(links.includes('#/analytics/sA'));
+  assert.match(text(ctx.main), /1,200 realtime arrivals \(last 7 days\) across 2 stops/);
+  assert.match(text(ctx.main), /No realtime arrivals yet/);
+  assert.match(text(ctx.main), /No backup yet/);
   assert.equal(ctx.main.byTag('h1').length, 1);
   ctx.main.byText('button', /^Untrack$/)[1].dispatch('click');
   await settle();
-  assert.ok(!text(ctx.main).includes('Route 15/A'));
+  assert.ok(!text(ctx.main).includes('Route sA/B'));
   const form = ctx.main.byTag('form')[0];
   ctx.main.byTag('input')[0].value = '46';
   form.dispatch('submit');
   await settle();
   assert.ok(calls.some((c) => c.url === '/api/routes?q=46'));
   assert.match(text(ctx.main), /Phoenix Park <b>x<\/b>/); // shown literally as text
-  assert.equal(ctx.main.byText('span', /^Tracked$/).length, 1); // 15 already tracked
+  assert.equal(ctx.main.byText('span', /^Tracked$/).length, 1); // sA already tracked
   ctx.main.byText('button', /^Track$/)[0].dispatch('click');
   await settle();
   assert.match(text(ctx.main), /Route 46A/);
+  assert.equal(globalThis.document.getElementById('status').textContent, 'Tracking 46A');
+});
+
+test('routes page: 20 tracked routes never run more than 2 status requests at once; redraw does not refetch cached routes', async () => {
+  const names = Array.from({ length: 20 }, (_, i) => `c${i}`);
+  let active = 0, peak = 0, total = 0;
+  const handlers = { ...NOBACKUP, 'GET /api/health': { ok: true }, 'GET /api/routes/tracked': () => ({ routes: [...names] }),
+    'DELETE /api/routes/tracked/c3': () => ({ routes: names.filter((n) => n !== 'c3') }), 'PUT /api/routes/tracked/c3': () => ({ routes: [...names] }) };
+  for (const n of names) handlers[`GET /api/routes/${n}/summary`] = async () => { active++; total++; peak = Math.max(peak, active); await settle(8); active--; return { n: 5, stops: [{}], filters: filters() }; };
+  installFetch(handlers);
+  const ctx = ctxOf({});
+  await (await import('../js/pages/routes.js')).render(ctx);
+  assert.match(text(ctx.main), /Route c19/, 'the list renders before any status arrives');
+  assert.match(text(ctx.main), /Checking status/);
+  await settle(250);
+  assert.equal(total, 20);
+  assert.equal(peak, 2);
+  assert.ok(!/Checking status/.test(text(ctx.main)));
+  ctx.main.byText('button', /^Untrack$/)[3].dispatch('click');
+  await settle(30);
+  assert.equal(total, 20, 'redraw after untrack used the cache');
+  assert.ok(!text(ctx.main).includes('Route c3'));
+  assert.match(text(ctx.main), /5 realtime arrivals/);
+});
+
+test('routes page: leaving the page aborts in-flight and queued status requests', async () => {
+  const names = Array.from({ length: 6 }, (_, i) => `d${i}`);
+  let started = 0, aborted = 0;
+  const handlers = { ...NOBACKUP, 'GET /api/health': { ok: true }, 'GET /api/routes/tracked': () => ({ routes: names }) };
+  for (const n of names) handlers[`GET /api/routes/${n}/summary`] = (url, init) => new Promise((_, rej) => { started++; init.signal.addEventListener('abort', () => { aborted++; rej(new DOMException('x', 'AbortError')); }); });
+  installFetch(handlers);
+  const ctl = new AbortController();
+  const ctx = { ...ctxOf({}), signal: ctl.signal };
+  await (await import('../js/pages/routes.js')).render(ctx);
+  await settle();
+  assert.equal(started, 2);
+  ctl.abort();
+  await settle(30);
+  assert.equal(aborted, 2);
+  assert.equal(started, 2, 'queued requests never start after leaving');
+});
+
+test('routes page: two searches resolving in reverse order show the newer results', async () => {
+  const gates = {};
+  installFetch({ ...NOBACKUP, 'GET /api/health': { ok: true }, 'GET /api/routes/tracked': { routes: [] },
+    'GET /api/routes': (url) => new Promise((r) => { gates[new URL(url, 'http://x').searchParams.get('q')] = r; }) });
+  const ctx = ctxOf({});
+  await (await import('../js/pages/routes.js')).render(ctx);
+  const input = ctx.main.byTag('input')[0];
+  const form = ctx.main.byTag('form')[0];
+  input.value = 'a'; form.dispatch('submit');
+  input.value = 'b'; form.dispatch('submit');
+  await settle();
+  gates.b([{ id: '2', shortName: 'NEWER', longName: '' }]);
+  await settle();
+  gates.a([{ id: '1', shortName: 'OLDER', longName: '' }]);
+  await settle();
+  assert.match(text(ctx.main), /NEWER/);
+  assert.ok(!/OLDER/.test(text(ctx.main)));
+});
+
+test('routes page: double click on Track sends one request and disables the buttons meanwhile', async () => {
+  let puts = 0;
+  installFetch({ ...NOBACKUP, 'GET /api/health': { ok: true }, 'GET /api/routes/tracked': { routes: [] },
+    'GET /api/routes': [{ id: '1', shortName: 'e1', longName: '' }, { id: '2', shortName: 'e2', longName: '' }],
+    'PUT /api/routes/tracked/e1': async () => { puts++; await settle(20); return { routes: ['e1'] }; }, 'GET /api/routes/e1/summary': { n: 1, stops: [], filters: filters() } });
+  const ctx = ctxOf({});
+  await (await import('../js/pages/routes.js')).render(ctx);
+  ctx.main.byTag('input')[0].value = 'e';
+  ctx.main.byTag('form')[0].dispatch('submit');
+  await settle();
+  const [b1, b2] = ctx.main.byText('button', /^Track$/);
+  b1.dispatch('click'); b1.dispatch('click');
+  assert.equal(b1.disabled, true);
+  assert.equal(b2.disabled, true, 'all mutation buttons are disabled while one runs');
+  await settle(60);
+  assert.equal(puts, 1);
+  assert.match(text(ctx.main), /Route e1/);
 });
 
 test('routes page: unreachable API shows banner with retry and no crash', async () => {
@@ -58,11 +141,13 @@ test('routes page: unreachable API shows banner with retry and no crash', async 
   assert.match(text(ctx.main), /unavailable while the API/);
 });
 
-test('routes page: backup button shows the file and updates the download link', async () => {
-  installFetch({ 'GET /api/health': { ok: true }, 'GET /api/routes/tracked': { routes: [] }, 'POST /api/backup': { file: 'b 1.tar', size: 2048 } });
+test('routes page: backup button shows the file and updates the download link; link shown when a backup exists', async () => {
+  installFetch({ 'GET /api/health': { ok: true }, 'GET /api/routes/tracked': { routes: [] }, 'POST /api/backup': { file: 'b 1.tar', size: 2048 }, 'GET /api/backup/download': () => ({ ok: 1 }) });
   const ctx = ctxOf({});
   await (await import('../js/pages/routes.js')).render(ctx);
+  await settle();
   assert.match(text(ctx.main), /No routes tracked yet/);
+  assert.equal(ctx.main.byText('a', /Download latest/)[0].getAttribute('href'), '/api/backup/download');
   const btn = ctx.main.byText('button', /Run backup now/)[0];
   btn.dispatch('click', { currentTarget: btn });
   await settle();
