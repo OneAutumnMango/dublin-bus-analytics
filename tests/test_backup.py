@@ -470,7 +470,10 @@ def test_open_samples_refuses_gz_only_month(data):
 
 @pytest.fixture
 def client(data):
-    return TestClient(create_app(Settings(server_url="http://x", data_dir=data)))
+    app = create_app(Settings(server_url="http://x", data_dir=data))
+    ticks = iter(range(int(time.time()), 2**40, 100))  # each request is 100 s later: the rate limit never trips
+    app.state.backup_clock = lambda: next(ticks)
+    return TestClient(app)
 
 
 def test_api_post_and_download(client, data):
@@ -976,3 +979,34 @@ def test_snapshot_counter_cap_raises(tmp_path, monkeypatch):
     (bk / "analytics-20260610T120000Z_999.tar").write_bytes(b"x")
     with pytest.raises(RuntimeError, match="too many"):
         snapshot(tmp_path, bk)
+
+
+# ---- POST /api/backup guards: same-origin and rate limit ----
+
+def test_api_origin_mismatch_403(client, data):
+    r = client.post("/api/backup", headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403 and "detail" in r.json()
+    assert not list((data / "backups").glob("*.tar")) if (data / "backups").exists() else True
+
+
+def test_api_origin_matching_and_absent_ok(client):
+    assert client.post("/api/backup", headers={"Origin": "http://testserver"}).status_code == 200
+
+
+def test_api_rate_limited_with_retry_after(data):
+    clock = [time.time()]
+    app = create_app(Settings(server_url="http://x", data_dir=data))
+    app.state.backup_clock = lambda: clock[0]
+    c = TestClient(app)
+    assert c.post("/api/backup").status_code == 200
+    clock[0] += 30
+    r = c.post("/api/backup")
+    assert r.status_code == 429 and r.json()["detail"] and 1 <= int(r.headers["retry-after"]) <= 60
+    assert c.get("/api/backup/download").status_code == 200
+    clock[0] += 100  # snapshot may take a moment; stay clear of the 60 s edge
+    assert c.post("/api/backup").status_code == 200
+
+
+def test_api_future_dated_newest_does_not_block(client, data):
+    _mk(data / "backups", "analytics-20990101T000000Z.tar", body=b"FUTURE")
+    assert client.post("/api/backup").status_code == 200

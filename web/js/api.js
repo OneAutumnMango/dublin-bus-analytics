@@ -17,6 +17,7 @@ export function errorMessage(status, bodyText) {
     detail = Array.isArray(d) ? d.map((x) => x.msg ?? JSON.stringify(x)).join('; ') : typeof d === 'string' ? d : '';
   } catch { /* body is not JSON */ }
   if (status === 422) return `Invalid request: ${detail || 'check the filter values'}`;
+  if (status === 403 || status === 429) return detail || `The API refused the request (HTTP ${status})`;
   if (status === 404) return `Not found${detail ? `: ${detail}` : ''}`;
   if (status === 502) return `The bus data server is unavailable${detail ? ` (${detail})` : ''}`;
   return `The API answered HTTP ${status}`;

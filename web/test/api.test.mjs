@@ -9,6 +9,8 @@ test('errorMessage maps statuses to readable text', () => {
   assert.equal(A.errorMessage(422, '{"detail":[{"msg":"a"},{"msg":"b"}]}'), 'Invalid request: a; b');
   assert.match(A.errorMessage(404, '{"detail":"no such trip/stop visit"}'), /Not found.*no such trip/);
   assert.match(A.errorMessage(502, '{"detail":"server unavailable: x"}'), /bus data server/);
+  assert.equal(A.errorMessage(429, '{"detail":"try again in 30 s"}'), 'try again in 30 s');
+  assert.match(A.errorMessage(403, ''), /HTTP 403/);
   assert.match(A.errorMessage(500, 'oops'), /HTTP 500/);
   assert.match(A.errorMessage(404, ''), /Not found/);
   assert.match(A.errorMessage(422, 'not json'), /Invalid request/);
