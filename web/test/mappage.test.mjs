@@ -172,3 +172,45 @@ test('map page: stops table is available as the accessible/fallback view', async
   assert.match(t, /Beta \(7\)/);
   assert.ok(!/NaN|undefined/.test(t));
 });
+
+test('map page remembers its choices and restores them; area strength comes from settings', async () => {
+  const mem = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; };
+  const store = mem();
+  Object.defineProperty(globalThis, 'localStorage', { value: store, configurable: true, writable: true });
+  const { hooks, render } = await import('../js/pages/map.js');
+  const seenAlpha = [];
+  hooks.makeCanvas = (r) => { seenAlpha.push(Math.max(...[...r.data].filter((_, i) => i % 4 === 3))); return { width: r.width, height: r.height }; };
+  const S = await import('../js/settings.js');
+  S.resetSettings(); S.setSettings({ map: { areaOpacity: 0.3 } });
+
+  let rec = stubMapLibre();
+  installFetch({ 'GET /api/map': mapResp, 'GET /api/map/shapes': { shapes: {} } });
+  let ctx = ctxOf();
+  let done = render(ctx); await settle(); rec.maps[0].fire('load'); await done; await settle();
+  const areas = ctx.main.byTag('select').find((n) => n.children.some((o) => o.value === 'smooth'));
+  areas.value = 'smooth'; areas.dispatch('change', { target: areas });
+  assert.ok(seenAlpha.at(-1) <= Math.round(255 * 0.3), `alpha ${seenAlpha.at(-1)} respects 30% strength`);
+  assert.ok(seenAlpha.at(-1) > 0);
+  const [, c46, stopsBox] = ctx.main.all((n) => n.tag === 'input' && n.attrs.get('type') === 'checkbox');
+  c46.checked = false; c46.dispatch('change', { target: c46 });
+  stopsBox.checked = false; stopsBox.dispatch('change', { target: stopsBox });
+  const [inA, inB] = ctx.main.byTag('input').filter((n) => n.attrs.get('type') === 'range');
+  inA.value = '360'; inB.value = '630'; inA.dispatch('change'); inB.dispatch('change'); await settle();
+  const saved = JSON.parse(store.getItem('dba-map'));
+  assert.equal(saved.areas, 'smooth'); assert.equal(saved.stops, false); assert.deepEqual(saved.hidden, ['46A']); assert.deepEqual(saved.win, [360, 630]);
+
+  // a fresh visit restores all of it, and asks the server for the saved window straight away
+  rec = stubMapLibre();
+  const calls = installFetch({ 'GET /api/map': mapResp, 'GET /api/map/shapes': { shapes: {} } });
+  ctx = ctxOf();
+  done = render(ctx); await settle(); rec.maps[0].fire('load'); await done; await settle();
+  assert.match(calls.find((c) => c.key === 'GET /api/map').url, /minutes_from=360.*minutes_to=630|minutes_to=630.*minutes_from=360/);
+  const m2 = rec.maps[0];
+  assert.equal(m2.layout['stops.visibility'], 'none');
+  assert.deepEqual(m2.sources.stops.data.features.map((f) => f.properties.name).sort(), ['Alpha', 'Beta']); // route 46A stays off (Gamma is only on it)
+  const picked = ctx.main.byTag('select').find((n) => n.children.some((o) => o.value === 'smooth')).children.find((o) => o.selected);
+  assert.equal(picked.value, 'smooth', 'the area style dropdown shows the remembered choice');
+  assert.match(ctx.main.textContent, /06:00 – 10:30/);
+  Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true, writable: true });
+  S.resetSettings();
+});

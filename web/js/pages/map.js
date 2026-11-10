@@ -4,7 +4,8 @@ import { api, isAbort } from '../api.js';
 import { dataTable, emptyState, errorBox, h, link, notice, put } from '../dom.js';
 import { fmtCount, fmtDelay, fmtNum, makeLatest } from '../lib.js';
 import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, smoothRaster, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
-import { getSettings } from '../settings.js';
+import { loadMapState, saveMapState } from '../mapstate.js';
+import { getSettings, onSettings } from '../settings.js';
 import { hideTip, showTip } from '../tooltip.js';
 import { timeRangeSlider, MAX } from '../slider.js';
 import { setup, windowText } from './common.js';
@@ -86,7 +87,9 @@ export async function render(ctx) {
     h('p', { class: 'subtitle' }, 'Your tracked routes. Stops are coloured by how early (blue) or late (orange) buses arrive there.'),
     h('div', { class: 'map-layout' }, panel, h('div', { class: 'map-wrap' }, canvas, legend)), tableHost);
 
-  const st = { data: null, visible: new Set(), areas: 'hex', shapes: {}, stops: true, win: [0, MAX], cap: 300, map: null, ready: false, stopsById: new Map() };
+  const saved = loadMapState(); // what you left on the map last time
+  const st = { data: null, visible: new Set(), hidden: new Set(saved.hidden), areas: saved.areas, shapes: {}, stops: saved.stops, win: saved.win, cap: 300, map: null, ready: false, stopsById: new Map() };
+  const persist = () => saveMapState({ areas: st.areas, stops: st.stops, win: st.win, hidden: [...st.hidden] });
   const latest = makeLatest(signal);
   const query = () => ({ ...s.apiQuery, ...(st.win[0] === 0 && st.win[1] === MAX ? {} : { minutes_from: st.win[0], minutes_to: st.win[1] }) });
 
@@ -118,7 +121,7 @@ export async function render(ctx) {
     m.getSource('routes').setData(routeLines(st.data, st.visible, st.shapes));
     m.getSource('regions').setData(areaCells(st.areas, stops));
     drawSmooth(stops);
-    m.setPaintProperty('regions', 'fill-opacity', st.areas === 'circles' ? 0.3 : 0.4);
+    m.setPaintProperty('regions', 'fill-opacity', (getSettings().map.areaOpacity * (st.areas === 'circles' ? 0.6 : 0.8)));
     for (const id of ['stops', 'regions']) m.setPaintProperty(id, id === 'stops' ? 'circle-color' : 'fill-color', colourExpr(st.cap));
     m.setLayoutProperty('regions', 'visibility', st.areas === 'hex' || st.areas === 'circles' ? 'visible' : 'none');
     for (const id of ['stops', 'stops-nodata']) m.setLayoutProperty(id, 'visibility', st.stops ? 'visible' : 'none');
@@ -131,7 +134,7 @@ export async function render(ctx) {
     if (m.getLayer('smooth')) m.removeLayer('smooth');
     if (m.getSource('smooth')) m.removeSource('smooth');
     if (st.areas !== 'smooth') return;
-    const r = smoothRaster(stops, { cap: st.cap });
+    const r = smoothRaster(stops, { cap: st.cap, alpha: getSettings().map.areaOpacity });
     const canvas = r && hooks.makeCanvas(r);
     if (!canvas) return;
     m.addSource('smooth', { type: 'canvas', canvas, coordinates: r.coordinates, animate: false });
@@ -158,25 +161,25 @@ export async function render(ctx) {
 
   function drawPanel() {
     const routes = st.data?.routes || [];
-    const slider = timeRangeSlider({ from: st.win[0], to: st.win[1], onChange: (a, b) => { st.win = [a, b]; load(); } });
+    const slider = timeRangeSlider({ from: st.win[0], to: st.win[1], onChange: (a, b) => { st.win = [a, b]; persist(); load(); } });
     const boxes = [];
     const chips = h('div', { class: 'route-chips', role: 'group', 'aria-label': 'Routes shown' }, routes.map((r) => {
-      const box = h('input', { type: 'checkbox', checked: st.visible.has(r.route), on: { change: (e) => { if (e.target.checked) st.visible.add(r.route); else st.visible.delete(r.route); refresh(); } } });
+      const box = h('input', { type: 'checkbox', checked: st.visible.has(r.route), on: { change: (e) => { if (e.target.checked) { st.visible.add(r.route); st.hidden.delete(r.route); } else { st.visible.delete(r.route); st.hidden.add(r.route); } persist(); refresh(); } } });
       const sw = h('span', { class: 'chip-swatch' });
       if (sw.style) sw.style.background = routeColour(st.data, r.route);
       boxes.push([r.route, box]);
       return h('label', { class: 'chip' }, box, sw, `Route ${r.route}`);
     }));
-    const setAll = (on) => { st.visible = new Set(on ? routes.map((r) => r.route) : []); for (const [, b] of boxes) b.checked = on; refresh(); };
+    const setAll = (on) => { st.visible = new Set(on ? routes.map((r) => r.route) : []); st.hidden = new Set(on ? [] : routes.map((r) => r.route)); persist(); for (const [, b] of boxes) b.checked = on; refresh(); };
     panel.replaceChildren();
     put(panel,
       h('h2', {}, 'Routes'), chips,
       h('div', { class: 'row' }, h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => setAll(true) } }, 'All'), h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => setAll(false) } }, 'None'),
         h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => fit() } }, 'Fit to routes')),
       h('h2', {}, 'Layers'),
-      h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.stops, on: { change: (e) => { st.stops = e.target.checked; refresh(); } } }), 'Show stops'),
+      h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.stops, on: { change: (e) => { st.stops = e.target.checked; persist(); refresh(); } } }), 'Show stops'),
       h('label', { for: 'areas' }, 'Colour areas where nearby stops run early or late',
-        h('select', { id: 'areas', on: { change: (e) => { st.areas = e.target.value; refresh(); } } }, AREA_MODES.map(([v, l]) => h('option', { value: v, selected: v === st.areas }, l)))),
+        h('select', { id: 'areas', on: { change: (e) => { st.areas = e.target.value; persist(); refresh(); } } }, AREA_MODES.map(([v, l]) => h('option', { value: v, selected: v === st.areas }, l)))),
       h('h2', {}, 'Time of day'), slider.el, status, summary,
       h('p', { class: 'hint attribution' }, 'Basemap loaded from tiles.openfreemap.org · © OpenMapTiles · data © OpenStreetMap contributors. Date range follows the default window; change it on a route’s analytics page.'));
     if (st.data && !routes.length) put(panel, st.data.unavailable?.length ? notice(`The bus data server could not list stops for ${st.data.unavailable.join(', ')}.`) : null);
@@ -198,13 +201,13 @@ export async function render(ctx) {
       if (first) st.shapes = sh?.shapes || {}; // no shapes: lines through the stops instead
       if (!tok.isCurrent()) return;
       const routes = data.routes.map((r) => r.route);
-      st.visible = first ? new Set(routes) : new Set(routes.filter((r) => st.visible.has(r)));
+      st.visible = new Set(routes.filter((r) => !st.hidden.has(r))); // routes you switched off stay off; new ones start on
       st.data = data;
       status.replaceChildren();
       if (first) { drawPanel(); tableHost.replaceChildren(tableBox); }
       if (first && !routes.length) { canvas.replaceChildren(); put(canvas, emptyState('No tracked routes with known stops yet. Track a route in the sidebar and let the poller collect arrivals.')); return; }
       refresh();
-      if (first) fit();
+      if (first && !saved.view) fit();
     } catch (e) {
       if (isAbort(e) || !tok.isCurrent()) return;
       status.replaceChildren(errorBox(e, () => load(first)));
@@ -229,7 +232,7 @@ export async function render(ctx) {
     const lib = await loadMapLibre();
     if (signal.aborted) return;
     const dark = isDark();
-    const m = new lib.Map({ container: canvas, style: STYLE_URL, center: CENTRE, zoom: 11, attributionControl: { compact: true }, dragRotate: false });
+    const m = new lib.Map({ container: canvas, style: STYLE_URL, center: saved.view ? [saved.view.lng, saved.view.lat] : CENTRE, zoom: saved.view ? saved.view.zoom : 11, attributionControl: { compact: true }, dragRotate: false });
     st.map = m;
     m.addControl(new lib.NavigationControl({ showCompass: false }), 'top-right');
     m.on('load', () => {
@@ -243,8 +246,12 @@ export async function render(ctx) {
       st.ready = true;
       wireTips(m);
       refresh();
-      if (st.data) fit();
+      if (st.data && !saved.view) fit();
     });
+    let moveTimer = null;
+    m.on('moveend', () => { clearTimeout(moveTimer); moveTimer = setTimeout(() => { const c = m.getCenter?.(); if (c) saveMapState({ view: { lng: c.lng, lat: c.lat, zoom: m.getZoom() } }); }, 400); });
+    const off = onSettings(() => refresh()); // e.g. area strength changed on the Settings page
+    signal.addEventListener('abort', () => { off(); clearTimeout(moveTimer); });
     m.on('error', (e) => { if (e?.error && /tiles|style|fetch|Failed/i.test(String(e.error.message))) status.replaceChildren(notice('Some map tiles could not be loaded. Stops and routes are still shown.', 'info')); });
     signal.addEventListener('abort', () => { hideTip(); try { m.remove(); } catch { /* already gone */ } });
   } catch (e) {
