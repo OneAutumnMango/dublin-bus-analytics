@@ -1,5 +1,10 @@
-.venv
 .git
-__pycache__
-tests
+.venv
+data
 .superpowers
+tests
+docs
+__pycache__
+*.egg-info
+node_modules
+web/test
