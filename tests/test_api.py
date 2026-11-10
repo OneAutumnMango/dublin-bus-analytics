@@ -792,7 +792,7 @@ def test_no_connection_leak_under_errors(env, recwarn):
 
 
 def test_connection_closed_on_db_error(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     opened = []
     real = api.open_meta
 
@@ -850,7 +850,7 @@ def test_summary_n_matches_filtered_rows(tmp_path_factory, rows, minc, since):
 @pytest.fixture
 def spy(monkeypatch):
     """Records executed statements (expanded) and, per bulk scan, the number of rows fetched."""
-    import app.api as api
+    import app.api.routes as api
     st = types.SimpleNamespace(sql=[], fetched=[])
     real_open, real_scan = api.open_meta, api._scan
 
@@ -963,7 +963,7 @@ def test_forecast_pushdown_and_values(env, spy):
 
 @pytest.mark.parametrize("what", ["summary", "accumulation", "tracked", "track"])
 async def test_event_loop_not_blocked(tmp_path, monkeypatch, what):
-    import app.api as api
+    import app.api.routes as api
     env = Env(tmp_path)
     env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
     if what == "summary":
@@ -1015,7 +1015,7 @@ def test_ci_max_allowed_is_finite(env, url):
 
 
 def test_clean_replaces_non_finite_recursively():
-    import app.api as api
+    import app.api.routes as api
     nan, inf = float("nan"), float("inf")
     src = {"a": [nan, inf, 1.0, {"b": -inf, "c": 2}], "d": "x", "e": None, "f": (1, nan)}
     out = api._clean(src)
@@ -1024,7 +1024,7 @@ def test_clean_replaces_non_finite_recursively():
 
 
 def test_non_finite_in_stats_becomes_null_not_500(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     seed5(env)
     real = api.stats.delay_summary
 
@@ -1055,7 +1055,7 @@ def stops_hits(env, route="15"):
 
 
 def test_route_stops_cached_between_requests(env):
-    import app.api as api
+    import app.api.routes as api
     clock = Clock()
     env.app.state.stops_cache = api._TTLCache(clock=clock)
     env.keep_cache = True
@@ -1071,7 +1071,7 @@ def test_route_stops_cached_between_requests(env):
 
 
 def test_route_stops_cache_expires_after_5_min(env):
-    import app.api as api
+    import app.api.routes as api
     clock = Clock()
     env.app.state.stops_cache = api._TTLCache(clock=clock)
     env.keep_cache = True
@@ -1102,7 +1102,7 @@ def test_route_stops_failure_not_cached(env):
 
 
 def test_ttl_cache_unit_bounds_and_eviction():
-    import app.api as api
+    import app.api.routes as api
     clock = Clock()
     c = api._TTLCache(ttl=10, maxsize=3, clock=clock)
     for k in "abc":
@@ -1121,7 +1121,7 @@ def test_ttl_cache_unit_bounds_and_eviction():
 
 def test_ttl_cache_thread_safe():
     import threading
-    import app.api as api
+    import app.api.routes as api
     c = api._TTLCache(maxsize=50)
 
     def work(i):
@@ -1136,7 +1136,7 @@ def test_ttl_cache_thread_safe():
 
 
 def test_hung_server_times_out_fast(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
 
     class Hung:
         async def route_stops(self, r):
@@ -1184,7 +1184,7 @@ async def test_concurrent_requests_bounded_by_serialised_time(tmp_path):
 
 
 def test_lock_released_after_error_inside_locked_section(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     env.add(delay=1)
     real = api.open_meta
     calls = []
@@ -1204,7 +1204,7 @@ def test_lock_released_after_error_inside_locked_section(env, monkeypatch):
 
 
 def test_lock_released_after_sql_error(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     env.add(delay=1)
     monkeypatch.setattr(api, "_cond", lambda p, a="": ("nosuchcolumn = 1", []))
     with pytest.raises(sqlite3.OperationalError):
@@ -1217,7 +1217,7 @@ def test_lock_released_after_sql_error(env, monkeypatch):
 
 def test_db_work_is_mutually_exclusive(env, monkeypatch):
     import threading
-    import app.api as api
+    import app.api.routes as api
     env.add(delay=1)
     inside, worst = [0], [0]
     real = api.open_meta
@@ -1241,7 +1241,7 @@ def test_db_work_is_mutually_exclusive(env, monkeypatch):
 # ---------- fix round 2: N1 bounded memory (cap, chunking, equivalence, peak RSS) ----------
 
 def test_scan_callback_runs_outside_lock_in_chunks(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     bulk(env, 100)
     monkeypatch.setattr(api, "CHUNK", 7)
     sizes = []
@@ -1256,7 +1256,7 @@ def test_scan_callback_runs_outside_lock_in_chunks(env, monkeypatch):
 
 
 def test_row_cap_truncates_oldest_rows_and_says_so(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_ROWS", 100)
     for i in range(250):
         env.add(scheduled=T0 + i * 60, delay=i)
@@ -1270,7 +1270,7 @@ def test_row_cap_truncates_oldest_rows_and_says_so(env, monkeypatch):
 
 
 def test_row_cap_exact_size_not_truncated(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_ROWS", 100)
     for i in range(100):
         env.add(scheduled=T0 + i * 60, delay=i)
@@ -1281,7 +1281,7 @@ def test_row_cap_exact_size_not_truncated(env, monkeypatch):
 @pytest.mark.parametrize("url", ["/api/routes/15/heatmap", "/api/stops/s1/stats", "/api/routes/15/forecast",
                                  "/api/routes/15/accumulation"])
 def test_row_cap_applies_to_every_endpoint(env, monkeypatch, url):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_ROWS", 20)
     env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
     for i in range(60):
@@ -1414,7 +1414,7 @@ def test_unwindowed_peak_memory_bounded_300k_rows(big_db, url, field):
 
 
 def test_open_failure_inside_scan_releases_lock_and_connection(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     env.add(delay=1)
     real, calls = api.open_meta, []
 
@@ -1434,7 +1434,7 @@ def test_open_failure_inside_scan_releases_lock_and_connection(env, monkeypatch)
 # ---------- H3: previously surviving mutants ----------
 
 def test_heatmap_multi_chunk_equals_unchunked(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     for i in range(30):  # 10-minute steps: every hour cell gets 6 rows spread across several chunks
         env.add(delay=i * 10, scheduled=T0 + i * 600)
     whole = env.get("/api/routes/15/heatmap").json()
@@ -1483,7 +1483,7 @@ def test_route_stops_failure_not_cached_counts_refetch(env):
 
 
 def test_cap_probe_ignores_null_delay_rows(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_ROWS", 5)
     for i in range(12):
         env.add(delay=None, scheduled=T0 + i)
@@ -1498,7 +1498,7 @@ def test_cap_probe_ignores_null_delay_rows(env, monkeypatch):
 # ---------- H2: heavy-scan gate (asyncio, waits on the event loop) ----------
 
 def _heavy_env(env, monkeypatch, slots=1):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_HEAVY_SCANS", slots)  # the gate is created lazily per event loop
     monkeypatch.setattr(api, "HEAVY_ROWS", 3)
     for i in range(5):  # route 15 is heavy (5 > 3 rows); route 16 is light
@@ -1519,7 +1519,7 @@ def _limiter(env, n):
 
 
 def _gate_value(env, name="heavy"):
-    import app.api as api
+    import app.api.routes as api
 
     async def val():
         return api._gate(name)._value
@@ -1548,7 +1548,7 @@ def _shared_loop(env):
 
 
 def test_gates_are_created_lazily_per_event_loop(monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_HEAVY_SCANS", 3)
 
     async def gates():
@@ -1682,7 +1682,7 @@ def test_heavy_slot_released_on_error(env, monkeypatch):
 
 
 async def test_heavy_cancelled_while_waiting_leaks_no_permit(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     _heavy_env(env, monkeypatch, slots=1)
     req = types.SimpleNamespace(app=env.app)
     running, release = threading.Event(), threading.Event()
@@ -1829,7 +1829,7 @@ def test_trip_series_spans_month_boundary(env, tmp_private):
 
 
 def test_trip_series_missing_month_file_skipped(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     env.add(trip="T", stop="s1", scheduled=S, delay=0)  # arrival, no samples file at all
     j = series(env).json()
     assert j["visits"][0]["points"] == [] and j["visits"][0]["last_seen_ts"] is None
@@ -1856,7 +1856,7 @@ def test_trip_series_corrupt_month_skipped_with_warning(env, tmp_private, caplog
     else:
         good = gzip.compress(b"x" * 100_000)
         (d / "samples-2025-09.db.gz").write_bytes(good[: len(good) // 2])
-    with caplog.at_level("WARNING", logger="app.api"):
+    with caplog.at_level("WARNING", logger="app.api.routes"):
         r = series(env)
     assert r.status_code == 200
     assert [p["ts"] for p in r.json()["visits"][0]["points"]] == [b + 100, b + 630]
@@ -1930,7 +1930,7 @@ def test_trip_series_ignores_foreign_files_in_data_dir(env):
 
 
 def test_trip_series_truncation_caps(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_VISITS", 2)
     monkeypatch.setattr(api, "MAX_POINTS", 3)
     for i in range(3):
@@ -1951,7 +1951,7 @@ def test_trip_series_truncation_caps(env, monkeypatch):
 
 
 def test_trip_series_sample_only_visit_over_cap_flagged(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_VISITS", 2)
     put_samples(env, [(S + i, S + i, 1, S + i, 1) for i in range(3)])
     j = series(env).json()
@@ -1965,7 +1965,7 @@ def test_trip_series_sample_only_visit_over_cap_flagged(env, monkeypatch):
 
 
 def test_trip_series_month_cap(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     monkeypatch.setattr(api, "MAX_SERIES_MONTHS", 1)
     b = _utc(2025, 10, 1)
     env.add(trip="T", stop="s1", scheduled=b + 600, delay=0)  # candidate months: Sep and Oct
@@ -1982,7 +1982,7 @@ def test_trip_series_other_trip_and_stop_samples_not_mixed(env):
 
 
 def test_scan_open_failure_propagates_without_close(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
 
     def boom(_):
         raise sqlite3.OperationalError("cannot open")
@@ -2114,7 +2114,7 @@ def gz_two_months(env):
 
 @pytest.mark.filterwarnings("error::ResourceWarning")
 def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_private):
-    import app.api as api
+    import app.api.routes as api
     gz_two_months(env)
     log, gate, first_in = [], threading.Event(), threading.Event()
     orig = api._read_month
@@ -2146,7 +2146,7 @@ def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_
 
 
 def test_series_plain_month_not_blocked_by_gz_read(env, monkeypatch):
-    import app.api as api
+    import app.api.routes as api
     gz_two_months(env)
     gate, first_in = threading.Event(), threading.Event()
     orig = api._read_month

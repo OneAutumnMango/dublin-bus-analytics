@@ -59,7 +59,7 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `BACKUP_TIME` | `03:00` | `HH:MM`, Europe/Dublin local time |
 | `BACKUP_KEEP` | `7` | Backups to keep (positive integer) |
 | `BACKUP_DIR` | `<DATA_DIR>/backups` | Backup directory (a relative path is relative to the working directory) |
-| `WEB_DIR` | `web/` next to `app/` | Directory of the static UI (read by `app/static.py`) |
+| `WEB_DIR` | `web/` next to `app/` | Directory of the static UI (read by `app/api/static.py`) |
 
 Invalid values stop the app at startup with a message naming the variable. See `analytics.env.example`.
 

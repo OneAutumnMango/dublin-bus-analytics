@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text()
 COMPOSE_TXT = (ROOT / "docker-compose.example.yml").read_text()
 CONFIG_TXT = (ROOT / "app" / "core" / "config.py").read_text()
-STATIC_TXT = (ROOT / "app" / "static.py").read_text()
+STATIC_TXT = (ROOT / "app" / "api" / "static.py").read_text()
 
 # app-level names read by the code: config.py via os.environ, static.py for WEB_DIR
 APP_VARS = set(re.findall(r'(?:_pos_int|_bool|_hhmm|environ\.get)\(\s*"([A-Z_]+)"', CONFIG_TXT)) | {"WEB_DIR"}

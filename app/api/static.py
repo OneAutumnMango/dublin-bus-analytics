@@ -18,7 +18,7 @@ EXTRA = {**HEADERS, "Cache-Control": "no-cache"}
 
 
 def web_dir() -> Path:
-    return Path(os.environ.get("WEB_DIR") or Path(__file__).resolve().parent.parent / "web")
+    return Path(os.environ.get("WEB_DIR") or Path(__file__).resolve().parent.parent.parent / "web")
 
 
 class SecureStaticFiles(StaticFiles):
