@@ -55,6 +55,18 @@ export function stripAttr(el) {
   }
 }
 
+let shared = null; // { display, hide, doc } once installed
+
+// For code that finds its own hover targets (the map): show a payload card at viewport x/y, or hide.
+export function showTip(payload, x, y) {
+  if (!shared) return;
+  let card = null;
+  try { card = renderCard(shared.doc, payload, getSettings()); } catch { card = null; }
+  if (card) shared.display(card, null, `${JSON.stringify(payload)}|${JSON.stringify(getSettings().tip)}`, x, y);
+  else shared.display(null, payload.title || '', `t:${payload.title}`, x, y);
+}
+export const hideTip = () => shared?.hide();
+
 export function installTooltip(doc = globalThis.document) {
   if (typeof doc?.addEventListener !== 'function') return null; // non-browser host (tests)
   const tip = doc.createElement('div');
@@ -64,13 +76,7 @@ export function installTooltip(doc = globalThis.document) {
   doc.body.append(tip);
 
   const hide = () => { tip.hidden = true; };
-  const show = (target, x, y) => {
-    const raw = tipJson(target);
-    let card = null;
-    if (raw) { try { card = renderCard(doc, JSON.parse(raw), getSettings()); } catch { card = null; } }
-    const text = card ? null : tipText(target);
-    if (!card && !text) { hide(); return; }
-    const key = raw && card ? `${raw}|${JSON.stringify(getSettings().tip)}` : text;
+  const display = (card, text, key, x, y) => {
     if (tip.getAttribute('data-key') !== key) {
       tip.setAttribute('data-key', key);
       if (card) tip.replaceChildren(card); else tip.textContent = text;
@@ -81,9 +87,18 @@ export function installTooltip(doc = globalThis.document) {
     tip.style.left = `${p.left}px`;
     tip.style.top = `${p.top}px`;
   };
+  shared = { display, hide, doc };
+  const show = (target, x, y) => {
+    const raw = tipJson(target);
+    let card = null;
+    if (raw) { try { card = renderCard(doc, JSON.parse(raw), getSettings()); } catch { card = null; } }
+    const text = card ? null : tipText(target);
+    if (!card && !text) { hide(); return; }
+    display(card, text, raw && card ? `${raw}|${JSON.stringify(getSettings().tip)}` : text, x, y);
+  };
   const prep = (t) => { const svg = t?.closest?.('svg.chart'); if (svg) stripChart(svg); stripAttr(t); };
   doc.addEventListener('pointerover', (e) => prep(e.target), true);
-  doc.addEventListener('pointermove', (e) => show(e.target, e.clientX, e.clientY));
+  doc.addEventListener('pointermove', (e) => { if (!e.target?.closest?.('[data-tip-host]')) show(e.target, e.clientX, e.clientY); }); // [data-tip-host] (the map) drives its own tip
   doc.addEventListener('mouseout', (e) => { if (!e.relatedTarget) hide(); }); // pointer left the window
   doc.addEventListener('focusin', (e) => {
     prep(e.target);
