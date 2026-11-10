@@ -24,6 +24,7 @@ from app.serverclient import RouteNotFound, ServerUnavailable
 from app.tracker import Tracker
 
 log = logging.getLogger(__name__)
+SKIP_WARN_EVERY_S = 3600
 
 ROUTE_RE = re.compile(r"^[A-Za-z0-9 _./-]{1,20}$")
 
@@ -55,13 +56,15 @@ class LazyTracker:
 
 class Poller:
     def __init__(self, settings, client, tracker, *, now_fn=None, mono_fn=time.monotonic,
-                 sleep_fn=asyncio.sleep):
+                 sleep_fn=asyncio.sleep, skip_clock=time.monotonic):
         self.settings = settings
         self.client = client
         self.tracker = tracker
         self.now_fn = now_fn or (lambda: int(time.time()))
         self.mono_fn = mono_fn
         self.sleep_fn = sleep_fn
+        self.skip_clock = skip_clock
+        self._skip_warned: dict[str, float] = {}  # route -> when skipped last warned
         self._gap_open: tuple[int, int] | None = None  # (rowid, start)
         self._last_now = 0
 
@@ -125,8 +128,15 @@ class Poller:
         except Exception:
             log.exception("ingest failed for route %s", route)
             return None
-        if res.skipped or res.stale:
+        if res.stale:
             log.warning("route %s: skipped=%d stale=%s", route, res.skipped, res.stale)
+        elif res.skipped:  # a real feed may do this every tick: warn at most hourly per route
+            t = self.skip_clock()
+            if t - self._skip_warned.get(route, -SKIP_WARN_EVERY_S) >= SKIP_WARN_EVERY_S:
+                self._skip_warned[route] = t
+                log.warning("route %s: skipped=%d arrivals without a scheduled time", route, res.skipped)
+            else:
+                log.debug("route %s: skipped=%d", route, res.skipped)
         return res
 
     async def tick(self, now: int) -> None:

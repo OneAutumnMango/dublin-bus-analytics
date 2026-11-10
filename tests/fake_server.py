@@ -15,7 +15,6 @@ class FakeServer:
         self.arrivals: dict[str, dict[str, list[dict]]] = {}
         self.routes: list[dict] = []
         self.route_stops: dict[str, dict[str, list[dict]]] = {}
-        self.trip_calls: dict[str, list[dict]] = {}
         self.status_code: int | None = None  # forced status for every request
         self.down = False
         self.requests: list[str] = []
@@ -28,9 +27,6 @@ class FakeServer:
 
     def set_route_stops(self, route, directions):
         self.route_stops[route] = directions
-
-    def set_trip_calls(self, trip_id, calls):
-        self.trip_calls[trip_id] = calls
 
     def set_status(self, code: int | None):
         self.status_code = code
@@ -78,6 +74,4 @@ class FakeServer:
             if p[1] not in self.route_stops:
                 return nf
             return 200, {"routeId": p[1], "shortName": p[1], "directions": self.route_stops[p[1]]}
-        if len(p) == 2 and p[0] == "trips":
-            return (200, {"tripId": p[1], "stopCalls": self.trip_calls[p[1]]}) if p[1] in self.trip_calls else nf
         return nf

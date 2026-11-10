@@ -288,7 +288,7 @@ async def test_gap_not_resumed_after_restart(env):
     assert env.gaps() == [(T0, T0), (T0 + 300, T0 + 330)]
 
 
-# ---- end to end (realistic server: trip_calls is never consulted; seq == scheduled epoch) ----
+# ---- end to end (realistic server: seq == scheduled epoch) ----
 async def countdown(env, mk, start=T0, step=60, dues=(5, 4, 3, 2, 1, 0)):
     for k, due in enumerate(dues):
         env.fs.set_arrivals("15", {"s1": mk(due, k)})
@@ -353,6 +353,27 @@ async def test_none_scheduled_skipped_counted_rest_stored(env, caplog):
         await env.poller.tick(T0 + 300)
     assert [(r[1], r[3]) for r in env.arrivals()] == [("t1", T0 + 300)]
     assert "skipped=1" in caplog.text
+
+
+async def test_skipped_warning_rate_limited_per_route(tmp_path, monkeypatch, caplog):
+    clock = [1000.0]
+    env = Env(tmp_path, skip_clock=lambda: clock[0])
+    one_route(env)
+
+    async def fake(route, a, now):
+        return IngestResult(0, 0, 0, skipped=3, stale=False)
+    monkeypatch.setattr(env.tracker, "ingest", fake)
+
+    async def warns(t):
+        clock[0] = t
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            await env.poller.tick(T0)
+        return "skipped=3" in caplog.text
+    assert await warns(1000.0) is True
+    assert await warns(1010.0) is False
+    assert await warns(1000.0 + 3599) is False
+    assert await warns(1000.0 + 3600) is True
 
 
 async def test_seq_lookup_contract():

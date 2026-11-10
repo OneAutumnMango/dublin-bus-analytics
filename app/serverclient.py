@@ -59,9 +59,6 @@ class ServerClient:
     async def route_stops(self, route: str) -> dict[str, list[dict]]:
         return (await self._get(f"/v1/routes/{quote(route, safe='')}/stops"))["directions"]
 
-    async def trip_calls(self, trip_id: str) -> list[dict]:
-        return (await self._get(f"/v1/trips/{quote(trip_id, safe='')}"))["stopCalls"]
-
     async def status(self) -> dict:
         return await self._get("/v1/status")
 

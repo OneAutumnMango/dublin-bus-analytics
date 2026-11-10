@@ -147,15 +147,13 @@ async def test_route_is_url_encoded(route, enc):
     assert seen == [f"/v1/routes/{enc}/arrivals"]
 
 
-async def test_search_routes_stops_trip_calls_status():
+async def test_search_routes_stops_status():
     fake, c = make()
     fake.set_routes([{"id": "r15", "shortName": "15", "longName": "x", "agencyId": "a"}])
     fake.set_route_stops("15", {"0": [{"id": "s1"}], "1": [{"id": "s2"}]})
-    fake.set_trip_calls("t1", [{"stopSequence": 1, "stopId": "s1", "scheduledEpochSeconds": 5}])
     assert (await c.search_routes("15"))[0]["shortName"] == "15"
     assert await c.search_routes("zzz") == []
     assert set(await c.route_stops("15")) == {"0", "1"}
-    assert (await c.trip_calls("t1"))[0]["stopId"] == "s1"
     assert (await c.status())["ok"] is True
 
 
@@ -169,12 +167,10 @@ async def test_search_routes_passes_query():
     assert seen == ["a&b"]
 
 
-async def test_unknown_route_stops_and_trip_not_found():
+async def test_unknown_route_stops_not_found():
     _, c = make()
     with pytest.raises(RouteNotFound):
         await c.route_stops("nope")
-    with pytest.raises(RouteNotFound):
-        await c.trip_calls("nope")
 
 
 async def test_default_client_created_and_closeable():
