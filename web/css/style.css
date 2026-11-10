@@ -156,7 +156,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart:hover .row { opacity: .55; } .chart:hover .row:hover { opacity: 1; }
 .chart .row.low-n .row-label, .chart .row.low-n .n-label { fill: var(--muted); font-style: italic; }
 .chart .row.low-n .mean { fill: none; stroke: var(--muted); stroke-width: 1.5; }
-.chart .row.low-n .band { fill: none; stroke-dasharray: 3 2; stroke-width: 1; stroke: var(--muted); }
+.chart .row.low-n .band { fill: none; stroke-width: 1; stroke: var(--muted); }
 .chart .row.empty .row-label { fill: var(--muted); font-style: italic; }
 .chart .bar { fill: var(--muted); rx: 2; opacity: .8; transition: opacity .15s; } .chart .bar.early { fill: var(--early); } .chart .bar.late { fill: var(--late); }
 .chart .bar:hover { opacity: 1; }
@@ -173,11 +173,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart .cell { outline: none; }
 .chart .cell-text { font-size: 9px; pointer-events: none; }
 .chart .heatmap rect, .chart rect[class*="hm-b"] { rx: 2; }
-.chart rect.low-n { stroke: var(--text); stroke-width: 1; stroke-dasharray: 2 2; }
+.chart circle.low-n-dot { fill: var(--fg-cell); }
 .chart rect[class*="hm-b"] { fill: var(--bg-cell); }
 .chart text.cell-text { fill: var(--fg-cell); }
 .chart .cell:hover rect { stroke: var(--text); stroke-width: 1.5; }
-.chart .hm-empty { fill: none; stroke: var(--border); stroke-dasharray: 2 2; }
+.chart .hm-empty { fill: var(--surface-2); stroke: none; }
 .hm-bn5 { --bg-cell: var(--hm-n5); --fg-cell: var(--hm-n5t); } .hm-bn4 { --bg-cell: var(--hm-n4); --fg-cell: var(--hm-n4t); }
 .hm-bn3 { --bg-cell: var(--hm-n3); --fg-cell: var(--hm-n3t); } .hm-bn2 { --bg-cell: var(--hm-n2); --fg-cell: var(--hm-n2t); }
 .hm-bn1 { --bg-cell: var(--hm-n1); --fg-cell: var(--hm-n1t); } .hm-b0 { --bg-cell: var(--hm-0); --fg-cell: var(--hm-0t); }

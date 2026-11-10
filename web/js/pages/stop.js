@@ -2,7 +2,7 @@
 import { api, isAbort } from '../api.js';
 import { histogramGeometry, renderHistogram } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, tile, put } from '../dom.js';
-import { buildHash, clockTime, controlsToQuery, dateTime, describeDelay, describeRange, fmtCount, fmtDelay, fmtLevel, fmtNum, fmtPct, fmtPctile, plural, stopNameMap } from '../lib.js';
+import { buildHash, clockTime, controlsToQuery, dateTime, describeDelay, describeRange, fmtCount, fmtDelay, fmtLevel, fmtNum, fmtPct, fmtPctile, plural, stopNameMap, stopCodeMap, stopLabel } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
@@ -22,11 +22,11 @@ export async function render(ctx) {
       api.stopStats(stop, route, s.apiQuery, { signal }),
       api.stopsOf(route, { signal }).catch((e) => { if (isAbort(e)) throw e; return null; }),
     ]);
-    return { stats, names: stopNameMap(stops?.directions) };
+    return { stats, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions) };
   };
-  await region(box, ctx.signal).load(fetcher, ({ stats, names }, el) => {
-    const nm = names.get(stop);
-    if (nm) { nameSlot.textContent = `${nm} (${stop})`; ctx.title(`${nm} · route ${route}`); }
+  await region(box, ctx.signal).load(fetcher, ({ stats, names, codes }, el) => {
+    const nm = names.get(stop), code = codes.get(stop);
+    if (nm || code) { nameSlot.textContent = stopLabel(stop, names, codes); ctx.title(`${nm || `Stop ${code}`} · route ${route}`); }
     draw(route, stop, s, stats, el);
   }, { announce: ({ stats }) => `Stop ${stop}: loaded ${plural(stats.n, 'arrival')}` });
 }

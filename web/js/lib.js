@@ -419,3 +419,22 @@ export function directionLabels(directions, route) {
   }
   return m;
 }
+
+// {direction: [stops]} -> Map(stop id -> public stop number, the GTFS stop_code printed on the pole).
+export function stopCodeMap(directions) {
+  const m = new Map();
+  for (const list of Object.values(directions && typeof directions === 'object' ? directions : {})) {
+    for (const s of Array.isArray(list) ? list : []) {
+      const id = s?.id ?? s?.stopId;
+      const code = s?.code ?? s?.stopCode ?? s?.stop_code;
+      if (typeof id === 'string' && (typeof code === 'string' || typeof code === 'number') && String(code) && !m.has(id)) m.set(id, String(code));
+    }
+  }
+  return m;
+}
+
+// "Name (2051)", or whichever parts are known; the internal id is only the last resort.
+export function stopLabel(id, names, codes) {
+  const name = names?.get(id), code = codes?.get(id);
+  return name && code ? `${name} (${code})` : name || code || id;
+}

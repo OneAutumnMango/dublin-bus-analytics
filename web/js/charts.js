@@ -210,7 +210,7 @@ export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs sch
     const g = el(doc, 'g', { class: `row${r.lowN ? ' low-n' : ''}${r.empty ? ' empty' : ''}` });
     const tip = r.empty ? `${r.label}: no data` : rangeTip(r);
     g.append(el(doc, 'title', {}, tip));
-    const label = el(doc, 'text', { class: 'row-label', x: geo.x0 - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 24));
+    const label = el(doc, 'text', { class: 'row-label', x: geo.x0 - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.short ?? r.label, 24));
     if (r.href) { const a = el(doc, 'a', { href: r.href, tabindex: -1 }); a.append(label); g.append(a); } else g.append(label);
     g.append(el(doc, 'text', { class: 'n-label', x: geo.width - 4, y: r.cy + 4, 'text-anchor': 'end' }, `n=${fmtCount(r.n)}`));
     if (!r.empty) {
@@ -255,13 +255,14 @@ export function renderHeatmap(grid, { title, desc, doc = globalThis.document } =
     const cls = c.empty ? 'hm-empty' : `hm-b${c.bucket < 0 ? 'n' : ''}${Math.abs(c.bucket)}`;
     g.append(el(doc, 'title', {}, `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00 - ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}, n=${fmtCount(c.n)}${c.lowN && !c.empty ? `. ${LOW_N_NOTE}` : ''}`),
       el(doc, 'rect', { class: `${cls}${c.lowN ? ' low-n' : ''}`, x: c.x, y: c.y, width: c.w, height: c.h, rx: 2 }));
+    if (!c.empty && c.lowN) g.append(el(doc, 'circle', { class: `low-n-dot ${cls}`, cx: c.x + c.w - 4, cy: c.y + 4, r: 1.8 }));
     if (!c.empty) g.append(el(doc, 'text', { class: `cell-text ${cls}`, x: c.x + c.w / 2, y: c.y + c.h / 2 + 3, 'text-anchor': 'middle' }, fmtNum(c.mean / 60, 1)));
     svg.append(g);
   }
   return svg;
 }
 
-export function renderAccumulation(geo, stops, { title, desc, doc = globalThis.document } = {}) {
+export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) => s.stop_id, doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'acc-chart');
   for (const [ticks, x] of [[geo.ticksA, geo.x0], [geo.ticksB, geo.x0]]) {
     for (const t of ticks) svg.append(el(doc, 'line', { class: 'grid', x1: x, x2: geo.x1, y1: t.y, y2: t.y }), el(doc, 'text', { class: 'tick-label', x: x - 6, y: t.y + 4, 'text-anchor': 'end' }, t.label));
@@ -283,8 +284,8 @@ export function renderAccumulation(geo, stops, { title, desc, doc = globalThis.d
   svg.append(el(doc, 'path', { class: 'acc-line', d: geo.path, fill: 'none' }));
   stops.forEach((s, i) => {
     const p = geo.pts[i], b = geo.bars[i];
-    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${s.stop_id}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c); }
-    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1) }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${s.stop_id}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r); }
+    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c); }
+    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1) }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r); }
   });
   for (const t of geo.xTicks) svg.append(el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.height - 6, 'text-anchor': 'middle' }, t.label));
   return svg;

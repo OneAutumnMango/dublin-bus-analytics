@@ -433,3 +433,13 @@ test('directionLabels: first - last stop with bus number, raw key fallback', asy
   assert.equal(m.get('c'), 'Solo (bus 4)');
   assert.equal(directionLabels(null, '4').size, 0);
 });
+
+test('stopCodeMap / stopLabel: public stop number beats the internal id', () => {
+  const dirs = { out: [{ id: '8d82362361', code: '2051', name: 'Heuston' }, { id: 'zz', name: 'NoCode' }, { id: 'q', code: 77 }] };
+  const names = L.stopNameMap(dirs), codes = L.stopCodeMap(dirs);
+  assert.equal(L.stopLabel('8d82362361', names, codes), 'Heuston (2051)');
+  assert.equal(L.stopLabel('zz', names, codes), 'NoCode');
+  assert.equal(L.stopLabel('q', names, codes), '77');
+  assert.equal(L.stopLabel('unknown', names, codes), 'unknown');
+  assert.equal(L.stopCodeMap(null).size, 0);
+});

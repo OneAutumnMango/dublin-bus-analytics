@@ -2,7 +2,7 @@
 import { api, isAbort } from '../api.js';
 import { renderRangeChart, rangeDomain, rangeGeometry, rangeSummary } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, tile, put } from '../dom.js';
-import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPctile, paginate, plural, stopNameMap, describeDelay, directionLabels } from '../lib.js';
+import { buildHash, controlsToQuery, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPctile, paginate, plural, stopNameMap, stopCodeMap, stopLabel, describeDelay, directionLabels } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
@@ -25,13 +25,13 @@ export async function render(ctx) {
       api.summary(route, s.apiQuery, { signal }),
       api.stopsOf(route, { signal }).catch((e) => { if (isAbort(e)) throw e; return null; }),
     ]);
-    return { summary, names: stopNameMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
+    return { summary, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
   };
-  await region(box, ctx.signal).load(fetcher, ({ summary, names, dirs }, el) => draw(ctx, route, s, summary, names, dirs, dir, page, el),
+  await region(box, ctx.signal).load(fetcher, ({ summary, names, codes, dirs }, el) => draw(ctx, route, s, summary, names, codes, dirs, dir, page, el),
     { announce: ({ summary }) => `Route ${route}: loaded ${plural((summary.stops || []).length, 'stop')}` });
 }
 
-function draw(ctx, route, s, data, names, dirs, dir, page, el) {
+function draw(ctx, route, s, data, names, codes, dirs, dir, page, el) {
   put(el, ...filterNotices(data));
   const all = data.stops || [];
   if (!all.length) {
@@ -51,7 +51,7 @@ function draw(ctx, route, s, data, names, dirs, dir, page, el) {
     tile('Stops with data', fmtCount(withData), { note: dir ? (dirs.get(dir) || `direction ${dir}`) : null })), h('p', { class: 'hint' }, windowText(data)));
   if (!stops.length) { put(el, emptyState('No stops with data in this direction.')); return; }
 
-  const items = stops.map((x) => ({ id: x.stop_id, label: names.get(x.stop_id) || x.stop_id, href: buildHash('stop', { route, stop: x.stop_id }, controlsToQuery(s.controls)),
+  const items = stops.map((x) => ({ id: x.stop_id, label: stopLabel(x.stop_id, names, codes), short: names.get(x.stop_id) || codes.get(x.stop_id) || x.stop_id, href: buildHash('stop', { route, stop: x.stop_id }, controlsToQuery(s.controls)),
     n: x.n, low_n: x.low_n, mean: x.mean, min: x.min, max: x.max, lo: x.p_low, hi: x.p_high, raw: x }));
   const domain = rangeDomain(items);
   const p = paginate(items.length, page, PAGE);
