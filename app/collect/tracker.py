@@ -13,7 +13,7 @@ TTL rule: cached state is evicted when its age is strictly greater than the TTL.
 
 Threading: owns one meta connection and one cached samples connection (current UTC month);
 safe for concurrent calls from the single event-loop thread (ingest is serialised by a lock, so
-routes may be ingested with asyncio.gather); never use from other threads (see app/db.py).
+routes may be ingested with asyncio.gather); never use from other threads (see app/core/db.py).
 Call close() when done.
 
 Ordering rule: an ingest whose `now` is <= the last accepted `now` for that route is ignored
