@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Dublin Bus Analytics</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/js/theme.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="bar">
+      <a class="brand" href="#/">Dublin Bus Analytics</a>
+      <nav aria-label="Main">
+        <a href="#/">Routes</a>
+      </nav>
+      <button id="theme-toggle" class="btn btn-quiet" type="button">Theme: auto</button>
+    </div>
+  </header>
+  <div id="status" class="sr-only" role="status" aria-live="polite"></div>
+  <main id="main" tabindex="-1">
+    <h1>Dublin Bus Analytics</h1>
+    <p>Loading. This app needs JavaScript.</p>
+  </main>
+  <footer class="site-footer">
+    <details>
+      <summary>How to read the numbers</summary>
+      <ul>
+        <li><strong>Delay</strong> is actual arrival minus scheduled arrival. <strong>Negative = early, positive = late.</strong> The API stores seconds; the UI shows minutes with one decimal (seconds when under a minute).</li>
+        <li><strong>On time</strong> uses a window around the schedule (default 1 min early to 5 min late, configurable).</li>
+        <li><strong>Percentile band</strong> (default 5th to 95th): that share of buses arrived within it. <strong>Confidence interval</strong> (default 95 %): where the long-run <em>average</em> delay lies; it narrows as <em>n</em> grows.</li>
+        <li><strong>n</strong> is the number of arrivals behind a number. Values with n below 10 are greyed out: too few to trust.</li>
+        <li>Dates are interpreted in UTC; hours and weekdays use Dublin local time.</li>
+      </ul>
+    </details>
+  </footer>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
