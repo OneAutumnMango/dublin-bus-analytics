@@ -226,7 +226,7 @@ test('marks carry rich tip payloads and padded hit targets', async () => {
   const hits = acc.all((n) => n.getAttribute?.('class') === 'hit');
   assert.ok(hits.some((n) => n.tag === 'circle' && n.getAttribute('r') === '9'));
   assert.ok(hits.every((n) => { try { JSON.parse(n.getAttribute('data-tip-json')); return true; } catch { return false; } }));
-  assert.match(acc.all((n) => n.getAttribute?.('class') === 'acc-dot')[0].getAttribute('data-tip-json'), /Stop 1 · Ls0/);
+  assert.match(acc.all((n) => n.getAttribute?.('class') === 'acc-dot')[0].getAttribute('data-tip-json'), /Ls0/);
   const items = [{ label: 'A', n: 5, mean: 60, min: 0, max: 120, lo: 0, hi: 100, tip: { title: 'A', rows: [] } }];
   const geo = C.rangeGeometry(items);
   const rc = C.renderRangeChart(geo, { title: 't', desc: 'd', doc });
@@ -247,4 +247,17 @@ test('heatmapGrid: fixed cap overrides auto saturation', () => {
   const b = (g, h) => g.cells.find((c) => c.wd === 0 && c.hour === h).bucket;
   assert.ok(Math.abs(b(capped, 1)) > Math.abs(b(auto, 1)), 'a 2 min delay looks stronger with a 5 min cap');
   assert.equal(b(capped, 2), 5);
+});
+
+test('accumulation bars and dots stay inside the plot and the x axis has no stop-number labels', () => {
+  for (const n of [1, 2, 3, 12, 60]) {
+    const stops = Array.from({ length: n }, (_, i) => ({ stop_id: `s${i}`, position: i, mean_delay: 30 * i, segment_delta: i % 2 ? 400 : -400, n: 20, n_delta: 20 }));
+    const g = C.accumulationGeometry(stops);
+    for (const b of g.bars) {
+      assert.ok(b.x >= g.x0 - 0.01 && b.x + b.w <= g.x1 + 0.01, `bar ${b.x}..${b.x + b.w} within ${g.x0}..${g.x1} for n=${n}`);
+      assert.ok(b.y >= g.panelB.top - 0.01 && b.y + b.h <= g.panelB.top + g.panelB.h + 0.01, 'bar within panel vertically');
+      assert.ok(b.w <= 26);
+    }
+    for (const p of g.pts) assert.ok(p.x >= g.x0 && p.x <= g.x1);
+  }
 });

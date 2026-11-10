@@ -113,13 +113,14 @@ export function areaPath(points, baseY) {
 // stops: API accumulation stops [{stop_id, position, mean_delay, segment_delta, n, n_delta, ...}], in route order.
 // x follows the route POSITION (not the list index) and the line breaks where positions are skipped or data is missing.
 export function accumulationGeometry(stops, o = {}) {
-  const { width = 720, left = 52, right = 16, top = 14, panelH = 170, gap = 36, bottom = 22 } = o;
+  const { width = 720, left = 52, right = 16, top = 14, panelH = 170, gap = 36, bottom = 8 } = o;
   const n = stops.length;
   const x0 = left, x1 = width - right;
   const posOf = (s, i) => (isNum(s.position) ? s.position : i);
   const pe = extent(stops.map(posOf));
   const span = pe ? pe[1] - pe[0] : 0;
-  const xs = (p) => (span === 0 ? (x0 + x1) / 2 : x0 + ((p - pe[0]) / span) * (x1 - x0));
+  const slot = (x1 - x0) / (span + 1); // one slot per route position; points sit mid-slot so edge bars stay inside the plot
+  const xs = (p) => (span === 0 ? (x0 + x1) / 2 : x0 + slot * (p - pe[0] + 0.5));
   const e1 = extent(stops.map((s) => toMin(s.mean_delay)));
   const [a0, a1] = niceDomain(e1 ? e1[0] : null, e1 ? e1[1] : null, 4, true);
   const ya = linearScale([a0, a1], [top + panelH, top]);
@@ -131,12 +132,12 @@ export function accumulationGeometry(stops, o = {}) {
   const pts = stops.map((s, i) => ({ x: r2(xs(posOf(s, i))), y: isNum(s.mean_delay) ? r2(ya(s.mean_delay / 60)) : null, pos: posOf(s, i) }));
   const withGaps = [];
   pts.forEach((p, i) => { if (i && p.pos - pts[i - 1].pos !== 1) withGaps.push({ x: p.x, y: null }); withGaps.push(p); });
-  const slot = (x1 - x0) / (span + 1);
+  const bw = Math.min(slot * 0.8, 26);
   const bars = stops.map((s, i) => {
     const v = toMin(s.segment_delta), cx = xs(posOf(s, i));
-    if (!isNum(v)) return { x: r2(cx - slot * 0.4), w: r2(slot * 0.8), y: r2(yb(0)), h: 0, delta: null };
+    if (!isNum(v)) return { x: r2(cx - bw / 2), w: r2(bw), y: r2(yb(0)), h: 0, delta: null };
     const y = yb(v), z = yb(0);
-    return { x: r2(cx - slot * 0.4), w: r2(Math.max(1, slot * 0.8)), y: r2(Math.min(y, z)), h: r2(Math.abs(z - y)), delta: s.segment_delta };
+    return { x: r2(cx - bw / 2), w: r2(Math.max(1, bw)), y: r2(Math.min(y, z)), h: r2(Math.abs(z - y)), delta: s.segment_delta };
   });
   const every = Math.max(1, Math.ceil(n / 12));
   return { width, height: bTop + bH + bottom, x0, x1, pts, path: linePath(withGaps), bars, zeroA: r2(ya(0)), zeroB: r2(yb(0)),
@@ -296,7 +297,6 @@ export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) =>
     if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
     if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
   });
-  for (const t of geo.xTicks) svg.append(el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.height - 6, 'text-anchor': 'middle' }, t.label));
   return svg;
 }
 

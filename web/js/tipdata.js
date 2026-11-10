@@ -29,7 +29,7 @@ export function accTipData(s, label, pos) {
   const rows = [];
   if (isNum(s.segment_delta)) rows.push(row('delta', 'Change from previous stop', 'delay', s.segment_delta));
   rows.push(row('n', 'Samples', 'count', s.n ?? 0));
-  return out({ title: `Stop ${pos + 1} · ${label}`, head: head(s.mean_delay), rows });
+  return out({ title: label, head: head(s.mean_delay), rows });
 }
 
 export function heatTipData(c) {

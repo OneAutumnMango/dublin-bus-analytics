@@ -23,7 +23,7 @@ test('rangeTipData: full stat set, headline mean, omits missing stats', () => {
 
 test('accTipData / heatTipData / forecastTipData / histTipData', () => {
   const a = T.accTipData({ stop_id: 's', mean_delay: 120, segment_delta: -30, n: 20, n_delta: 18 }, 'Heuston (2051)', 4);
-  assert.equal(a.title, 'Stop 5 · Heuston (2051)');
+  assert.equal(a.title, 'Heuston (2051)');
   assert.equal(a.head.sec, 120);
   assert.deepEqual(keys(a), ['delta', 'n']);
   noBad(a);
