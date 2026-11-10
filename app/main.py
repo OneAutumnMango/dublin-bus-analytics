@@ -11,6 +11,7 @@ from app.config import Settings
 from app.poller import LazyTracker, Poller, seq_lookup
 from app.scheduler import BackupScheduler
 from app.serverclient import ServerClient
+from app.static import static_app
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     def health():
         return {"ok": True}
 
+    app.mount("/", static_app(), name="web")  # last: a mount at / would shadow routes added after it
     return app
 
 
