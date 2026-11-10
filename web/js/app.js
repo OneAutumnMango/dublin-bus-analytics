@@ -9,8 +9,10 @@ import * as route from './pages/route.js';
 import * as routes from './pages/routes.js';
 import * as stop from './pages/stop.js';
 import * as trip from './pages/trip.js';
+import * as settings from './pages/settings.js';
+import { onSettings } from './settings.js';
 
-const PAGES = { routes, route, stop, trip, analytics };
+const PAGES = { routes, route, stop, trip, analytics, settings };
 const SITE = 'Dublin Bus Analytics';
 let ctl = null;
 let lastKey = null;
@@ -56,5 +58,7 @@ async function show() {
 globalThis.addEventListener('hashchange', show);
 show();
 installTooltip();
+settings.applyAppearance();
+onSettings(() => settings.applyAppearance());
 const sidebar = globalThis.document.getElementById('sidebar');
 if (sidebar) renderSidebar(sidebar);

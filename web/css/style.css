@@ -244,3 +244,14 @@ tbody tr:last-child td { border-bottom: 0; }
 .sidebar .row-actions { position: relative; z-index: 1; display: inline-flex; gap: var(--s1); flex: none; }
 .sidebar .btn-danger.solid { opacity: 1; background: var(--err); color: var(--err-bg); border-color: var(--err); }
 .sidebar li:has(.btn-danger.solid) .btn-danger { opacity: 1; }
+
+/* ---- density + settings page ---- */
+:root[data-density="compact"] { --s3: 8px; --s4: 12px; --s5: 16px; --s6: 24px; }
+:root[data-density="compact"] th, :root[data-density="compact"] td { padding-block: 3px; }
+.settings-group { max-width: 640px; display: grid; gap: var(--s4); }
+.settings-group h2 { margin: 0; }
+.setting { display: flex; flex-direction: column; gap: var(--s1); }
+.setting-label { flex-direction: row; justify-content: space-between; align-items: center; gap: var(--s4); color: var(--text); font-size: var(--fs); }
+.settings-group fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.settings-group fieldset[disabled] { opacity: .5; }
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s2) var(--s4); }
