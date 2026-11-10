@@ -35,6 +35,8 @@ export async function render(ctx) {
         field('Heatmap colour saturation', select(s.charts.heatCap, [[0, 'Automatic'], [2, '2 min'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [30, '30 min']], (v) => setSettings({ charts: { heatCap: Number(v) } })), 'Delays beyond this show the strongest colour.'),
         field('Stops per page (route view)', select(s.charts.pageSize, [[20, '20'], [40, '40'], [80, '80']], (v) => setSettings({ charts: { pageSize: Number(v) } }))),
         check('Show the “Show data table” button under charts', s.charts.tableToggle, (v) => setSettings({ charts: { tableToggle: v } }))),
+      h('section', { class: 'card settings-group' }, h('h2', {}, 'Map'),
+        field('Area colouring strength', select(s.map.areaOpacity, [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1].map((v) => [v, `${Math.round(v * 100)}%`]), (v) => setSettings({ map: { areaOpacity: Number(v) } })), 'How strongly the hex grid, circles or smooth gradient tint the map. Lower lets the streets show through.')),
       h('div', { class: 'row' }, h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => { resetSettings(); applyAppearance(); draw(); } } }, 'Reset to defaults')));
   };
   draw();

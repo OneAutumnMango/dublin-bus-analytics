@@ -86,3 +86,13 @@ test('figure honours the table-toggle setting (table stays for screen readers)',
   assert.equal(f.byTag('table').length, 1);
   assert.equal(f.all((n) => n.getAttribute?.('class') === 'sr-only').length, 1);
 });
+
+test('map.areaOpacity: default, bounds and persistence', () => {
+  assert.equal(S.DEFAULTS.map.areaOpacity, 0.5);
+  assert.equal(S.validate({ map: { areaOpacity: 0.3 } }).map.areaOpacity, 0.3);
+  for (const bad of [0, 0.05, 1.5, 'x', null, NaN]) assert.equal(S.validate({ map: { areaOpacity: bad } }).map.areaOpacity, 0.5, String(bad));
+  withStore(mem());
+  S.setSettings({ map: { areaOpacity: 0.8 } });
+  assert.equal(S.getSettings().map.areaOpacity, 0.8);
+  assert.equal(S.getSettings().tip.on, true, 'other settings untouched');
+});
