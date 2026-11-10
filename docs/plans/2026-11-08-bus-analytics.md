@@ -354,3 +354,32 @@ README contents, in this order, kept under ~100 lines:
 - [ ] **Step 5:** Write `README.md`, `docker-compose.example.yml`, `analytics.env.example`.
 - [ ] **Step 6: Verify every README command actually works** (run each; do not paste unverified commands): fresh venv install, test command passes, `uvicorn` starts and `curl -s localhost:8081/api/health` returns `{"ok": true}`, seeded data shows in `curl -s localhost:8081/api/routes/tracked`, `docker build -t dublin-bus-analytics .` succeeds, `docker compose -f docker-compose.example.yml config` is valid. Add a test that every var in `analytics.env.example` is a name read by `Settings`/compose and vice versa (`test_env_example_matches_settings`).
 - [ ] **Step 7:** Commit.
+
+### Task 14: Restructure `app/` into packages and mirror it in `tests/` (VERY LAST TASK)
+
+User instruction 2026-11-10: group the flat `app/` folder by responsibility (backup utilities etc.) and make `tests/` mirror the `app/` layout. Run this ONLY after every other task, the final review and the browser check are done. Pure behaviour-preserving move: no logic changes, no renames of public functions, no compatibility shims (update every import).
+
+**Target layout (the implementer may adjust names, not the grouping idea):**
+```
+app/
+  __init__.py
+  main.py                  # entrypoint stays `app.main:app` (Dockerfile CMD, README, compose, tests unchanged)
+  core/        config.py  models.py  db.py
+  collect/     serverclient.py  poller.py  tracker.py  forecast.py     # data collection pipeline
+  analysis/    stats.py
+  api/         routes.py (was api.py)  static.py                       # HTTP surface: JSON API + static UI
+  backup/      backup.py  scheduler.py  api.py (was backup_api.py)     # backup utilities + their router
+tests/
+  conftest.py              # shared fixtures if any
+  support/     fake_server.py                                         # shared test helpers
+  core/        test_config*.py test_db.py ...
+  collect/     test_serverclient.py test_poller.py test_tracker.py test_forecast.py
+  analysis/    test_stats.py
+  api/         test_api.py test_web.py
+  backup/      test_backup.py test_scheduler.py
+  test_main.py             # create_app/lifespan/health (was test_health.py content that is about main) 
+  test_docs.py  test_seed_demo.py   # repo-level
+```
+**Rules:** use `git mv` (history preserved); one commit per package move (core, collect, analysis, api, backup, tests) with the suite green between commits; update EVERY import (`app.*` in app/, tests/, scripts/seed_demo.py, docs, README layout section, `tests/test_docs.py` path checks, Dockerfile/pyproject if needed: `[tool.setuptools.packages.find] include = ["app*"]` so subpackages ship in the image); `app/static.py` resolves the web dir relative to the package: fix the `.parent` depth (test_web covers it); add `__init__.py` to every package and test directory (or configure pytest `--import-mode=importlib`) so identical basenames cannot collide; keep `testpaths = ["tests"]`; coverage `source = ["app"]` unchanged; no behaviour change: the test suite is the lock.
+**Verification (memory-safe, the host has ~7.9 GB and crashed once):** run the Python suite file group by file group with `ulimit -v 2500000; timeout 900 pytest <dir>` (heavy ones one at a time: api, collect/test_tracker, backup), `node --test web/test/`, `grep -rn "from app\.\(config\|models\|db\|serverclient\|poller\|tracker\|forecast\|stats\|api\|static\|backup\|scheduler\|backup_api\) \|import app\.\(config\|...\)"` finds nothing stale, `docker build` of the analytics image still succeeds and the container serves `/api/health` and `/` (clean up image/container afterwards), `uvicorn app.main:app` dev command from the README still works against the seeded demo, README "Repo layout" and `docs/` updated. Total test count and coverage must equal the pre-move numbers (record both before and after).
+**Review:** none (credit policy): verification by running the above.
