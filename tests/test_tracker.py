@@ -10,8 +10,8 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from app.core.db import open_meta, open_samples
 from app.core.models import Arrival
-from app.forecast import extract_forecasts
-from app.tracker import FINALISED_TTL_S, NEG_TTL_S, Tracker
+from app.collect.forecast import extract_forecasts
+from app.collect.tracker import FINALISED_TTL_S, NEG_TTL_S, Tracker
 
 T0 = 1_760_000_000  # Oct 2025
 
@@ -488,7 +488,7 @@ async def test_property_invariants(tmp_path_factory, ticks):
 
 
 # ---- fix round 2 -----------------------------------------------------------------------
-import app.tracker as trk  # noqa: E402
+import app.collect.tracker as trk  # noqa: E402
 
 
 @pytest.mark.parametrize("kw", [dict(trip=["a"]), dict(trip={"a": 1}), dict(stop=["s"]), dict(stop=""),

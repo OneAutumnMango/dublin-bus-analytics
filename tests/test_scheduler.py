@@ -437,7 +437,7 @@ async def test_backup_dir_inside_data_dir_not_recursively_backed_up(tmp_path):
 
 # ---------------------------------------------------------------- lifespan
 def _app(tmp_path, bg, **kw):
-    from app.serverclient import ServerClient
+    from app.collect.serverclient import ServerClient
     return create_app(S(tmp_path, **kw), start_background=bg, client=ServerClient("http://fake"))
 
 

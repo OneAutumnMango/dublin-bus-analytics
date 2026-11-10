@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.core.db import open_meta
-from app.forecast import extract_forecasts
+from app.collect.forecast import extract_forecasts
 from app.main import create_app
 
 _spec = importlib.util.spec_from_file_location("seed_demo", Path(__file__).resolve().parent.parent / "scripts" / "seed_demo.py")

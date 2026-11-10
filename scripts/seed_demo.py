@@ -19,8 +19,8 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.core.db import open_meta, open_samples  # noqa: E402
-from app.forecast import HORIZONS  # noqa: E402
-from app.poller import ROUTE_RE  # noqa: E402
+from app.collect.forecast import HORIZONS  # noqa: E402
+from app.collect.poller import ROUTE_RE  # noqa: E402
 
 DUBLIN = ZoneInfo("Europe/Dublin")
 N_STOPS = 6

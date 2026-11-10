@@ -11,9 +11,9 @@ from hypothesis import HealthCheck, given, settings as hsettings, strategies as 
 from app.core.config import Settings
 from app.core.db import open_meta
 from app.core.models import Arrival
-from app.poller import LazyTracker, Poller, seq_lookup
-from app.serverclient import ServerClient
-from app.tracker import IngestResult, Tracker
+from app.collect.poller import LazyTracker, Poller, seq_lookup
+from app.collect.serverclient import ServerClient
+from app.collect.tracker import IngestResult, Tracker
 from tests.fake_server import FakeServer
 
 T0 = 1_760_000_000

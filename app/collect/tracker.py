@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from .forecast import HORIZONS, extract_forecasts, open_previous_month
+from app.collect.forecast import HORIZONS, extract_forecasts, open_previous_month
 from app.core.db import open_meta, open_samples, samples_path
 from app.core.models import Arrival
 

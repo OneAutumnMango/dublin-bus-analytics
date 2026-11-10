@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given, settings, strategies as st
 
 from app.core.db import open_samples
-from app.forecast import HORIZONS, extract_forecasts, open_previous_month
+from app.collect.forecast import HORIZONS, extract_forecasts, open_previous_month
 
 ACT = 1_000_000
 SCHEMA = ("create table sample(ts int, trip_id text, stop_id text, seq int, due_min int, "

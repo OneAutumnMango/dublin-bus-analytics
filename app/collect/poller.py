@@ -20,8 +20,8 @@ import time
 from pathlib import Path
 
 from app.core.db import open_meta
-from app.serverclient import RouteNotFound, ServerUnavailable
-from app.tracker import Tracker
+from app.collect.serverclient import RouteNotFound, ServerUnavailable
+from app.collect.tracker import Tracker
 
 log = logging.getLogger(__name__)
 SKIP_WARN_EVERY_S = 3600

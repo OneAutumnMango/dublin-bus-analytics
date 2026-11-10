@@ -18,7 +18,7 @@ from hypothesis import HealthCheck, given, settings as hsettings, strategies as 
 from app.core.config import Settings
 from app.core.db import open_meta
 from app.main import create_app
-from app.serverclient import ServerClient
+from app.collect.serverclient import ServerClient
 from tests.fake_server import FakeServer
 
 T0 = 1_760_000_000  # a Tuesday-ish base epoch; tests that need weekdays compute them
@@ -571,7 +571,7 @@ def test_malformed_shapes_never_500(env, bad):
 def test_missing_directions_key_is_502(env):
     # FakeServer always wraps in "directions"; emulate a server answering without it
     import httpx
-    from app.serverclient import ServerClient as SC
+    from app.collect.serverclient import ServerClient as SC
     h = lambda req: httpx.Response(200, json={"routeId": "15"})
     env.app.state.client = SC("http://x", httpx.AsyncClient(transport=httpx.MockTransport(h)))
     env.add(delay=1)
@@ -1363,7 +1363,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
-from app.serverclient import ServerClient
+from app.collect.serverclient import ServerClient
 from tests.fake_server import FakeServer
 fake = FakeServer()
 fake.set_route_stops("15", {"out": [{"id": f"s{i}"} for i in range(50)]})

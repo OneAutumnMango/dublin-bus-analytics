@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given, strategies as st
 
 from app.core.models import Arrival
-from app.serverclient import RouteNotFound, ServerClient, ServerUnavailable
+from app.collect.serverclient import RouteNotFound, ServerClient, ServerUnavailable
 from tests.fake_server import FakeServer
 
 
