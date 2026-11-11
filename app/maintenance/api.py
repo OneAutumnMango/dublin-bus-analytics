@@ -1,3 +1,4 @@
+import sqlite3
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -8,6 +9,7 @@ from app.collect.poller import ROUTE_RE
 from app.maintenance import day as _day
 
 router = APIRouter()
+_WRITE_FAILED = "the database could not be written; nothing further was removed, rerun after fixing"
 
 
 def _args(date: str, route: str | None):
@@ -22,7 +24,18 @@ def _args(date: str, route: str | None):
 @router.get("/api/data/day")
 def preview_day(request: Request, date: str = Query(...), route: str | None = None):
     d, route = _args(date, route)
-    return _day.preview(request.app.state.settings.data_dir, d, route)
+    try:
+        return _day.preview(request.app.state.settings.data_dir, d, route)
+    except _day.DayBusy as e:
+        return _unavailable(e.kind == "busy")
+    except sqlite3.Error:
+        return _unavailable(False)
+
+
+def _unavailable(busy: bool):
+    if busy:
+        return JSONResponse({"detail": "The data is busy; try again shortly."}, status_code=409)
+    return JSONResponse({"detail": "The data could not be read."}, status_code=503)
 
 
 @router.post("/api/data/day/remove")
@@ -39,7 +52,11 @@ def remove_day(request: Request, date: str = Query(...), confirm: str = Query(..
     try:
         return _day.remove(request.app.state.settings.data_dir, d, route)
     except _day.DayBusy as e:
-        return JSONResponse({"detail": f"{e.part} stayed locked; removal stopped part-way. Run it again to finish.",
-                             "done": e.done}, status_code=409)
+        if e.kind == "busy":
+            return JSONResponse({"detail": f"{e.part} stayed locked; removal stopped part-way. Run it again to finish.",
+                                 "done": e.done}, status_code=409)
+        return JSONResponse({"detail": _WRITE_FAILED, "done": e.done}, status_code=503)
+    except sqlite3.Error:
+        return JSONResponse({"detail": _WRITE_FAILED, "done": {}}, status_code=503)
     finally:
         _backup._lock.release()

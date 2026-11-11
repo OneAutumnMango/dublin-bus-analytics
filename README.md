@@ -186,6 +186,10 @@ In the web UI this is the "Remove a day of data" section of the Backup card on t
 - With `route`, only samples belonging to that route's arrivals of the day go; samples without an arrival (buses dropped before arriving) and gaps cannot be attributed to a route and stay.
 - A gzipped (closed) month is immutable and is skipped and reported; extract it by hand if you must clean it.
 - Rows are removed in chunks of 2000, each its own short transaction, so the collector keeps writing. If a file stays locked the call returns `409` saying what was done; repeat it to finish. Only one remove, backup or compaction runs at a time (`409` when busy).
+- Today and tomorrow are accepted, but the collector keeps live state in memory: after deleting today's samples, buses still in flight get incomplete forecast rows when they finalise, and a bus held at "due now" can re-create an arrival row. Prefer completed days, or run it right after deploying a new version; a preview taken while the collector runs is not guaranteed to be all zero afterwards.
+- Windows differ by table: arrivals are matched by `service_date`, samples by recording time. In route mode, samples of a day-D arrival recorded before local midnight stay behind (they cannot be attributed), and a trip id that crosses midnight can lose the previous day's early-morning samples. In all-routes mode, after-midnight samples of late D-1 buses are deleted too (their arrival rows and forecasts survive; only the raw trip detail is truncated).
+- A `409` partial result can mean samples were deleted while arrivals remain; rerun to finish. A non-lock database error gives `503` with the same `done` counts.
+- Security: the same-origin check relies on the `Origin` header (browsers send it on cross-origin POSTs; non-browser clients and DNS rebinding are not covered) and `confirm` is not CSRF protection. The app has no authentication and must stay off the public internet.
 - The collector remembers finalised arrivals in memory for about 6 h so they are not re-inserted, but a bus held at "due now" may still finalise after the removal and recreate a row for that day: run the removal again if so.
 
 ## Repo layout

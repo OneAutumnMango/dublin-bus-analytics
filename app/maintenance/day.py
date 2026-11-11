@@ -32,7 +32,7 @@ from app.api.routes import _DB_LOCK
 DUBLIN = ZoneInfo("Europe/Dublin")
 CHUNK = 2000
 MIN_DATE = date(2020, 1, 1)
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 class DayError(Exception):
@@ -40,10 +40,11 @@ class DayError(Exception):
 
 
 class DayBusy(Exception):
-    """A database stayed locked; `done` holds the counts removed before the abort."""
-    def __init__(self, part: str, done: dict):
+    """A database stayed locked (kind "busy") or failed otherwise (kind "error"); `done` holds the
+    counts removed before the abort."""
+    def __init__(self, part: str, done: dict, kind: str = "busy"):
         super().__init__(part)
-        self.part, self.done = part, done
+        self.part, self.done, self.kind = part, done, kind
 
 
 def _between_chunks() -> None:
@@ -81,11 +82,22 @@ def _months(start: int, end: int) -> list[str]:
     return out
 
 
-def _open(path: Path) -> sqlite3.Connection:
-    c = sqlite3.connect(path)
-    c.execute("pragma busy_timeout=5000")
-    c.execute("pragma journal_mode=wal")
-    c.execute("pragma synchronous=normal")
+def _open(path: Path, rw: bool) -> sqlite3.Connection | None:
+    """Open an EXISTING db (never creates one): read-only for previews, read-write for removal.
+    Returns None when the file vanished (e.g. compaction gzipped it meanwhile)."""
+    c = None
+    try:
+        c = sqlite3.connect(path.resolve().as_uri() + ("?mode=rw" if rw else "?mode=ro"), uri=True)
+        c.execute("pragma busy_timeout=5000")
+        if rw:
+            c.execute("pragma synchronous=normal")
+        c.execute("select count(*) from sqlite_master").fetchall()
+    except sqlite3.OperationalError:
+        if c is not None:
+            c.close()
+        if not path.exists():
+            return None
+        raise
     return c
 
 
@@ -94,6 +106,11 @@ def _checkpoint(c: sqlite3.Connection) -> None:
         c.execute("pragma wal_checkpoint(passive)").fetchall()
     except sqlite3.Error:
         pass
+
+
+def _fail(part: str, done: dict, e: sqlite3.Error) -> DayBusy:
+    busy = isinstance(e, sqlite3.OperationalError) and any(w in str(e).lower() for w in ("locked", "busy"))
+    return DayBusy(part, dict(done), "busy" if busy else "error")
 
 
 def _zero(d, route, w):
@@ -116,46 +133,57 @@ def _arrival_where(d: date, route: str | None):
             [d.isoformat()] + ([route] if route else []))
 
 
-def _scan_months(data_dir: Path, d, route, w, apply: bool, state: dict) -> tuple[list[str], list[str]]:
-    """Samples of every editable month: count (preview) or delete in chunks. Returns (months, skipped)."""
+def _scan_months(data_dir: Path, d, route, w, apply: bool, state: dict) -> None:
+    """Samples of every editable month: count (preview) or delete in chunks, updating `state`."""
     edit, skipped = _classify(data_dir, w)
     state["months"], state["skipped_months"] = [], skipped
     keys = []
     if route:
-        meta = data_dir / "meta.db"
-        if meta.exists():
-            where, args = _arrival_where(d, route)
-            with closing(_open(meta)) as m:
-                keys = m.execute(f"select trip_id, stop_id, seq from arrivals where {where}", args).fetchall()
+        try:
+            m = _open(data_dir / "meta.db", False) if (data_dir / "meta.db").exists() else None
+            if m is not None:
+                with closing(m):
+                    where, args = _arrival_where(d, route)
+                    keys = m.execute(f"select trip_id, stop_id, seq from arrivals where {where}", args).fetchall()
+        except sqlite3.Error as e:
+            raise _fail("meta.db", state, e) from None
     for name in edit:
         try:
-            with closing(_open(data_dir / name)) as c:
-                n = _samples_one(c, w, keys if route else None, apply)
+            c = _open(data_dir / name, apply)
+            if c is None:  # vanished since listing: gzipped by compaction (or gone); never recreate it
+                if (data_dir / (name + ".gz")).exists():
+                    state["skipped_months"] = skipped = skipped + [name + ".gz"]
+                continue
+            with closing(c):
+                state["months"].append(name)
+                _samples_one(c, w, keys if route else None, apply, state)
                 if apply:
                     _checkpoint(c)
-        except sqlite3.OperationalError:
-            raise DayBusy(name, dict(state)) from None
-        state["samples"] += n
-        state["months"].append(name)
-    return edit, skipped
+        except sqlite3.Error as e:
+            raise _fail(name, state, e) from None
 
 
 _PK = "(trip_id, stop_id, seq, ts)"
 
 
-def _samples_one(c: sqlite3.Connection, w, keys, apply: bool) -> int:
-    tbl = c.execute("select 1 from sqlite_master where name = 'sample'").fetchone()
-    if not tbl:
-        return 0
+def _load_keys(c: sqlite3.Connection, keys) -> None:
+    c.execute("create temp table if not exists dkeys(trip_id, stop_id, seq, primary key(trip_id, stop_id, seq))")
+    c.execute("delete from dkeys")
+    c.executemany("insert or ignore into dkeys values (?,?,?)", keys)
+    c.commit()  # no implicit transaction may stay open: its later read would pin a WAL snapshot
+
+
+def _samples_one(c: sqlite3.Connection, w, keys, apply: bool, state: dict) -> None:
+    if not c.execute("select 1 from sqlite_master where name = 'sample'").fetchall():
+        return
     cond, args = "ts >= ? and ts < ?", [w[0], w[1]]
     if keys is not None:
-        c.execute("create temp table if not exists dkeys(trip_id, stop_id, seq, primary key(trip_id, stop_id, seq))")
-        c.execute("delete from dkeys")
-        c.executemany("insert or ignore into dkeys values (?,?,?)", keys)
+        _load_keys(c, keys)
         cond += " and exists (select 1 from dkeys k where k.trip_id = sample.trip_id and k.stop_id = sample.stop_id and k.seq = sample.seq)"
     if not apply:
-        return c.execute(f"select count(*) from sample where {cond}", args).fetchone()[0]
-    total, last = 0, None
+        state["samples"] += c.execute(f"select count(*) from sample where {cond}", args).fetchall()[0][0]
+        return
+    last = None
     while True:
         # keyset pagination over the primary key: linear overall, no rescanning of earlier rows
         after = f" and {_PK} > (?,?,?,?)" if last else ""
@@ -166,19 +194,18 @@ def _samples_one(c: sqlite3.Connection, w, keys, apply: bool) -> int:
                 break
             c.executemany(f"delete from sample where {_PK} = (?,?,?,?)", rows)
             c.commit()
-        total += len(rows)
+        state["samples"] += len(rows)  # per committed chunk: exact even if a later chunk fails
         last = rows[-1]
         _between_chunks()
         if len(rows) < CHUNK:
             break
-    return total
 
 
 def _meta_counts(c, d, route, w) -> tuple[int, int, int]:
     where, args = _arrival_where(d, route)
-    a = c.execute(f"select count(*) from arrivals where {where}", args).fetchone()[0]
-    f = c.execute(f"select count(*) from forecast where arrival_id in (select id from arrivals where {where})", args).fetchone()[0]
-    g = 0 if route else c.execute("select count(*) from gaps where start >= ? and start < ?", w).fetchone()[0]
+    a = c.execute(f"select count(*) from arrivals where {where}", args).fetchall()[0][0]
+    f = c.execute(f"select count(*) from forecast where arrival_id in (select id from arrivals where {where})", args).fetchall()[0][0]
+    g = 0 if route else c.execute("select count(*) from gaps where start >= ? and start < ?", w).fetchall()[0][0]
     return a, f, g
 
 
@@ -186,9 +213,13 @@ def preview(data_dir: Path, d: date, route: str | None) -> dict:
     data_dir, w = Path(data_dir), window(d)
     out = _zero(d, route, w)
     meta = data_dir / "meta.db"
-    if meta.exists():
-        with closing(_open(meta)) as c:
-            out["arrivals"], out["forecasts"], out["gaps"] = _meta_counts(c, d, route, w)
+    try:
+        c = _open(meta, False) if meta.exists() else None
+        if c is not None:
+            with closing(c):
+                out["arrivals"], out["forecasts"], out["gaps"] = _meta_counts(c, d, route, w)
+    except sqlite3.Error as e:
+        raise _fail("meta.db", out, e) from None
     _scan_months(data_dir, d, route, w, False, out)
     out["truncated"] = False
     return out
@@ -199,19 +230,22 @@ def remove(data_dir: Path, d: date, route: str | None) -> dict:
     out = _zero(d, route, w)
     _scan_months(data_dir, d, route, w, True, out)
     meta = data_dir / "meta.db"
-    if not meta.exists():
-        return out
     try:
-        with closing(_open(meta)) as c:
+        c = _open(meta, True) if meta.exists() else None
+        if c is None:
+            return out
+        with closing(c):
             where, args = _arrival_where(d, route)
-            ids = [r[0] for r in c.execute(f"select id from arrivals where {where}", args)]
+            ids = [r[0] for r in c.execute(f"select id from arrivals where {where}", args).fetchall()]
             for i in range(0, len(ids), CHUNK):
                 part = ids[i:i + CHUNK]
                 ph = ",".join("?" * len(part))
                 with _DB_LOCK:  # forecasts and their arrivals in ONE transaction: no orphan forecast
-                    out["forecasts"] += c.execute(f"delete from forecast where arrival_id in ({ph})", part).rowcount
-                    out["arrivals"] += c.execute(f"delete from arrivals where id in ({ph})", part).rowcount
+                    nf = c.execute(f"delete from forecast where arrival_id in ({ph})", part).rowcount
+                    na = c.execute(f"delete from arrivals where id in ({ph})", part).rowcount
                     c.commit()
+                out["forecasts"] += nf
+                out["arrivals"] += na
                 _between_chunks()
             if not route:
                 while True:
@@ -224,6 +258,6 @@ def remove(data_dir: Path, d: date, route: str | None) -> dict:
                     if n < CHUNK:
                         break
             _checkpoint(c)
-    except sqlite3.OperationalError:
-        raise DayBusy("meta.db", dict(out)) from None
+    except sqlite3.Error as e:
+        raise _fail("meta.db", out, e) from None
     return out

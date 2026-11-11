@@ -1,5 +1,4 @@
 import sqlite3
-import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -87,3 +86,36 @@ def test_locked_db_409_with_partial_and_lock_released(client, monkeypatch):
     r = client.post("/api/data/day/remove", params={"date": DAY, "confirm": DAY})
     assert r.status_code == 409 and "samples-2026-11.db" in r.json()["detail"] and r.json()["done"] == {"arrivals": 0}
     assert not bk._lock.locked()
+
+
+def _raise(exc):
+    def f(*a, **k):
+        raise exc
+    return f
+
+
+@pytest.mark.parametrize("exc,status", [
+    (D.DayBusy("meta.db", {}, "busy"), 409), (D.DayBusy("meta.db", {}, "error"), 503),
+    (sqlite3.OperationalError("disk I/O error /secret/path"), 503), (sqlite3.DatabaseError("secret malformed"), 503)])
+def test_preview_error_mapping_is_neutral(client, monkeypatch, exc, status):
+    monkeypatch.setattr(D, "preview", _raise(exc))
+    r = client.get("/api/data/day", params={"date": DAY})
+    assert r.status_code == status and "secret" not in r.text and "I/O" not in r.text
+
+
+@pytest.mark.parametrize("exc,status,word", [
+    (D.DayBusy("meta.db", {"samples": 3}, "busy"), 409, "stayed locked"),
+    (D.DayBusy("meta.db", {"samples": 3}, "error"), 503, "could not be written"),
+    (sqlite3.OperationalError("disk I/O error /secret/path"), 503, "could not be written"),
+    (sqlite3.DatabaseError("secret malformed"), 503, "could not be written")])
+def test_remove_error_mapping_is_neutral(client, monkeypatch, exc, status, word):
+    monkeypatch.setattr(D, "remove", _raise(exc))
+    r = client.post("/api/data/day/remove", params={"date": DAY, "confirm": DAY})
+    assert r.status_code == status and word in r.json()["detail"] and "secret" not in r.text
+    if status == 503:
+        assert "locked" not in r.json()["detail"]
+    assert not bk._lock.locked()
+
+
+def test_unicode_digit_date_422(client):
+    assert client.get("/api/data/day", params={"date": "\u0662\u0660\u0662\u0666-11-05"}).status_code == 422

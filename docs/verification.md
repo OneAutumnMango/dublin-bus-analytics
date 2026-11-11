@@ -58,3 +58,7 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 - On a day overlapping a gzipped month, `skipped_months` names the `.db.gz` file and its checksum is unchanged.
 - While the tracker is running, the collector keeps recording during a large removal (no `database is locked` in its log).
 - Web UI, Routes page > Backup card > "Remove a day of data": the date defaults to today (Dublin). Press Preview on a test day: the counts match the curl preview and a "Remove these rows" button appears. Change the date or route: the button and text disappear. Preview again, remove: the "Removed ..." counts match, and a second Preview says "Nothing recorded for that day."
+- Removing a day that is still being recorded (today): preview afterwards may be non-zero while the collector runs (in-flight buses finalise with incomplete forecasts); this is expected, rerun once the day is complete.
+- A `409` or `503` response names no raw error text; after a `409` with `done`, rerunning the same removal completes it.
+- Cross-origin check: `curl -X POST -H "Origin: http://evil.example" ".../api/data/day/remove?date=<day>&confirm=<day>"` returns 403 (non-browser clients can still omit Origin; no authentication exists).
+

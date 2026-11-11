@@ -1,6 +1,8 @@
 import gzip
 import sqlite3
 import threading
+import time
+from functools import partial
 from datetime import date, datetime, timezone
 
 import pytest
@@ -170,14 +172,18 @@ def test_concurrent_writer_not_blocked_and_rows_survive(data, monkeypatch):
     assert s.execute("select count(*) from sample where trip_id = 'new'").fetchone()[0] == 3
 
 
-def test_locked_month_reports_partial(data, monkeypatch):
+def _fast_busy(monkeypatch):
     real = D._open
 
-    def fast(p):
-        c = real(p)
+    def fast(p, rw):
+        c = real(p, rw)
         c.execute("pragma busy_timeout=50")
         return c
     monkeypatch.setattr(D, "_open", fast)
+
+
+def test_locked_month_reports_partial(data, monkeypatch):
+    _fast_busy(monkeypatch)
     blocker = sqlite3.connect(data / "samples-2026-11.db", isolation_level=None)
     blocker.execute("begin immediate")
     try:
@@ -185,6 +191,193 @@ def test_locked_month_reports_partial(data, monkeypatch):
             D.remove(data, DAY, None)
     finally:
         blocker.execute("rollback"); blocker.close()
-    assert e.value.part == "samples-2026-11.db"
+    assert e.value.part == "samples-2026-11.db" and e.value.kind == "busy"
+    assert e.value.done["samples"] == 0 and e.value.done["arrivals"] == 0
     assert _count(data / "meta.db", "arrivals") == 5  # meta untouched, retry possible
     assert D.remove(data, DAY, None)["arrivals"] == 3
+
+
+def test_locked_mid_month_done_is_exact(data, monkeypatch):
+    _fast_busy(monkeypatch)
+    monkeypatch.setattr(D, "CHUNK", 2)
+    blk, calls = [], []
+
+    def hook():
+        calls.append(1)
+        if len(calls) == 1:  # after the first committed chunk another writer grabs the file
+            b = sqlite3.connect(data / "samples-2026-11.db", isolation_level=None)
+            b.execute("begin immediate")
+            blk.append(b)
+    monkeypatch.setattr(D, "_between_chunks", hook)
+    try:
+        with pytest.raises(D.DayBusy) as e:
+            D.remove(data, DAY, None)
+    finally:
+        for b in blk:
+            b.execute("rollback"); b.close()
+    assert e.value.done["samples"] == 2 and e.value.done["arrivals"] == 0
+    assert _count(data / "samples-2026-11.db", "sample") == 6 - 2
+
+
+def test_vanished_month_not_recreated(data, monkeypatch):
+    real = D._classify
+
+    def racing(dd, w):
+        out = real(dd, w)  # compaction gzips and unlinks the plain month right after we listed it
+        (dd / "samples-2026-11.db").unlink()
+        for suf in ("-wal", "-shm"):
+            (dd / ("samples-2026-11.db" + suf)).unlink(missing_ok=True)
+        (dd / "samples-2026-11.db.gz").write_bytes(b"gz")
+        return out
+    monkeypatch.setattr(D, "_classify", racing)
+    p = D.preview(data, DAY, None)
+    assert p["months"] == [] and p["skipped_months"] == ["samples-2026-11.db.gz"] and p["samples"] == 0
+    assert not (data / "samples-2026-11.db").exists()
+    assert sorted(f.name for f in data.glob("samples-*")) == ["samples-2026-11.db.gz"]
+
+
+def test_vanished_month_not_recreated_on_remove(data, monkeypatch):
+    real = D._classify
+
+    def racing(dd, w):
+        out = real(dd, w)
+        for f in dd.glob("samples-2026-11.db*"):
+            f.unlink()
+        return out
+    monkeypatch.setattr(D, "_classify", racing)
+    r = D.remove(data, DAY, None)
+    assert r["months"] == [] and r["arrivals"] == 3
+    assert list(data.glob("samples-*")) == []
+
+
+def test_preview_does_not_modify_files(data):
+    before = {f.name: f.read_bytes() for f in data.glob("*.db")}
+    D.preview(data, DAY, "15")
+    assert {f.name: f.read_bytes() for f in data.glob("*.db")} == before
+
+
+def test_route_first_chunk_survives_concurrent_commit(data, monkeypatch):
+    orig = sqlite3.connect
+    path = data / "samples-2026-11.db"
+    fired = []
+
+    class C(sqlite3.Connection):
+        def executemany(self, sql, rows):
+            if sql.startswith("delete from sample") and not fired:
+                fired.append(1)  # the tracker commits between our SELECT and our first DELETE
+                w = orig(path, timeout=5)
+                w.execute("insert into sample values (?,?,?,?,?,?,?)", (W1 + 500, "new", "n", 1, 1, 1, 1))
+                w.commit(); w.close()
+            return super().executemany(sql, rows)
+    monkeypatch.setattr(D.sqlite3, "connect", partial(orig, factory=C))
+    r = D.remove(data, DAY, "15")
+    assert fired and r["samples"] == 2
+    assert orig(path).execute("select count(*) from sample where trip_id='new'").fetchone()[0] == 1
+
+
+# --- test strength -------------------------------------------------------------------------------
+def test_route_mode_keyed_sample_outside_window_survives(data):
+    s = open_samples(data, W0)
+    _sample(s, W0 - 3600, 1)   # same trip/stop/seq as deleted arrival 1, previous day
+    _sample(s, W1 + 3600, 1)   # and next day
+    s.commit(); s.close()
+    p = D.preview(data, DAY, "15")
+    r = D.remove(data, DAY, "15")
+    assert p["samples"] == r["samples"] == 2
+    s = sqlite3.connect(data / "samples-2026-11.db")
+    assert sorted(x for x, in s.execute("select ts from sample where seq = 1")) == [W0 - 3600, W1 + 3600]
+
+
+@pytest.mark.parametrize("day,start_utc,end_utc,month", [
+    (date(2026, 3, 29), (2026, 3, 29, 0), (2026, 3, 29, 23), "2026-03"),
+    (date(2026, 10, 25), (2026, 10, 24, 23), (2026, 10, 26, 0), "2026-10")])
+def test_dst_windows_and_boundaries(tmp_path, day, start_utc, end_utc, month):
+    a = int(datetime(*start_utc, tzinfo=timezone.utc).timestamp())
+    b = int(datetime(*end_utc, tzinfo=timezone.utc).timestamp())
+    assert D.window(day) == (a, b)
+    s = open_samples(tmp_path, a)
+    for ts in (a - 1, a, b - 1, b):
+        _sample(s, ts, ts % 1000)
+    s.commit(); s.close()
+    assert D.preview(tmp_path, day, None)["samples"] == 2
+    assert D.remove(tmp_path, day, None)["samples"] == 2
+    c = sqlite3.connect(tmp_path / f"samples-{month}.db")
+    assert sorted(x for x, in c.execute("select ts from sample")) == [a - 1, b]
+
+
+def test_plain_and_gz_both_present_plain_untouched(tmp_path):
+    d = date(2026, 8, 1)
+    w0, w1 = D.window(d)
+    s = open_samples(tmp_path, w0 - 1); _sample(s, w0 + 0, 1); s.commit(); s.close()
+    plain = tmp_path / "samples-2026-07.db"
+    (tmp_path / "samples-2026-07.db.gz").write_bytes(gzip.compress(b"x"))
+    before = plain.read_bytes()
+    p = D.preview(tmp_path, d, None)
+    r = D.remove(tmp_path, d, None)
+    assert p["skipped_months"] == r["skipped_months"] == ["samples-2026-07.db.gz"]
+    assert r["months"] == [] and r["samples"] == 0  # 2026-08 does not exist: simply omitted
+    assert plain.read_bytes() == before
+
+
+def test_keyset_pagination_same_key_many_ts(tmp_path, monkeypatch):
+    m = open_meta(tmp_path)
+    _arr(m, 1, "15"); _arr(m, 2, "7")
+    m.commit(); m.close()
+    s = open_samples(tmp_path, W0)
+    for k in range(10):
+        _sample(s, W0 + 10 + k, 1)          # key of route 15, 10 timestamps
+        _sample(s, W0 + 10 + k, 2)          # key of route 7
+    for ts in (W0 - 1, W1):
+        _sample(s, ts, 1)
+    s.commit(); s.close()
+    monkeypatch.setattr(D, "CHUNK", 3)
+    assert D.remove(tmp_path, DAY, "15")["samples"] == 10
+    c = sqlite3.connect(tmp_path / "samples-2026-11.db")
+    assert c.execute("select count(*) from sample where seq = 1").fetchone()[0] == 2
+    assert c.execute("select count(*) from sample where seq = 2").fetchone()[0] == 10
+
+
+def test_forecast_chunks_precise_and_no_orphans_on_failure(data, monkeypatch):
+    monkeypatch.setattr(D, "CHUNK", 1)
+    m = sqlite3.connect(data / "meta.db")
+    # the second arrival chunk fails mid-transaction, after its forecast delete ran
+    m.execute("create trigger boom before delete on arrivals when old.id = 2 begin select raise(abort, 'secret'); end")
+    m.commit(); m.close()
+    with pytest.raises(D.DayBusy) as e:
+        D.remove(data, DAY, None)
+    assert e.value.kind == "error" and e.value.done["arrivals"] == 1 and e.value.done["forecasts"] == 2
+    c = sqlite3.connect(data / "meta.db")
+    assert c.execute("select count(*) from forecast where arrival_id not in (select id from arrivals)").fetchone()[0] == 0
+    assert sorted(r for r, in c.execute("select distinct arrival_id from forecast")) == [2, 3, 4, 5]
+    assert sorted(r for r, in c.execute("select id from arrivals")) == [2, 3, 4, 5]
+
+
+def test_concurrent_writer_thread_during_multichunk_remove(data, monkeypatch):
+    m = open_meta(data)
+    for i in range(10, 30):
+        _arr(m, i, "15", forecasts=1)
+    s = open_samples(data, W0)
+    for i in range(10, 30):
+        _sample(s, W0 + 300 + i, i)
+    m.commit(); m.close(); s.commit(); s.close()
+    monkeypatch.setattr(D, "CHUNK", 3)
+    monkeypatch.setattr(D, "_between_chunks", lambda: time.sleep(0.01))
+    path = data / "samples-2026-11.db"
+    lat, errs = [], []
+
+    def writer():
+        try:
+            for i in range(25):
+                t = time.monotonic()
+                w = sqlite3.connect(path, timeout=5)
+                w.execute("insert into sample values (?,?,?,?,?,?,?)", (W1 + 1000 + i, "new", "n", 1, 1, 1, 1))
+                w.commit(); w.close()
+                lat.append(time.monotonic() - t)
+                time.sleep(0.005)
+        except Exception as e:  # pragma: no cover
+            errs.append(e)
+    th = threading.Thread(target=writer); th.start()
+    r = D.remove(data, DAY, None)
+    th.join()
+    assert not errs and r["arrivals"] == 23 and max(lat) < 5
+    assert sqlite3.connect(path).execute("select count(*) from sample where trip_id='new'").fetchone()[0] == 25
