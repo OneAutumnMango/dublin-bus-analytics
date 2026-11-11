@@ -532,3 +532,26 @@ test('remove day: no update after the page is destroyed', async () => {
   assert.doesNotMatch(text(p.status()), /Would remove/);
   assert.equal(p.rm(), undefined);
 });
+
+const LIVE = /This day is still being recorded\. Buses in flight right now may end up with incomplete forecast data and the day may not be completely empty afterwards\. Removing a finished day is safest\./;
+const plusDay = (iso, n) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+
+test('remove day: live-day warning for today and future, not for past; shown with preview and after removal', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': PREV });
+  p.date.value = plusDay(dublinToday(), -1);
+  await p.click(/^Preview$/);
+  assert.doesNotMatch(text(p.status()), LIVE);
+  p.date.value = dublinToday();
+  await p.click(/^Preview$/);
+  assert.match(text(p.status()), /Would remove/);
+  assert.match(text(p.status()), LIVE);
+  await p.click(/Remove these rows/);
+  assert.match(text(p.status()), /Removed 1,234/);
+  assert.match(text(p.status()), LIVE);
+  p.date.value = plusDay(dublinToday(), 1);
+  await p.click(/^Preview$/);
+  assert.match(text(p.status()), LIVE);
+  p.date.value = plusDay(dublinToday(), -2);
+  p.date.dispatch('change');
+  assert.doesNotMatch(text(p.status()), LIVE);
+});

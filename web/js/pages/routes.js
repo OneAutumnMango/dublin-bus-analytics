@@ -49,6 +49,7 @@ export async function render(ctx) {
   let token = 0; // bumped on every change/preview/remove so late answers are dropped
   const say = (...lines) => dayStatus.replaceChildren(...lines.filter(Boolean).map((l) => h('p', {}, l)));
   const counts = (r) => `${fmtCount(r.arrivals)} arrivals, ${fmtCount(r.forecasts)} forecasts, ${fmtCount(r.samples)} samples, ${fmtCount(r.gaps)} gaps`;
+  const liveNote = (date) => (date >= todayDublin() ? 'This day is still being recorded. Buses in flight right now may end up with incomplete forecast data and the day may not be completely empty afterwards. Removing a finished day is safest.' : '');
   const skipNote = (r) => (r.skipped_months?.length ? `Archived (gzipped) months cannot be edited and will be skipped: ${r.skipped_months.join(', ')}. Samples there stay.` : '');
   function reset() { token++; rmSlot.replaceChildren(); dayStatus.replaceChildren(); previewBtn.disabled = false; }
   async function preview() {
@@ -61,7 +62,7 @@ export async function render(ctx) {
       const r = await api.dayPreview({ date, route }, { signal });
       if (signal.aborted || my !== token) return;
       if (!(r.arrivals + r.forecasts + r.samples + r.gaps)) { say('Nothing recorded for that day.', skipNote(r)); return; }
-      say(`Would remove ${counts(r)} for ${date}${route ? ` (route ${route})` : ''}.`, skipNote(r));
+      say(`Would remove ${counts(r)} for ${date}${route ? ` (route ${route})` : ''}.`, skipNote(r), liveNote(date));
       rmSlot.replaceChildren(h('button', { class: 'btn btn-danger solid', type: 'button', on: { click: () => remove(date, route) } }, `Remove these rows (${fmtCount(r.arrivals)} arrivals)`));
     } catch (e) { if (!isAbort(e) && !signal.aborted && my === token) say(e.message); }
   }
@@ -75,7 +76,7 @@ export async function render(ctx) {
       const r = await api.removeDay({ date, route }, { signal });
       if (signal.aborted || my !== token) return;
       rmSlot.replaceChildren();
-      say(`Removed ${counts(r)}.`, skipNote(r));
+      say(`Removed ${counts(r)}.`, skipNote(r), liveNote(date));
     } catch (e) {
       if (isAbort(e) || signal.aborted || my !== token) return;
       const d = e.body?.done;

@@ -61,4 +61,4 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 - Removing a day that is still being recorded (today): preview afterwards may be non-zero while the collector runs (in-flight buses finalise with incomplete forecasts); this is expected, rerun once the day is complete.
 - A `409` or `503` response names no raw error text; after a `409` with `done`, rerunning the same removal completes it.
 - Cross-origin check: `curl -X POST -H "Origin: http://evil.example" ".../api/data/day/remove?date=<day>&confirm=<day>"` returns 403 (non-browser clients can still omit Origin; no authentication exists).
-
+- Preview today's date in the web UI: the counts are followed by the "This day is still being recorded" warning (also after removal). A past date shows no such warning.
