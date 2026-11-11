@@ -295,18 +295,26 @@ async def countdown(env, mk, start=T0, step=60, dues=(5, 4, 3, 2, 1, 0)):
         await env.poller.tick(start + step * k)
 
 
+async def leave(env, now):
+    """The bus leaves the route's arrival list: arrivals are finalised from the leaving time."""
+    env.fs.set_arrivals("15", {})
+    await env.poller.tick(now)
+
+
 async def test_end_to_end_one_finalised_row(env):
     env.poller.track("15")
     await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300 + 20 + (k > 3) * 10)])
-    env.fs.set_arrivals("15", {})
-    await env.poller.tick(T0 + 400)  # gone after finalising: no duplicate
-    assert env.arrivals() == [("15", "t1", "s1", T0 + 300, T0 + 300, T0 + 330, 30, 1, 1)]
+    assert env.arrivals() == []  # held live while listed at due 0
+    await leave(env, T0 + 400)  # actual = midpoint of the last listed poll (T0+300) and this one
+    await leave(env, T0 + 430)  # no duplicate
+    assert env.arrivals() == [("15", "t1", "s1", T0 + 300, T0 + 300, T0 + 350, 50, 1, 1)]
     assert not any("/v1/trips" in r for r in env.fs.requests)
 
 
 async def test_scheduled_only_bus_stored_realtime_0(env):
     env.poller.track("15")
     await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300, rt=False)])
+    await leave(env, T0 + 400)
     rows = env.arrivals()
     assert len(rows) == 1 and rows[0][4] == T0 + 300 and rows[0][8] == 0
 
@@ -314,6 +322,7 @@ async def test_scheduled_only_bus_stored_realtime_0(env):
 async def test_scheduled_only_then_live_is_one_row(env):
     env.poller.track("15")
     await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300 + 15, rt=k >= 2)])
+    await leave(env, T0 + 400)
     rows = env.arrivals()
     assert len(rows) == 1 and rows[0][8] == 1 and rows[0][4] == T0 + 300
 
@@ -321,9 +330,11 @@ async def test_scheduled_only_then_live_is_one_row(env):
 async def test_same_trip_next_service_day_is_second_row(env):
     env.poller.track("15")
     await countdown(env, lambda due, k: [ja(due=due, expected=T0 + 300)])
+    await leave(env, T0 + 400)
     day = 86400
     await countdown(env, lambda due, k: [ja(due=due, expected=T0 + day + 300, sched=T0 + day + 300)],
                     start=T0 + day)
+    await leave(env, T0 + day + 400)
     assert [r[4] for r in env.arrivals()] == [T0 + 300, T0 + day + 300]
 
 
@@ -332,6 +343,7 @@ async def test_loop_trip_same_stop_twice_gives_two_rows(env):
     env.fs.set_arrivals("15", {"s1": [ja(due=0, expected=T0 + 300, sched=T0 + 300),
                                       ja(due=0, expected=T0 + 900, sched=T0 + 900)]})
     await env.poller.tick(T0 + 300)
+    await leave(env, T0 + 330)
     assert sorted(r[3] for r in env.arrivals()) == [T0 + 300, T0 + 900]
     assert len(env.arrivals()) == 2
 
@@ -342,6 +354,7 @@ async def test_many_stops_one_trip_all_stored(env):
     env.fs.set_arrivals("15", {s: [ja(stop=s, due=0, expected=T0 + 300 + 60 * i, sched=T0 + 300 + 60 * i)]
                                for i, s in enumerate(stops)})
     await env.poller.tick(T0 + 300 + 360)
+    await leave(env, T0 + 300 + 400)
     assert sorted(r[2] for r in env.arrivals()) == stops
 
 
@@ -351,6 +364,7 @@ async def test_none_scheduled_skipped_counted_rest_stored(env, caplog):
                                       ja(trip="t2", due=0, expected=T0 + 300, sched=None)]})
     with caplog.at_level(logging.WARNING):
         await env.poller.tick(T0 + 300)
+    await leave(env, T0 + 330)
     assert [(r[1], r[3]) for r in env.arrivals()] == [("t1", T0 + 300)]
     assert "skipped=1" in caplog.text
 

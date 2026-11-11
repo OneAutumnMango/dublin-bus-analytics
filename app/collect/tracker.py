@@ -6,6 +6,15 @@ visibly reaches 0). A change in due_min alone is not stored (it is derivable fro
 In-memory state (last due, saw_zero, actual, ...) still updates every tick, so finalise, vanish,
 actual and confidence behave independently of what was written.
 
+Finalise rule: a bus that has shown due_min <= 0 is NOT finalised at once. It stays live and its
+actual arrival is the time it LEAVES the route's arrival list: when it vanishes, actual is the
+midpoint (last_seen + now) // 2 of the last poll that listed it and the first that did not,
+provided that is within HOLD_MAX_S of the first due<=0 poll (zero_at); otherwise, or if the bus
+stays listed more than HOLD_MAX_S after zero_at (a feed that keeps passed stops), the fallback is
+used: zero_expected, the feed's `expected` at the first due<=0 poll (the pre-0.3.0 rule). A bus
+that vanishes without ever reaching due 0 is finalised with confidence 0 if its last due was
+<= FINALISE_DUE_MAX (actual = last expected seen then), else dropped.
+
 Seq lookups (possibly slow I/O) are resolved before the lock is taken, concurrently (max 8 in
 flight, each bounded by lookup_timeout); the lock then covers only state mutation and DB writes.
 A trip whose lookup fails is skipped for the rest of the tick and not retried for NEG_TTL_S.
@@ -21,7 +30,8 @@ Ordering rule: an ingest whose `now` is <= the last accepted `now` for that rout
 Within one tick, repeated keys collapse to the last occurrence.
 
 shortcut: in-flight (unfinalised) keys are lost on restart; at most one arrival per live bus
-per stop is dropped. The UNIQUE constraint prevents double-counting after restart. Upgrade by
+per stop is dropped (the loss window is now up to HOLD_MAX_S longer, as a bus is held live
+after due 0). The UNIQUE constraint prevents double-counting after restart. Upgrade by
 loading live state from the sample table.
 shortcut: meta and samples are separate SQLite files, so the tick commit is not atomic across
 both; an exception before commit rolls both back and restores in-memory state.
@@ -49,6 +59,7 @@ NEG_TTL_S = 60  # failed trip lookups are not retried for this long (in ingest `
 INT64 = 2**63 - 1
 LOOKUP_CONCURRENCY = 8
 EPOCH_WINDOW_S = 86400  # expected/scheduled must be within this of the ingest `now`
+HOLD_MAX_S = 600  # max time a bus is held live after its first due<=0 reading
 SHIELD_SCHED_S = 600  # a skipped arrival shields live keys scheduled within this of it
 
 
@@ -67,9 +78,12 @@ class _State:
     scheduled: int | None
     last_sample: tuple
     last_due: int
-    actual: int | None  # last expected seen with due <= 2
-    saw_zero: bool
+    actual: int | None  # last expected seen with due <= 2 (used for vanish without due 0)
+    saw_zero: bool  # has shown due <= 0; held live until it leaves the list (or HOLD_MAX_S passes)
     ever_realtime: bool
+    zero_at: int | None = None  # poll time of the first due <= 0 sighting
+    zero_expected: int | None = None  # expected at that sighting: the fallback actual
+    last_seen: int = 0  # poll time of the latest tick that listed the bus
     gone_at: int | None = None  # dropped on vanish; kept (bounded by TTL) so a reappearance stays change-only
 
 
@@ -154,10 +168,11 @@ class Tracker:
             d[key] = src[key] if key in src else _MISSING  # states are replaced, never mutated in place
 
     @staticmethod
-    def _row(key: tuple, st: _State) -> dict:
+    def _row(key: tuple, st: _State, actual: int | None = None) -> dict:
         """Pure: the arrivals row for a finalising state (may raise; callers guard)."""
         trip, stop, seq = key
-        actual = st.actual
+        if actual is None:
+            actual = st.actual
         basis = st.scheduled if st.scheduled is not None else actual
         return dict(trip_id=trip, stop_id=stop, seq=seq,
                     service_date=datetime.fromtimestamp(basis, DUBLIN).date().isoformat(),
@@ -270,7 +285,7 @@ class Tracker:
 
     def _sweep(self, now: int) -> None:
         for store, ok in (("_finalised", lambda t: t),
-                          ("_live", lambda s: s.gone_at),
+                          ("_live", lambda s: s.gone_at if s.gone_at is not None else (s.last_seen if s.saw_zero else None)),
                           ("_seq", lambda v: v[1])):
             d = getattr(self, store)
             for k in [k for k, v in d.items() if (t := ok(v)) is not None and now - t > FINALISED_TTL_S]:
@@ -322,8 +337,8 @@ class Tracker:
                 sample = (a.due_min, a.expected, int(a.realtime))
                 # storage rule: row only on first sight, a change of (expected, realtime), or the
                 # first due<=0 observation; a due_min change alone is derivable and not stored
-                # (the `not st.last_sample` and `not st.saw_zero` clauses are redundant: () != any sample;
-                # a key with saw_zero is already finalised and gone from _live; kept for readability)
+                # (the `not st.last_sample` clause is redundant: () != any sample; kept for readability;
+                # a key stays live after saw_zero until it vanishes or HOLD_MAX_S passes)
                 write = (not st.last_sample or sample[1:] != st.last_sample[1:]
                          or (a.due_min <= 0 and not st.saw_zero))
                 if write:
@@ -333,9 +348,12 @@ class Tracker:
                 st.ever_realtime |= a.realtime
                 if a.due_min <= FINALISE_DUE_MAX:
                     st.actual = a.expected
-                if a.due_min <= 0:
-                    st.saw_zero = True
-                row = self._row(key, st) if a.due_min <= 0 else None
+                st.last_seen = now
+                if a.due_min <= 0 and not st.saw_zero:
+                    st.saw_zero, st.zero_at, st.zero_expected = True, now, a.expected
+                # safeguard: still listed long after first due 0 (feed keeps passed stops): old rule
+                row = (self._row(key, st, st.zero_expected)
+                       if st.saw_zero and now - st.zero_at > HOLD_MAX_S else None)
             except Exception:
                 skipped += 1
                 unkeyed.add((*key[:2], None))
@@ -356,7 +374,12 @@ class Tracker:
                     if s.route == route and s.gone_at is None and k not in seen and not self._shielded(k, s, unkeyed)]:
             self._mark("_live", key)
             st = copy.copy(self._live[key])
-            if st.last_due <= FINALISE_DUE_MAX:
+            if st.saw_zero:
+                del self._live[key]
+                est = max((st.last_seen + now) // 2, st.zero_at)
+                actual = est if est - st.zero_at <= HOLD_MAX_S else st.zero_expected
+                finalised += self._insert(key, self._row(key, st, actual), now)
+            elif st.last_due <= FINALISE_DUE_MAX:
                 del self._live[key]
                 finalised += self._insert(key, self._row(key, st), now)
             else:

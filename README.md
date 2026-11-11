@@ -75,6 +75,10 @@ Invalid values stop the app at startup with a message naming the variable. See `
 - `order_source: none`: the server's stop list for the route is unavailable (wrong `SERVER_URL`, or the server is down).
 - Blank page with a 404: `web/` not found; set `WEB_DIR` to the directory containing `index.html`.
 
+### How delays are measured
+
+`delay = actual - scheduled`. From version 0.3.0, `actual` is the time the bus left the stop's arrival list (the midpoint between the last poll that listed it and the first that did not), once it has shown as due now. If the bus stays listed for more than 10 minutes after first showing due now (some feeds keep passed stops), `actual` falls back to the feed's predicted time at that first due-now reading. Buses that vanish without ever showing due now are stored with the last predicted time and lower confidence, as before. Rows stored before this change used the predicted time only.
+
 ## Run the tests
 
 ```bash

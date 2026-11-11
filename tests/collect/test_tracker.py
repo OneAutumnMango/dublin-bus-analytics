@@ -11,7 +11,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 from app.core.db import open_meta, open_samples
 from app.core.models import Arrival
 from app.collect.forecast import extract_forecasts
-from app.collect.tracker import FINALISED_TTL_S, NEG_TTL_S, Tracker
+from app.collect.tracker import FINALISED_TTL_S, HOLD_MAX_S, NEG_TTL_S, Tracker
 
 T0 = 1_760_000_000  # Oct 2025
 
@@ -56,6 +56,17 @@ def samples(tmp_path, ts=T0):
         c.close()
 
 
+async def old(t, route, arrs, now):
+    """Pre-0.3.0 finalise-at-due-0 outcome: ingest, then re-list the same arrivals past HOLD_MAX_S so the
+    safeguard finalises with the fallback (zero_expected). Returns the first tick's result with the
+    finalised/dropped counts of both ticks."""
+    res = await t.ingest(route, arrs, now)
+    fin = await t.ingest(route, arrs, now + HOLD_MAX_S + 1)
+    res.finalised += fin.finalised
+    res.dropped += fin.dropped
+    return res
+
+
 async def test_unchanged_sample_not_rewritten(tr, tmp_path):
     r1 = await tr.ingest("15", [arr(5)], T0)
     r2 = await tr.ingest("15", [arr(5)], T0 + 30)
@@ -68,7 +79,7 @@ async def test_unchanged_sample_not_rewritten(tr, tmp_path):
 
 async def test_due_zero_finalises_with_confidence_1_and_delay_actual_minus_scheduled(tr, tmp_path):
     await tr.ingest("15", [arr(2, expected=T0 + 400)], T0)
-    res = await tr.ingest("15", [arr(0, expected=T0 + 410)], T0 + 30)
+    res = await old(tr, "15", [arr(0, expected=T0 + 410)], T0 + 30)
     assert (res.finalised, res.dropped) == (1, 0)
     (r,) = rows(tmp_path)
     _, trip, stop, seq, sd, sched, actual, delay, conf, rt, route = r
@@ -109,10 +120,14 @@ async def test_actual_is_last_expected_with_due_le_2_not_later_bigger_due(tr, tm
 
 async def test_first_seen_at_due_0_finalises_once(tr, tmp_path):
     res = await tr.ingest("15", [arr(0)], T0)
-    assert (res.samples_written, res.finalised) == (1, 1)
+    assert (res.samples_written, res.finalised) == (1, 0)  # held live, not finalised at first due 0
     res = await tr.ingest("15", [arr(0)], T0 + 30)
     assert (res.samples_written, res.finalised) == (0, 0)
-    res = await tr.ingest("15", [], T0 + 60)
+    res = await tr.ingest("15", [arr(0)], T0 + HOLD_MAX_S + 1)  # safeguard
+    assert (res.samples_written, res.finalised) == (0, 1)
+    res = await tr.ingest("15", [arr(0)], T0 + HOLD_MAX_S + 31)
+    assert (res.samples_written, res.finalised) == (0, 0)
+    res = await tr.ingest("15", [], T0 + HOLD_MAX_S + 61)
     assert (res.finalised, res.dropped) == (0, 0)
     assert len(rows(tmp_path)) == 1
     assert len(samples(tmp_path)) == 1
@@ -120,10 +135,10 @@ async def test_first_seen_at_due_0_finalises_once(tr, tmp_path):
 
 async def test_reingest_after_restart_is_noop_via_unique(tmp_path):
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(0)], T0)
+    await old(t, "15", [arr(0)], T0)
     t.close()
     t = Tracker(tmp_path, make_lookup())  # shortcut: in-flight state lost, UNIQUE is the backstop
-    res = await t.ingest("15", [arr(0)], T0 + 30)
+    res = await old(t, "15", [arr(0)], T0 + 2000)
     t.close()
     assert res.finalised == 0
     assert len(rows(tmp_path)) == 1
@@ -132,7 +147,7 @@ async def test_reingest_after_restart_is_noop_via_unique(tmp_path):
 async def test_loop_trip_two_seq_two_arrivals(tr, tmp_path):
     a0 = arr(0, scheduled=T0 + 300)
     a1 = arr(0, scheduled=T0 + 300 + 3600)
-    res = await tr.ingest("15", [a0, a1], T0)
+    res = await old(tr, "15", [a0, a1], T0)
     assert res.finalised == 2
     assert sorted(r[3] for r in rows(tmp_path)) == [0, 1]
 
@@ -152,14 +167,14 @@ async def test_realtime_if_ever_realtime(tr, tmp_path):
 
 
 async def test_scheduled_none_delay_null_service_date_from_expected(tr, tmp_path):
-    await tr.ingest("15", [arr(0, scheduled=None)], T0)
+    await old(tr, "15", [arr(0, scheduled=None)], T0)
     (r,) = rows(tmp_path)
     assert r[5] is None and r[7] is None
     assert r[4] == datetime.fromtimestamp(T0, ZoneInfo("Europe/Dublin")).date().isoformat()
 
 
 async def test_negative_delay_early_bus(tr, tmp_path):
-    await tr.ingest("15", [arr(0, expected=T0 + 250)], T0)
+    await old(tr, "15", [arr(0, expected=T0 + 250)], T0)
     assert rows(tmp_path)[0][7] == -50
 
 
@@ -169,13 +184,13 @@ def dub(y, mo, d, h, mi):
 
 async def test_service_date_across_midnight(tr, tmp_path):
     sched = dub(2025, 11, 9, 0, 10)  # timetable 24:10 of the 8th; scheduled epoch's local date wins
-    await tr.ingest("15", [arr(0, scheduled=sched, expected=sched + 60)], sched - 600)
+    await old(tr, "15", [arr(0, scheduled=sched, expected=sched + 60)], sched - 600)
     assert rows(tmp_path)[0][4] == "2025-11-09"
 
 
 async def test_service_date_uses_dublin_not_utc_in_summer(tr, tmp_path):
     sched = dub(2025, 7, 1, 0, 30)  # 23:30 UTC on 30 June
-    await tr.ingest("15", [arr(0, scheduled=sched, expected=sched)], sched - 600)
+    await old(tr, "15", [arr(0, scheduled=sched, expected=sched)], sched - 600)
     assert rows(tmp_path)[0][4] == "2025-07-01"
 
 
@@ -183,8 +198,8 @@ async def test_service_date_across_dst_change(tr, tmp_path):
     # BST ends 2025-10-26 at 02:00 local (01:00 UTC)
     s1 = dub(2025, 10, 26, 0, 30)
     s2 = dub(2025, 10, 27, 0, 30)
-    await tr.ingest("15", [arr(0, scheduled=s1, expected=s1, trip="a")], s1 - 600)
-    await tr.ingest("15", [arr(0, scheduled=s2, expected=s2, trip="b")], s2 - 600)
+    await old(tr, "15", [arr(0, scheduled=s1, expected=s1, trip="a")], s1 - 600)
+    await old(tr, "15", [arr(0, scheduled=s2, expected=s2, trip="b")], s2 - 600)
     assert [r[4] for r in rows(tmp_path)] == ["2025-10-26", "2025-10-27"]
 
 
@@ -195,6 +210,8 @@ async def test_vanish_detection_is_per_route(tr, tmp_path):
     assert res.finalised == 1
     assert [r[1] for r in rows(tmp_path)] == ["a"]
     res = await tr.ingest("16", [arr(0, trip="b", route="16")], T0 + 30)
+    assert res.finalised == 0  # held live after due 0
+    res = await tr.ingest("16", [], T0 + 60)
     assert res.finalised == 1
 
 
@@ -212,7 +229,7 @@ async def test_stale_now_ignored(tr, tmp_path):
         assert (res.samples_written, res.finalised, res.dropped) == (0, 0, 0)
     assert (await tr.ingest("15", [], T0 + 101)).dropped == 1
     # other routes have independent clocks
-    assert (await tr.ingest("16", [arr(0, route="16", trip="z")], T0)).finalised == 1
+    assert (await old(tr, "16", [arr(0, route="16", trip="z")], T0)).finalised == 1
 
 
 async def test_seq_lookup_cached_per_key(tmp_path):
@@ -226,18 +243,19 @@ async def test_seq_lookup_cached_per_key(tmp_path):
 
 async def test_many_trips_many_stops(tr, tmp_path):
     al = [arr(0, trip=f"t{i}", stop=f"s{j}") for i in range(20) for j in range(15)]
-    res = await tr.ingest("15", al, T0)
+    res = await old(tr, "15", al, T0)
     assert (res.samples_written, res.finalised) == (300, 300)
     assert len(rows(tmp_path)) == 300
 
 
 async def test_finalised_state_evicted_after_ttl_and_bounded(tr, tmp_path):
-    await tr.ingest("15", [arr(0)], T0)
+    await old(tr, "15", [arr(0)], T0)  # finalised at T0 + HOLD_MAX_S + 1
+    fin = T0 + HOLD_MAX_S + 1
     assert len(tr._finalised) == 1
-    await tr.ingest("15", [], T0 + FINALISED_TTL_S + 1)
+    await tr.ingest("15", [], fin + FINALISED_TTL_S + 1)
     assert len(tr._finalised) == 0
     # after eviction, the UNIQUE backstop still prevents a duplicate row
-    res = await tr.ingest("15", [arr(0)], T0 + FINALISED_TTL_S + 2)
+    res = await old(tr, "15", [arr(0)], fin + FINALISED_TTL_S + 2)
     assert res.finalised == 0 and len(rows(tmp_path)) == 1
 
 
@@ -251,7 +269,7 @@ async def test_month_rollover_switches_samples_file(tr, tmp_path):
 
 async def test_exception_mid_ingest_rolls_back_whole_tick(tmp_path):
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(5, trip="keep")], T0)
+    await t.ingest("15", [arr(5, trip="keep"), arr(0, trip="x"), arr(0, trip="y")], T0)
     calls = {"n": 0}
     orig = t._on_finalised
 
@@ -261,13 +279,13 @@ async def test_exception_mid_ingest_rolls_back_whole_tick(tmp_path):
 
     t._on_finalised = boom
     with pytest.raises(RuntimeError):
-        await t.ingest("15", [arr(0, trip="x"), arr(0, trip="y"), arr(4, trip="keep", expected=T0 + 1)], T0 + 30)
+        await t.ingest("15", [arr(4, trip="keep", expected=T0 + 1)], T0 + 30)  # x, y vanish: finalise raises
     assert rows(tmp_path) == []
-    assert len(samples(tmp_path)) == 1  # only the first tick's sample
+    assert len(samples(tmp_path)) == 3  # only the first tick's samples
     # in-memory state restored: retry succeeds and yields identical results to a clean run
     t._on_finalised = orig
-    res = await t.ingest("15", [arr(0, trip="x"), arr(0, trip="y"), arr(4, trip="keep", expected=T0 + 1)], T0 + 30)
-    assert (res.samples_written, res.finalised) == (3, 2)
+    res = await t.ingest("15", [arr(4, trip="keep", expected=T0 + 1)], T0 + 30)
+    assert (res.samples_written, res.finalised) == (1, 2)
     t.close()
 
 
@@ -275,7 +293,7 @@ async def test_on_finalised_hook_receives_id_and_row(tmp_path):
     t = Tracker(tmp_path, make_lookup())
     got = []
     t._on_finalised = lambda i, row: got.append((i, row))
-    await t.ingest("15", [arr(0)], T0)
+    await old(t, "15", [arr(0)], T0)
     t.close()
     assert got[0][0] == rows(tmp_path)[0][0]
     assert got[0][1]["actual"] == T0
@@ -304,7 +322,7 @@ async def test_seq_lookup_failure_skips_only_that_arrival(tmp_path):
             raise RuntimeError("lookup down")
         return 0
     t = Tracker(tmp_path, lookup)
-    res = await t.ingest("15", [arr(0, trip="good"), arr(0, trip="bad")], T0)
+    res = await old(t, "15", [arr(0, trip="good"), arr(0, trip="bad")], T0)
     t.close()
     assert (res.finalised, res.skipped) == (1, 1)
     assert [r[1] for r in rows(tmp_path)] == ["good"]
@@ -318,7 +336,7 @@ async def test_invalid_arrival_skipped_not_raised(tr, tmp_path, kw):
         a.due_min = kw["due"]
     if "expected" in kw:
         a.expected = kw["expected"]
-    res = await tr.ingest("15", [a, arr(0, trip="ok")], T0)
+    res = await old(tr, "15", [a, arr(0, trip="ok")], T0)
     assert (res.skipped, res.finalised) == (1, 1)
 
 
@@ -338,7 +356,7 @@ async def test_skipped_arrival_does_not_cause_false_vanish(tmp_path):
 
 
 async def test_negative_due_treated_as_arrived(tr, tmp_path):
-    res = await tr.ingest("15", [arr(-1, expected=T0 + 290)], T0)
+    res = await old(tr, "15", [arr(-1, expected=T0 + 290)], T0)
     assert res.finalised == 1
     assert rows(tmp_path)[0][8] == 1
 
@@ -366,11 +384,12 @@ async def test_gather_routes_one_failing_leaves_other_intact(tmp_path):
             raise RuntimeError
         return 0
     t = Tracker(tmp_path, lookup)
-    r15, r16 = await asyncio.gather(
-        t.ingest("15", [arr(0, trip="bad"), arr(0, trip="a")], T0),
-        t.ingest("16", [arr(0, trip="b", route="16")], T0))
+    a15, a16 = [arr(0, trip="bad"), arr(0, trip="a")], [arr(0, trip="b", route="16")]
+    r15, r16 = await asyncio.gather(t.ingest("15", a15, T0), t.ingest("16", a16, T0))
+    f15, f16 = await asyncio.gather(t.ingest("15", a15, T0 + HOLD_MAX_S + 1), t.ingest("16", a16, T0 + HOLD_MAX_S + 1))
     t.close()
-    assert (r15.finalised, r15.skipped, r16.finalised) == (1, 1, 1)
+    assert (r15.finalised, r16.finalised) == (0, 0)
+    assert (f15.finalised, r15.skipped, f16.finalised) == (1, 1, 1)
     assert sorted(r[1] for r in rows(tmp_path)) == ["a", "b"]
 
 
@@ -385,11 +404,11 @@ async def test_gather_across_month_boundary(tmp_path):
 
 async def test_failed_tick_restores_seq_and_state(tmp_path):
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(5, trip="keep")], T0)
+    await t.ingest("15", [arr(5, trip="keep"), arr(0, trip="n")], T0)
     before = (dict(t._seq), {k: v.__dict__.copy() for k, v in t._live.items()}, dict(t._last_now))
     t._on_finalised = lambda i, r: 1 / 0
     with pytest.raises(ZeroDivisionError):
-        await t.ingest("15", [arr(0, trip="n"), arr(3, trip="keep", expected=T0 + 7)], T0 + 30)
+        await t.ingest("15", [arr(3, trip="keep", expected=T0 + 7)], T0 + 30)  # n vanishes: finalise raises
     assert before == (dict(t._seq), {k: v.__dict__.copy() for k, v in t._live.items()}, dict(t._last_now))
     t.close()
 
@@ -440,18 +459,26 @@ async def test_property_invariants(tmp_path_factory, ticks):
             continue
         last_now[route] = now
         for k, due, noise, rt in {x[0]: x for x in al}.values():  # last occurrence wins
-            m = model.setdefault(k, dict(actual=None, zero=False, done=False, last_due=None))
+            m = model.setdefault(k, dict(actual=None, zero=False, done=False, last_due=None,
+                                         zero_at=None, zero_exp=None, last_seen=None, final=None))
             if m["done"]:
                 continue
-            m["last_due"] = due
+            m["last_due"], m["last_seen"] = due, now
             if due <= 2:
                 m["actual"] = T0 + due * 60 + noise
-            if due <= 0:
-                m["zero"] = m["done"] = True
+            if due <= 0 and m["zero_at"] is None:
+                m["zero"], m["zero_at"], m["zero_exp"] = True, now, T0 + due * 60 + noise
+            if m["zero_at"] is not None and now - m["zero_at"] > HOLD_MAX_S:  # safeguard
+                m["done"], m["final"] = True, m["zero_exp"]
         present = {x[0] for x in al}
         for k, m in model.items():  # vanish: live key of this route absent from this tick
-            if ROUTE_OF[k] == route and not m["done"] and k not in present and m["last_due"] <= 2:
-                m["done"] = True
+            if ROUTE_OF[k] != route or m["done"] or k in present:
+                continue
+            if m["zero"]:
+                est = (m["last_seen"] + now) // 2
+                m["done"], m["final"] = True, (est if est - m["zero_at"] <= HOLD_MAX_S else m["zero_exp"])
+            elif m["last_due"] <= 2:
+                m["done"], m["final"] = True, m["actual"]
     t.close()
     m = sqlite3.connect(d / "meta.db")
     try:
@@ -483,7 +510,7 @@ async def test_property_invariants(tmp_path_factory, ticks):
     for trip, stop, seq, actual, delay, sched, conf in arrivals:
         mk = model[(trip, stop, seq)]
         assert delay == actual - sched
-        assert actual == mk["actual"]  # last expected seen with due <= 2
+        assert actual == mk["final"]  # leaving-time estimate, fallback, or last expected with due <= 2
         assert conf == int(mk["zero"])
 
 
@@ -499,7 +526,7 @@ async def test_full_validation_skips_and_counts(tr, tmp_path, kw):
     for k, v in kw.items():
         setattr(a, {"trip": "trip_id", "stop": "stop_id", "due": "due_min", "expected": "expected",
                     "scheduled": "scheduled"}[k], v)
-    res = await tr.ingest("15", [a, arr(0, trip="ok")], T0)
+    res = await old(tr, "15", [a, arr(0, trip="ok")], T0)
     assert (res.skipped, res.finalised) == (1, 1)
     assert [r[1] for r in rows(tmp_path)] == ["ok"]
 
@@ -532,7 +559,7 @@ async def test_open_samples_failure_at_rollover_is_clean(tmp_path, monkeypatch):
 
 async def test_rollback_failure_does_not_hide_original_or_skip_undo(tmp_path):
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(5)], T0)
+    await t.ingest("15", [arr(5), arr(0, trip="n")], T0)
 
     class Bad:
         def __init__(self, c): self.c = c
@@ -542,8 +569,8 @@ async def test_rollback_failure_does_not_hide_original_or_skip_undo(tmp_path):
     t.meta = Bad(real)
     t._on_finalised = lambda i, r: 1 / 0
     with pytest.raises(ZeroDivisionError):
-        await t.ingest("15", [arr(0, trip="n")], T0 + 30)
-    assert t._last_now["15"] == T0 and "n" not in {k[0] for k in t._live}
+        await t.ingest("15", [arr(5)], T0 + 30)  # n vanishes: finalise raises
+    assert t._last_now["15"] == T0 and "n" in {k[0] for k in t._live}
     t.meta = real
     t.close()
 
@@ -571,8 +598,8 @@ async def test_hung_lookup_times_out_and_does_not_block_other_route(tmp_path):
     ra, rb = await asyncio.gather(t.ingest("A", [arr(0, route="A", trip="a")], T0),
                                   t.ingest("B", [arr(0, route="B", trip="b")], T0))
     assert time.perf_counter() - t0 < 1.0
-    assert (ra.skipped, ra.finalised, rb.finalised) == (1, 0, 1)
-    assert "A" in t._last_now and t._live == {}
+    assert (ra.skipped, ra.finalised, rb.finalised) == (1, 0, 0)
+    assert "A" in t._last_now and {k[0] for k in t._live} == {"b"}  # b held live after due 0
     t.close()
 
 
@@ -607,10 +634,11 @@ async def test_seq_last_used_refresh_keeps_entry_alive(tr):
 
 
 async def test_ttl_boundary_exactly_ttl_kept_one_over_evicted(tr):
-    await tr.ingest("15", [arr(0)], T0)  # finalised and seq cached at T0
-    await tr.ingest("15", [], T0 + FINALISED_TTL_S)
+    await old(tr, "15", [arr(0)], T0)  # finalised and seq last used at T0 + HOLD_MAX_S + 1
+    fin = T0 + HOLD_MAX_S + 1
+    await tr.ingest("15", [], fin + FINALISED_TTL_S)
     assert (len(tr._finalised), len(tr._seq)) == (1, 1)
-    await tr.ingest("15", [], T0 + FINALISED_TTL_S + 1)
+    await tr.ingest("15", [], fin + FINALISED_TTL_S + 1)
     assert (len(tr._finalised), len(tr._seq)) == (0, 0)
 
 
@@ -673,15 +701,17 @@ async def test_epoch_window_boundary(tr):
 async def test_unexpected_error_in_one_arrival_skips_only_it(tmp_path, monkeypatch):
     orig = Tracker._row
 
-    def row(key, st):
+    def row(key, st, actual=None):
         if key[0] == "boom":
             raise RuntimeError("unexpected")
-        return orig(key, st)
+        return orig(key, st, actual)
     monkeypatch.setattr(Tracker, "_row", staticmethod(row))
     t = Tracker(tmp_path, make_lookup())
-    res = await t.ingest("15", [arr(0, trip="boom"), arr(0, trip="ok")], T0)
+    al = [arr(0, trip="boom"), arr(0, trip="ok")]
+    await t.ingest("15", al, T0)
+    res = await t.ingest("15", al, T0 + HOLD_MAX_S + 1)  # safeguard finalise: _row raises for boom only
     assert (res.skipped, res.finalised) == (1, 1)
-    assert "boom" not in {k[0] for k in t._live} and [r[1] for r in rows(tmp_path)] == ["ok"]
+    assert "boom" in {k[0] for k in t._live} and [r[1] for r in rows(tmp_path)] == ["ok"]
     t.close()
 
 
@@ -734,9 +764,9 @@ async def test_route_b_completes_while_route_a_lookup_pending(tmp_path):
     ta = asyncio.create_task(t.ingest("A", [arr(0, route="A", trip="a")], T0))
     await asyncio.sleep(0)
     rb = await guarded(t.ingest("B", [arr(0, route="B", trip="b")], T0))
-    assert rb.finalised == 1 and not ta.done()
+    assert rb.samples_written == 1 and not ta.done()
     gate.set()
-    assert (await guarded(ta)).finalised == 1
+    assert (await guarded(ta)).samples_written == 1
     t.close()
 
 
@@ -799,7 +829,7 @@ def snapshot(t):
 
 async def test_failed_tick_restores_every_live_state(tmp_path):
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(5, trip="A"), arr(5, trip="C"), arr(2, trip="B")], T0)
+    await t.ingest("15", [arr(5, trip="A"), arr(5, trip="C"), arr(2, trip="B"), arr(0, trip="D")], T0)
     before = snapshot(t)
     calls = []
 
@@ -808,9 +838,9 @@ async def test_failed_tick_restores_every_live_state(tmp_path):
         if len(calls) == 2:
             raise RuntimeError("later key")
     t._on_finalised = hook
-    # A updated; D finalised (hook 1); C dropped; B vanish-finalised (hook 2 raises)
+    # A updated; C dropped; B and D vanish-finalised (hook 2 raises)
     with pytest.raises(RuntimeError):
-        await t.ingest("15", [arr(4, trip="A", expected=T0 + 9), arr(0, trip="D")], T0 + 30)
+        await t.ingest("15", [arr(4, trip="A", expected=T0 + 9)], T0 + 30)
     assert before == snapshot(t)
     assert rows(tmp_path) == []
     t.close()
@@ -954,6 +984,9 @@ async def countdown(t, start, exp_at=lambda due: T0 + 1800, rt=lambda due: True,
         r = await t.ingest("15", [arr(due, expected=exp_at(due), realtime=rt(due), trip=trip,
                                       scheduled=T0 + 1800)], T0 + 60 * i)
         n += r.samples_written
+    if start >= 0:  # past HOLD_MAX_S: the safeguard finalises with the fallback (the old actual)
+        await t.ingest("15", [arr(0, expected=exp_at(0), realtime=rt(0), trip=trip, scheduled=T0 + 1800)],
+                       T0 + 60 * start + HOLD_MAX_S + 1)
     return n
 
 
@@ -987,14 +1020,15 @@ async def test_bus_60_to_0_prediction_change_every_5_min(tr):
 async def test_pure_phase_failure_shields_same_trip_stop_live_keys(tmp_path, monkeypatch):
     orig = Tracker._row
 
-    def row(key, st):
+    def row(key, st, actual=None):
         if key[2] == 1:
             raise RuntimeError("unexpected")
-        return orig(key, st)
+        return orig(key, st, actual)
     monkeypatch.setattr(Tracker, "_row", staticmethod(row))
     t = Tracker(tmp_path, make_lookup())
-    await t.ingest("15", [arr(1, trip="x", scheduled=T0 + 300)], T0)
-    r = await t.ingest("15", [arr(0, trip="x", scheduled=T0 + 300 + 3600)], T0 + 30)  # seq 1 raises
+    await t.ingest("15", [arr(1, trip="x", scheduled=T0 + 300), arr(0, trip="x", scheduled=T0 + 300 + 3600)], T0)
+    # seq 1 is held after due 0; past HOLD_MAX_S its safeguard finalise raises in the pure phase
+    r = await t.ingest("15", [arr(0, trip="x", scheduled=T0 + 300 + 3600)], T0 + HOLD_MAX_S + 1)
     assert (r.skipped, r.finalised, r.dropped) == (1, 0, 0)  # seq 0 not falsely vanished
     t.close()
 
@@ -1023,6 +1057,7 @@ async def test_state_updates_even_when_first_due_le_2_writes_no_row(tr, tmp_path
 
 async def test_realtime_unchanged_expected_countdown_confidence_1_two_rows(tr, tmp_path):
     await feed(tr, [6, 5, 4, 3, 2, 1, 0], T0 + 700, True)
+    await tr.ingest("15", [arr(0, expected=T0 + 700, realtime=True, scheduled=T0 + 600)], T0 + 360 + HOLD_MAX_S + 1)
     (r,) = rows(tmp_path)
     assert (r[6], r[8]) == (T0 + 700, 1)
     assert len(samples(tmp_path)) == 2
@@ -1047,10 +1082,13 @@ def no_orphans(tmp_path):
     assert rows(tmp_path, "select count(*) from forecast where arrival_id not in (select id from arrivals)") == [(0,)]
 
 
-async def run(t, steps, trip="t1", base=T0, **kw):
+async def run(t, steps, trip="t1", base=T0, flush=True, **kw):
     """steps: (ts offset, expected offset, due, realtime) fed in order for one bus."""
     for off, exp, due, rt in steps:
-        await t.ingest("15", [arr(due, expected=base + exp, scheduled=base + 300, trip=trip, realtime=rt, **kw)], base + off)
+        last = [arr(due, expected=base + exp, scheduled=base + 300, trip=trip, realtime=rt, **kw)]
+        await t.ingest("15", last, base + off)
+    if flush and steps[-1][2] <= 0:  # past HOLD_MAX_S the safeguard finalises with the fallback (old actual)
+        await t.ingest("15", last, base + steps[-1][0] + HOLD_MAX_S + 1)
 
 
 async def test_forecast_rows_hand_computed(tr, tmp_path):
@@ -1133,6 +1171,8 @@ async def test_corrupt_previous_month_keeps_arrivals_and_other_forecasts(tmp_pat
     await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="t1"),
                           arr(9, expected=M + 4000, scheduled=M + 300, trip="far")], M + 590)
     await t.ingest("15", [arr(0, expected=M + 4000, scheduled=M + 300, trip="far")], M + 3990)
+    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="t1")], M + 590 + HOLD_MAX_S + 1)  # safeguard
+    await t.ingest("15", [arr(0, expected=M + 4000, scheduled=M + 300, trip="far")], M + 3990 + HOLD_MAX_S + 1)
     t.close()
     assert len(rows(tmp_path)) == 2
     assert {r[0] for r in fc(tmp_path)} == {"far"}  # t1 skipped (corrupt prev month), far unaffected
@@ -1151,7 +1191,7 @@ async def test_extraction_error_for_one_arrival_only(tmp_path, monkeypatch, capl
     monkeypatch.setattr(trk, "extract_forecasts", flaky)
     t = Tracker(tmp_path, make_lookup())
     await t.ingest("15", [arr(9, expected=T0 + 540, trip=x) for x in ("bad", "good")], T0)
-    res = await t.ingest("15", [arr(0, expected=T0 + 540, trip=x) for x in ("bad", "good")], T0 + 540)
+    res = await old(t, "15", [arr(0, expected=T0 + 540, trip=x) for x in ("bad", "good")], T0 + 540)
     t.close()
     assert res.finalised == 2 and len(rows(tmp_path)) == 2
     assert {r[0] for r in fc(tmp_path)} == {"good"}
@@ -1165,7 +1205,7 @@ async def test_duplicate_arrival_ignored_no_forecast_duplicates(tmp_path):
     before = fc(tmp_path)
     assert before
     t = Tracker(tmp_path, make_lookup())  # restart: same arrival again, ignored by UNIQUE
-    res = await t.ingest("15", [arr(0, expected=T0 + 540)], T0 + 600)
+    res = await old(t, "15", [arr(0, expected=T0 + 540)], T0 + 1300)
     t.close()
     assert res.finalised == 0 and fc(tmp_path) == before and len(rows(tmp_path)) == 1
 
@@ -1182,11 +1222,13 @@ async def test_forecast_rows_roll_back_with_tick(tmp_path):
             raise RuntimeError("boom")
 
     t._on_finalised = hook
+    both = [arr(0, expected=T0 + 540, trip=x) for x in ("x", "y")]
+    await t.ingest("15", both, T0 + 540)
     with pytest.raises(RuntimeError):
-        await t.ingest("15", [arr(0, expected=T0 + 540, trip=x) for x in ("x", "y")], T0 + 540)
+        await t.ingest("15", both, T0 + 540 + HOLD_MAX_S + 1)  # safeguard finalises both (fallback actual)
     assert n[0] == 2 and rows(tmp_path) == [] and fc(tmp_path, "select * from forecast") == []
     t._on_finalised = real
-    await t.ingest("15", [arr(0, expected=T0 + 540, trip=x) for x in ("x", "y")], T0 + 540)
+    await t.ingest("15", both, T0 + 540 + HOLD_MAX_S + 1)
     t.close()
     assert len(fc(tmp_path, "select * from forecast")) == 4  # 2 horizons x 2 arrivals, no leftovers
 
@@ -1207,8 +1249,9 @@ async def test_previous_month_connection_closed_after_tick(tmp_path, monkeypatch
             raise RuntimeError("boom")
 
         t._on_finalised = hook
+        await run(t, [(590, 600, 0, True)], base=M, flush=False)
         with pytest.raises(RuntimeError):
-            await run(t, [(590, 600, 0, True)], base=M)
+            await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300)], M + 590 + HOLD_MAX_S + 1)
     else:
         await run(t, [(590, 600, 0, True)], base=M)
     t.close()
@@ -1222,7 +1265,9 @@ async def test_previous_month_opened_once_per_tick(tmp_path, monkeypatch):
     monkeypatch.setattr(trk, "open_previous_month", lambda *a: opened.append(a))
     t = Tracker(tmp_path, zero_lookup)
     await t.ingest("15", [arr(9, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 60)
-    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 590)
+    both = [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")]
+    await t.ingest("15", both, M + 590)
+    await t.ingest("15", both, M + 590 + HOLD_MAX_S + 1)  # safeguard finalises both in one tick
     t.close()
     assert len(opened) == 1
 
@@ -1234,7 +1279,8 @@ async def test_forecast_follows_latest_sample_realtime_flag(tr, tmp_path):
 
 
 async def test_same_tick_uncommitted_sample_visible(tr, tmp_path):
-    await tr.ingest("15", [arr(0, expected=T0 + 150)], T0)  # first seen at due 0; sample not yet committed
+    await tr.ingest("15", [arr(0, expected=T0 + 150)], T0)  # first seen at due 0
+    await tr.ingest("15", [arr(0, expected=T0 + 700)], T0 + HOLD_MAX_S + 1)  # safeguard tick also writes a sample (uncommitted)
     assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(2, T0 + 150, 0)]
 
 
@@ -1261,8 +1307,12 @@ async def test_two_consecutive_ticks_both_need_previous_month(tmp_path, monkeypa
     monkeypatch.setattr(trk, "open_previous_month", lambda *a: opened.append(1) or real(*a))
     t = Tracker(tmp_path, zero_lookup)
     await t.ingest("15", [arr(9, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 60)
-    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="a")], M + 590)
-    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip="b")], M + 600)
+    la = [arr(0, expected=M + 600, scheduled=M + 300, trip="a")]
+    lb = [arr(0, expected=M + 600, scheduled=M + 300, trip="b")]
+    await t.ingest("15", la, M + 590)
+    await t.ingest("15", la + lb, M + 600)  # b reaches due 0 ten seconds after a
+    await t.ingest("15", la + lb, M + 590 + HOLD_MAX_S + 1)  # a finalised (safeguard): prev month needed
+    await t.ingest("15", lb, M + 600 + HOLD_MAX_S + 1)  # b finalised: prev month needed again
     t.close()
     assert len(opened) == 2
     assert [(r[0], r[1]) for r in fc(tmp_path)][:2] == [("a", 30), ("a", 20)]
@@ -1275,7 +1325,9 @@ async def test_open_previous_month_failure_logged_for_every_arrival(tmp_path, mo
     monkeypatch.setattr(trk, "open_previous_month", boom)
     t = Tracker(tmp_path, zero_lookup)
     await t.ingest("15", [arr(9, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 60)
-    await t.ingest("15", [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")], M + 590)
+    both = [arr(0, expected=M + 600, scheduled=M + 300, trip=x) for x in ("a", "b")]
+    await t.ingest("15", both, M + 590)
+    await t.ingest("15", both, M + 590 + HOLD_MAX_S + 1)
     t.close()
     msgs = [r.getMessage() for r in caplog.records if "forecast extraction failed" in r.getMessage()]
     assert len(msgs) == 2 and "'a'" in msgs[0] and "'b'" in msgs[1]
@@ -1290,9 +1342,10 @@ async def test_lost_samples_transaction_rolls_tick_back(tmp_path, monkeypatch):
         t._samples.rollback()
         raise OSError("disk")
     monkeypatch.setattr(trk, "extract_forecasts", lose)
+    await t.ingest("15", [arr(0, expected=T0 + 540)], T0 + 540)
     with pytest.raises(OSError):
-        await t.ingest("15", [arr(0, expected=T0 + 540)], T0 + 540)
-    assert rows(tmp_path) == [] and len(samples(tmp_path)) == 1
+        await t.ingest("15", [arr(0, expected=T0 + 700)], T0 + 540 + HOLD_MAX_S + 1)  # changed expected: a sample is written
+    assert rows(tmp_path) == [] and len(samples(tmp_path)) == 2
     assert ("t1", "s1", 0) in t._live  # in-memory state restored
 
 
@@ -1381,3 +1434,136 @@ async def test_busy_checkpoint_at_rollover_does_not_abort_tick(tmp_path, caplog,
     res = await t.ingest("15", [arr(9, expected=OCT31 + 86400 + 5, scheduled=OCT31 + 50, trip="n")], OCT31 + 86400 + 1)
     t.close()
     assert res.samples_written == 1 and "checkpoint" in caplog.text
+
+
+# ---- arrival measured from when the bus leaves the arrival list ---------------------------------
+def meta_rows(tmp_path):
+    return rows(tmp_path, "select trip_id,scheduled,actual,delay,confidence,realtime from arrivals order by id")
+
+
+async def test_vanish_after_due_zero_actual_is_midpoint_of_last_seen_and_first_missing(tr, tmp_path):
+    S = T0 + 300
+    await tr.ingest("15", [arr(1, expected=T0 + 60)], T0)
+    for now, exp in ((T0 + 30, T0 + 90), (T0 + 60, T0 + 100), (T0 + 90, T0 + 120)):
+        res = await tr.ingest("15", [arr(0, expected=exp)], now)  # still listed, later expected
+        assert res.finalised == 0
+        assert meta_rows(tmp_path) == []  # nothing written before the vanish tick
+    res = await tr.ingest("15", [], T0 + 120)
+    assert res.finalised == 1
+    assert meta_rows(tmp_path) == [("t1", S, T0 + 105, T0 + 105 - S, 1, 1)]  # midpoint of T0+90 and T0+120
+    assert ("t1", "s1", 0) not in tr._live and ("t1", "s1", 0) in tr._finalised
+
+
+async def test_vanish_right_after_first_due_zero_uses_midpoint_not_expected(tr, tmp_path):
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], T0 + 30)
+    assert meta_rows(tmp_path) == []
+    await tr.ingest("15", [], T0 + 60)
+    (r,) = meta_rows(tmp_path)
+    assert r[2] == T0 + 45 and r[2] != T0 + 90 and r[2] >= T0 + 30 and r[3] == T0 + 45 - (T0 + 300)
+
+
+async def test_still_listed_after_hold_max_finalises_with_fallback_once(tr, tmp_path):
+    z = T0 + 30
+    for now in (z, z + 300, z + HOLD_MAX_S):  # exactly HOLD_MAX_S is not yet "more than"
+        assert (await tr.ingest("15", [arr(0, expected=T0 + 90)], now)).finalised == 0
+    assert meta_rows(tmp_path) == []
+    res = await tr.ingest("15", [arr(0, expected=T0 + 5000)], z + HOLD_MAX_S + 1)
+    assert res.finalised == 1
+    assert meta_rows(tmp_path) == [("t1", T0 + 300, T0 + 90, T0 + 90 - (T0 + 300), 1, 1)]  # zero_expected
+    assert ("t1", "s1", 0) in tr._finalised and ("t1", "s1", 0) not in tr._live
+    assert (await tr.ingest("15", [arr(0, expected=T0 + 5100)], z + HOLD_MAX_S + 60)).finalised == 0
+    assert (await tr.ingest("15", [], z + HOLD_MAX_S + 120)).finalised == 0
+    assert len(meta_rows(tmp_path)) == 1
+
+
+async def test_vanish_after_poll_gap_beyond_hold_max_rejects_estimate(tr, tmp_path):
+    z = T0 + 30
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], z)
+    res = await tr.ingest("15", [], z + 2 * HOLD_MAX_S + 100)  # estimate z + HOLD_MAX_S + 50 is too far
+    assert res.finalised == 1
+    assert meta_rows(tmp_path)[0][2] == T0 + 90  # fallback
+
+
+async def test_vanish_estimate_exactly_hold_max_after_zero_is_accepted(tr, tmp_path):
+    z = T0 + 30
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], z)
+    await tr.ingest("15", [], z + 2 * HOLD_MAX_S)  # midpoint z + HOLD_MAX_S
+    assert meta_rows(tmp_path)[0][2] == z + HOLD_MAX_S
+
+
+async def test_never_reaching_zero_behaves_as_before(tr, tmp_path):
+    await tr.ingest("15", [arr(2, expected=T0 + 420)], T0)
+    res = await tr.ingest("15", [], T0 + 600)  # a long gap does not matter without saw_zero
+    assert (res.finalised, res.dropped) == (1, 0)
+    assert meta_rows(tmp_path) == [("t1", T0 + 300, T0 + 420, 120, 0, 1)]
+    await tr.ingest("15", [arr(3, trip="u")], T0 + 700)
+    assert (await tr.ingest("15", [], T0 + 730)).dropped == 1
+
+
+async def test_scheduled_none_zero_bus_keeps_null_delay_with_midpoint(tr, tmp_path):
+    await tr.ingest("15", [arr(0, scheduled=None, expected=T0 + 90)], T0 + 30)
+    await tr.ingest("15", [], T0 + 60)
+    assert meta_rows(tmp_path) == [("t1", None, T0 + 45, None, 1, 1)]
+
+
+async def test_failed_tick_restores_zero_fields(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(0, trip="n"), arr(1, trip="k", expected=T0 + 60)], T0)
+    before, dbb = snapshot(t), rows(tmp_path, "select * from arrivals")
+    t._on_finalised = lambda i, r: 1 / 0
+    with pytest.raises(ZeroDivisionError):  # k reaches due 0 (zero fields set), then n's vanish-finalise raises
+        await t.ingest("15", [arr(0, trip="k", expected=T0 + 90)], T0 + 30)
+    assert snapshot(t) == before and rows(tmp_path, "select * from arrivals") == dbb
+    assert t._live[("k", "s1", 0)].zero_at is None and t._live[("n", "s1", 0)].last_seen == T0
+    t._on_finalised = lambda i, r: None
+    await t.ingest("15", [arr(0, trip="k", expected=T0 + 90)], T0 + 30)
+    assert t._live[("k", "s1", 0)].zero_at == T0 + 30 and t._live[("k", "s1", 0)].zero_expected == T0 + 90
+    t.close()
+
+
+async def test_skipped_arrival_shields_zero_bus_from_vanish_finalise(tr, tmp_path):
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], T0 + 30)
+    r = await tr.ingest("15", [arr(0, realtime=None)], T0 + 60)  # invalid for the same (trip, stop)
+    assert (r.skipped, r.finalised) == (1, 0)
+    assert meta_rows(tmp_path) == [] and ("t1", "s1", 0) in tr._live
+    assert tr._live[("t1", "s1", 0)].last_seen == T0 + 30  # an unlisted tick is not a sighting
+    r = await tr.ingest("15", [], T0 + 90)
+    assert r.finalised == 1 and meta_rows(tmp_path)[0][2] == (T0 + 30 + T0 + 90) // 2
+
+
+async def test_samples_after_due_zero_only_when_expected_changes(tr, tmp_path):
+    await tr.ingest("15", [arr(1, expected=T0 + 60)], T0)
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], T0 + 30)  # first due<=0: written
+    r = await tr.ingest("15", [arr(0, expected=T0 + 90)], T0 + 60)  # unchanged
+    assert r.samples_written == 0
+    r = await tr.ingest("15", [arr(0, expected=T0 + 95)], T0 + 90)  # changed
+    assert r.samples_written == 1
+    assert [(s[0], s[5]) for s in samples(tmp_path)] == [(T0, T0 + 60), (T0 + 30, T0 + 90), (T0 + 90, T0 + 95)]
+
+
+async def test_forecasts_for_vanish_finalised_arrival_use_the_new_actual(tr, tmp_path):
+    await tr.ingest("15", [arr(9, expected=T0 + 540)], T0)
+    await tr.ingest("15", [arr(0, expected=T0 + 520)], T0 + 500)
+    await tr.ingest("15", [arr(0, expected=T0 + 520)], T0 + 520)
+    await tr.ingest("15", [], T0 + 600)  # actual = (T0+520 + T0+600) // 2 = T0 + 560
+    assert meta_rows(tmp_path)[0][2] == T0 + 560
+    assert [(h, p, e) for _, h, p, e in fc(tmp_path)] == [(5, T0 + 540, 20), (2, T0 + 540, 20)]
+    no_orphans(tmp_path)
+
+
+async def test_other_routes_ticks_never_finalise_a_route_bus(tr, tmp_path):
+    await tr.ingest("15", [arr(0, trip="a", expected=T0 + 90)], T0 + 30)
+    for i, now in enumerate((T0 + 40, T0 + 700, T0 + 2000)):  # B ticks long past HOLD_MAX_S, empty or busy
+        res = await tr.ingest("16", [] if i % 2 else [arr(5, trip="b", route="16")], now)
+        assert res.finalised == 0
+    assert meta_rows(tmp_path) == [] and ("a", "s1", 0) in tr._live
+    assert (await tr.ingest("15", [], T0 + 2030)).finalised == 1
+    assert [r[0] for r in meta_rows(tmp_path)] == ["a"]
+
+
+async def test_abandoned_zero_state_is_swept_after_ttl(tr):
+    await tr.ingest("15", [arr(0)], T0)
+    await tr.ingest("16", [], T0 + FINALISED_TTL_S)
+    assert len(tr._live) == 1
+    await tr.ingest("16", [], T0 + FINALISED_TTL_S + 1)
+    assert tr._live == {}
