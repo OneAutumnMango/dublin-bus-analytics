@@ -142,6 +142,27 @@ Restore:
 
 Copies kept off the host are your responsibility. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
 
+### JSON export
+
+`GET /api/export.json` streams the stored data as one JSON document (the tar backups remain the restore path; there is no JSON import).
+
+Query parameters (all optional): `route` (one route), `since` and `until` (Unix seconds, inclusive; they filter `arrivals.scheduled` and `sample.ts`), `gzip=1` (gzip-compressed download, `.json.gz`). The filename is `analytics-export-YYYYMMDD[-route].json[.gz]`.
+
+```
+curl -OJ "http://127.0.0.1:8081/api/export.json?route=15&since=1790000000"
+```
+
+Document keys, in order: `version` (1), `exported_at`, `filters` (`route`, `since`, `until`), `routes_tracked`, `gaps`, `arrivals` (each with a nested `forecast` list of `horizon_min`, `predicted`, `error_s`), `samples` (`ts`, `trip_id`, `stop_id`, `seq`, `due_min`, `expected`, `realtime`), then `"complete":true` as the last key. The response is streamed, so a dropped connection leaves a truncated file: a download is whole only if it parses and `complete` is `true`.
+
+Notes:
+
+- One export at a time: a concurrent request gets `429` with a `Retry-After` header.
+- Memory stays flat (rows are read in batches); samples are read one month at a time, and a gzipped month is decompressed to a temporary copy that is removed before the next month.
+- A very long export holds a read transaction on each file, which can delay the WAL checkpoint until it finishes; the WAL file may grow meanwhile.
+- `since`/`until` are not range-checked: very large values just yield a truncated stream, which the `complete` key reveals. An export abandoned before its first chunk frees the one-at-a-time slot only when its 3600 s lease expires.
+
+In the UI, the Backup card on the Routes page has a route select, a "compressed" checkbox and a Download JSON button.
+
 ## Repo layout
 
 - `app/` FastAPI app, grouped by responsibility: `core/` (config, models, db), `collect/` (server client, poller, tracker, forecast), `analysis/` (stats), `api/` (JSON routes, static UI), `backup/` (backup, scheduler, backup router); entrypoint `app.main:app`
