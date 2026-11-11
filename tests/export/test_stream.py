@@ -288,3 +288,40 @@ def test_gzip_flushes_per_chunk_and_is_lazy():
     assert pulled == ["aaa", "bbb"] and out == b"aaabbb"
     out += b"".join(dec.decompress(p) for p in g)
     assert out == b"aaabbbccc" and dec.eof
+
+
+def test_gzip_chunks_close_releases_inner_generator_and_temp(tmp_path):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + i, f"a{i:05d}") for i in range(2500)], gz=True)
+    before = _tmp_listing()
+    inner = iter_export(tmp_path)
+    gz = gzip_chunks(inner)
+    next(gz)
+    gz.close()
+    assert _tmp_listing() == before
+    assert inspect_gen_closed(inner)
+
+
+def inspect_gen_closed(gen):
+    import inspect
+    return inspect.getgeneratorstate(gen) == inspect.GEN_CLOSED
+
+
+def test_gzip_chunks_closes_source_iterator_on_close():
+    class Src:
+        closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return "x" * 10
+
+        def close(self):
+            self.closed = True
+
+    src = Src()
+    gz = gzip_chunks(src)
+    next(gz)
+    gz.close()
+    assert src.closed

@@ -161,8 +161,14 @@ def iter_export(data_dir: Path, *, route: str | None = None, since: int | None =
 def gzip_chunks(chunks: Iterable[str]) -> Iterator[bytes]:
     """Compress text chunks into one gzip stream, sync-flushed per chunk so output is not held back."""
     comp = zlib.compressobj(wbits=31)
-    for chunk in chunks:
-        data = comp.compress(chunk.encode("utf-8")) + comp.flush(zlib.Z_SYNC_FLUSH)
-        if data:
-            yield data
-    yield comp.flush(zlib.Z_FINISH)
+    try:
+        for chunk in chunks:
+            data = comp.compress(chunk.encode("utf-8")) + comp.flush(zlib.Z_SYNC_FLUSH)
+            if data:
+                yield data
+        yield comp.flush(zlib.Z_FINISH)
+    finally:
+        # release the source (sqlite connections, temp gz copy) deterministically on early close
+        close = getattr(chunks, "close", None)
+        if close is not None:
+            close()
