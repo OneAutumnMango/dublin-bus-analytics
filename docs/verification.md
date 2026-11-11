@@ -48,3 +48,13 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 - Tick compressed: a `.json.gz` downloads and gunzips to the same document shape.
 - Pick one route: the filename ends `-<route>.json`, `filters.route` is set, and every arrival and sample belongs to that route.
 - While one export is running (use a large data set), start a second from another tab: it gets HTTP 429 with `Retry-After`; after the first finishes a new export works.
+
+### 5. Remove a day of data (manual)
+
+- Take a backup, then `curl "http://127.0.0.1:8081/api/data/day?date=<today>"`: counts are non-zero for a day with data, `window` spans local midnight to next midnight, `months` lists the month files.
+- Same call with `route=<id>`: counts are no larger than the all-routes counts.
+- `POST /api/data/day/remove?date=<day>&confirm=<other day>` gives 422 and deletes nothing.
+- With the correct `confirm`, the response counts equal the preview; the preview afterwards is all zero and other days are unchanged in the UI.
+- On a day overlapping a gzipped month, `skipped_months` names the `.db.gz` file and its checksum is unchanged.
+- While the tracker is running, the collector keeps recording during a large removal (no `database is locked` in its log).
+
