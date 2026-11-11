@@ -1,8 +1,9 @@
+import gzip
 import json
 import threading
 
 from app.core.db import open_meta
-from app.export.stream import iter_export
+from app.export.stream import gzip_chunks, iter_export
 
 KEYS = ["version", "exported_at", "filters", "routes_tracked", "gaps", "arrivals", "samples", "complete"]
 
@@ -254,3 +255,30 @@ def test_temp_copy_removed_when_error_mid_month(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         _doc(tmp_path)
     assert _tmp_listing() == before
+
+
+def test_gzip_round_trip(tmp_path):
+    _build(tmp_path, arrivals=[_arr(i) for i in range(1, 50)], routes=[("15", 1)])
+    plain = "".join(iter_export(tmp_path, exported_at=5))
+    gz = b"".join(gzip_chunks(iter_export(tmp_path, exported_at=5)))
+    assert gz[:2] == b"\x1f\x8b"
+    assert gzip.decompress(gz).decode() == plain
+
+
+def test_gzip_empty_input_is_valid_stream():
+    assert gzip.decompress(b"".join(gzip_chunks(iter([])))) == b""
+    assert gzip.decompress(b"".join(gzip_chunks(iter(["", ""])))) == b""
+
+
+def test_gzip_flushes_per_chunk_and_is_lazy():
+    pulled = []
+
+    def src():
+        for c in ("aaa", "bbb", "ccc"):
+            pulled.append(c)
+            yield c
+
+    g = gzip_chunks(src())
+    first = next(g)  # header + first flushed chunk, before the rest is pulled
+    assert pulled == ["aaa"] and first
+    assert gzip.decompress(first + b"".join(g)) == b"aaabbbccc"

@@ -5,9 +5,10 @@ import json
 import re
 import sqlite3
 import time
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from app.core.db import open_samples_readonly
 
@@ -155,3 +156,13 @@ def iter_export(data_dir: Path, *, route: str | None = None, since: int | None =
     finally:
         if conn:
             conn.close()
+
+
+def gzip_chunks(chunks: Iterable[str]) -> Iterator[bytes]:
+    """Compress text chunks into one gzip stream, sync-flushed per chunk so output is not held back."""
+    comp = zlib.compressobj(wbits=31)
+    for chunk in chunks:
+        data = comp.compress(chunk.encode("utf-8")) + comp.flush(zlib.Z_SYNC_FLUSH)
+        if data:
+            yield data
+    yield comp.flush(zlib.Z_FINISH)
