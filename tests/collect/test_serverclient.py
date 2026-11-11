@@ -200,3 +200,17 @@ async def test_any_wellformed_payload_round_trips(p):
     out = await c.route_arrivals("15")
     assert len(out) == sum(len(v) for v in p.values())
     assert all(isinstance(a, Arrival) for a in out)
+
+
+async def test_read_timeout_is_configurable():
+    seen = []
+
+    class Stub:
+        async def get(self, url, params=None, timeout=None):
+            seen.append(timeout)
+            return httpx.Response(200, json={})
+
+    await ServerClient("http://x", client=Stub(), read_timeout_s=7).status()
+    await ServerClient("http://x", client=Stub()).status()
+    assert (seen[0].read, seen[0].connect) == (7.0, 5.0)
+    assert (seen[1].read, seen[1].connect) == (45.0, 5.0)

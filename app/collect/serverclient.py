@@ -4,8 +4,6 @@ import httpx
 
 from app.core.models import Arrival
 
-TIMEOUT = httpx.Timeout(10.0, connect=5.0)
-
 
 class ServerUnavailable(Exception):
     """Connection failure, timeout, 5xx/unexpected status, or an unparseable response."""
@@ -16,16 +14,18 @@ class RouteNotFound(Exception):
 
 
 class ServerClient:
-    def __init__(self, base_url: str, client: httpx.AsyncClient | None = None):
+    def __init__(self, base_url: str, client: httpx.AsyncClient | None = None,
+                 read_timeout_s: float = 45.0):
         self._base = base_url.rstrip("/")
-        self._client = client or httpx.AsyncClient(timeout=TIMEOUT)
+        self._timeout = httpx.Timeout(read_timeout_s, connect=5.0)
+        self._client = client or httpx.AsyncClient(timeout=self._timeout)
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
     async def _get(self, path: str, **params):
         try:
-            r = await self._client.get(self._base + path, params=params or None, timeout=TIMEOUT)
+            r = await self._client.get(self._base + path, params=params or None, timeout=self._timeout)
         except httpx.HTTPError as e:
             raise ServerUnavailable(str(e) or type(e).__name__) from e
         if r.status_code == 404:
