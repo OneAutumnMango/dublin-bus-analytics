@@ -95,3 +95,98 @@ def test_connections_usable_across_threads(tmp_path):
         t.join()
         assert not errs, errs
     assert json.loads("".join(c for c in out if c))["complete"] is True
+
+
+# ---- samples across months ----
+import gzip
+import os
+import shutil
+import tempfile
+
+from app.core.db import SAMPLES_SCHEMA, samples_path
+from app.export import stream
+from app.export.stream import sample_months
+
+JAN = 1767225600  # 2026-01-01 UTC
+FEB = 1769904000  # 2026-02-01 UTC
+MAR = 1772323200  # 2026-03-01 UTC
+
+
+def _month(tmp_path, ts, rows, gz=False):
+    import sqlite3
+    p = samples_path(tmp_path, ts)
+    c = sqlite3.connect(p)
+    c.executescript(SAMPLES_SCHEMA)
+    c.executemany("insert into sample values (?,?,?,?,?,?,?)", rows)
+    c.commit()
+    c.execute("pragma journal_mode=delete")
+    c.close()
+    if gz:
+        with open(p, "rb") as f, gzip.open(str(p) + ".gz", "wb") as g:
+            shutil.copyfileobj(f, g)
+        p.unlink()
+
+
+def _s(ts, trip, stop="s", seq=1):
+    return (ts, trip, stop, seq, 3, ts + 180, 1)
+
+
+def _tmp_listing():
+    return {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("samples-ro-")}
+
+
+def test_samples_span_months_in_order(tmp_path):
+    _build(tmp_path)
+    _month(tmp_path, FEB, [_s(FEB + 5, "b"), _s(FEB + 1, "a")])
+    _month(tmp_path, JAN, [_s(JAN + 9, "z"), _s(JAN + 2, "y")])
+    d = _doc(tmp_path)
+    assert [(x["trip_id"]) for x in d["samples"]] == ["y", "z", "a", "b"]
+    assert list(d["samples"][0]) == ["ts", "trip_id", "stop_id", "seq", "due_min", "expected", "realtime"]
+    assert list(d) == KEYS
+    assert sample_months(tmp_path) == [JAN, FEB]
+
+
+def test_gz_month_is_included_and_temp_removed(tmp_path):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + 1, "g1"), _s(JAN + 2, "g2")], gz=True)
+    _month(tmp_path, FEB, [_s(FEB + 1, "p1")])
+    before = _tmp_listing()
+    d = _doc(tmp_path)
+    assert [x["trip_id"] for x in d["samples"]] == ["g1", "g2", "p1"]
+    assert _tmp_listing() == before
+    assert sample_months(tmp_path) == [JAN, FEB]
+
+
+def test_samples_filtered_by_ts(tmp_path, monkeypatch):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + 1, "j")])
+    _month(tmp_path, FEB, [_s(FEB + 10, "f1"), _s(FEB + 20, "f2"), _s(FEB + 30, "f3")])
+    _month(tmp_path, MAR, [_s(MAR + 1, "m")])
+    opened = []
+    real = stream.open_samples_readonly
+    monkeypatch.setattr(stream, "open_samples_readonly",
+                        lambda d, ts, check_same_thread=True: (opened.append(ts), real(d, ts, check_same_thread))[1])
+    d = _doc(tmp_path, since=FEB + 20, until=FEB + 30)
+    assert [x["trip_id"] for x in d["samples"]] == ["f2", "f3"]
+    assert opened == [FEB]
+
+
+def test_route_filter_joins_through_arrivals(tmp_path):
+    _build(tmp_path, arrivals=[(1, "t15", "s", 1, "2026-01-01", 10, 20, 10, 0.9, 1, "15"),
+                               (2, "t7", "s", 1, "2026-01-01", 10, 20, 10, 0.9, 1, "7")])
+    _month(tmp_path, JAN, [_s(JAN + 1, "t15"), _s(JAN + 2, "t7"), _s(JAN + 3, "t15", seq=9)])
+    _month(tmp_path, FEB, [_s(FEB + 1, "t15"), _s(FEB + 2, "t7")], gz=True)
+    d = _doc(tmp_path, route="15")
+    assert [(x["trip_id"], x["ts"]) for x in d["samples"]] == [("t15", JAN + 1), ("t15", FEB + 1)]
+
+
+def test_route_filter_without_meta_emits_no_samples(tmp_path):
+    _month(tmp_path, JAN, [_s(JAN + 1, "t15")])
+    d = _doc(tmp_path, route="15")
+    assert d["samples"] == [] and d["complete"] is True
+
+
+def test_no_sample_files_gives_empty_samples(tmp_path):
+    _build(tmp_path)
+    assert _doc(tmp_path)["samples"] == []
+    assert sample_months(tmp_path) == []
