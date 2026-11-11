@@ -56,7 +56,9 @@ test('routes page: Download JSON link follows the route select and compressed ch
   sel.dispatch('change');
   assert.equal(a().getAttribute('href'), '/api/export.json?route=15%2FA');
   const box = ctx.main.byTag('input').find((i) => i.getAttribute('type') === 'checkbox');
-  assert.ok(ctx.main.byTag('label').some((l) => /compressed \(\.gz\)/.test(l.textContent)));
+  const gzLabel = ctx.main.byTag('label').find((l) => /compressed \(\.gz\)/.test(l.textContent));
+  assert.ok(gzLabel);
+  assert.equal(gzLabel.getAttribute('class'), 'inline');
   box.checked = true;
   box.dispatch('change');
   assert.match(a().getAttribute('href'), /route=15%2FA/);

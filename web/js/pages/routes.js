@@ -40,5 +40,5 @@ export async function render(ctx) {
       h('h3', {}, 'Export as JSON'),
       h('p', { class: 'hint' }, 'A readable copy of arrivals, forecasts and samples. Choose one route or all, then download.'),
       h('div', { class: 'row' }, h('label', { for: 'export-route' }, 'Route'), routeSel,
-        h('label', { for: 'export-gz' }, gzBox, ' compressed (.gz)'), exportLink)));
+        h('label', { for: 'export-gz', class: 'inline' }, gzBox, ' compressed (.gz)'), exportLink)));
 }
