@@ -92,3 +92,11 @@ test('backupAvailable probes with a Range header and maps statuses', async () =>
   assert.equal(await A.backupAvailable({ fetchFn: async () => { throw new TypeError('x'); } }), null);
   assert.ok(seen.every((r) => r === 'bytes=0-0'));
 });
+
+test('exportUrl builds the query', () => {
+  assert.equal(A.exportUrl(), '/api/export.json');
+  assert.equal(A.exportUrl({ route: '15/A' }), '/api/export.json?route=15%2FA');
+  assert.equal(A.exportUrl({ gzip: true }), '/api/export.json?gzip=1');
+  assert.equal(A.exportUrl({ route: '15', gzip: true }), '/api/export.json?route=15&gzip=1');
+  assert.equal(A.exportUrl({ route: '', gzip: false }), '/api/export.json');
+});

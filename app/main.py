@@ -7,6 +7,8 @@ from fastapi import FastAPI
 
 from app.api.routes import router as api_router
 from app.backup.api import router as backup_router
+from app.export.api import router as export_router
+from app.export.gate import ExportGate
 from app.core.config import Settings
 from app.collect.poller import LazyTracker, Poller, seq_lookup
 from app.backup.scheduler import BackupScheduler
@@ -54,7 +56,9 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.state.poller = Poller(settings, app.state.client, app.state.tracker)
     app.state.scheduler = BackupScheduler(settings)
 
+    app.state.export_gate = ExportGate()
     app.include_router(backup_router)
+    app.include_router(export_router)
 
     @app.get("/api/health")
     async def health():

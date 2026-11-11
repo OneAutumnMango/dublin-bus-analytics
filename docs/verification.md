@@ -39,3 +39,11 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 - Theme toggle: persists across reload, both themes readable.
 - Deep link `#/route/15%2FA` loads the route.
 - DevTools console: no CSP violations or errors.
+
+### 4. JSON export (manual)
+
+- Routes page, Backup card: choose "All routes" and click Download JSON; the file `analytics-export-YYYYMMDD.json` downloads.
+- Open it in a JSON viewer: keys in order `version`, `exported_at`, `filters`, `routes_tracked`, `gaps`, `arrivals`, `samples`, `complete`; `complete` is `true`.
+- Tick compressed: a `.json.gz` downloads and gunzips to the same document shape.
+- Pick one route: the filename ends `-<route>.json`, `filters.route` is set, and every arrival and sample belongs to that route.
+- While one export is running (use a large data set), start a second from another tab: it gets HTTP 429 with `Retry-After`; after the first finishes a new export works.

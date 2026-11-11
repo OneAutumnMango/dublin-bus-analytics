@@ -79,19 +79,20 @@ class _TempConnection(sqlite3.Connection):
         self._cleanup()
 
 
-def open_samples_readonly(data_dir: Path, ts: int) -> sqlite3.Connection:
+def open_samples_readonly(data_dir: Path, ts: int, check_same_thread: bool = True) -> sqlite3.Connection:
     """Read-only access to a month, plain or gzipped. Never creates the month; FileNotFoundError if absent."""
     p = samples_path(data_dir, ts)
     gz = p.with_name(p.name + ".gz")
     if not gz.exists():  # a gz, when present, is the authority for a closed month
         if p.exists():
-            return sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True)
+            return sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=check_same_thread)
         raise FileNotFoundError(str(p))
     fd, tmp = tempfile.mkstemp(prefix="samples-ro-", suffix=".db")
     try:
         with os.fdopen(fd, "wb") as out, gzip.open(gz, "rb") as src:
             shutil.copyfileobj(src, out)
-        c = sqlite3.connect(f"{Path(tmp).resolve().as_uri()}?mode=ro&immutable=1", uri=True, factory=_TempConnection)
+        c = sqlite3.connect(f"{Path(tmp).resolve().as_uri()}?mode=ro&immutable=1", uri=True, factory=_TempConnection,
+                          check_same_thread=check_same_thread)
     except BaseException:
         os.unlink(tmp)
         raise
