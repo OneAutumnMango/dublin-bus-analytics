@@ -58,6 +58,8 @@ class Settings:
     backup_time: str = "03:00"  # HH:MM Europe/Dublin local time
     backup_keep: int = 7
     backup_dir: Path | None = None  # None -> <data_dir>/backups; a relative path is kept as given (cwd-relative)
+    server_timeout_seconds: int = 45  # read timeout for calls to the server (connect stays 5 s)
+    server_concurrency: int = 2  # routes fetched at once
 
     @property
     def backup_path(self) -> Path:
@@ -74,4 +76,6 @@ class Settings:
             backup_time=_hhmm("BACKUP_TIME", "03:00"),
             backup_keep=_pos_int("BACKUP_KEEP", 7),
             backup_dir=_backup_dir(),
+            server_timeout_seconds=_pos_int("SERVER_TIMEOUT_SECONDS", 45),
+            server_concurrency=_pos_int("SERVER_CONCURRENCY", 2),
         )

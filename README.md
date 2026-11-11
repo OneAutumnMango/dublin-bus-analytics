@@ -55,6 +55,8 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `SERVER_URL` | `http://dublin-bus-server:8080` | Base URL of dublin-bus-server |
 | `DATA_DIR` | `/data` | Directory for `meta.db`, `samples-*.db`, `backups/` |
 | `POLL_SECONDS` | `30` | Seconds between polls (positive integer) |
+| `SERVER_TIMEOUT_SECONDS` | `45` | Read timeout for server calls in seconds (positive integer) |
+| `SERVER_CONCURRENCY` | `2` | Routes fetched at once (positive integer, lower is gentler on a Raspberry Pi) |
 | `PORT` | `8081` | Parsed into settings only; the listen port is uvicorn's `--port` |
 | `BACKUP_ENABLED` | `true` | Nightly backup on/off (`true/false/1/0/yes/no`) |
 | `BACKUP_TIME` | `03:00` | `HH:MM`, Europe/Dublin local time |

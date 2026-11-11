@@ -30,7 +30,7 @@ def env_example():
 
 def test_app_vars_detected():
     assert {"SERVER_URL", "DATA_DIR", "POLL_SECONDS", "PORT", "BACKUP_ENABLED", "BACKUP_TIME",
-            "BACKUP_KEEP", "BACKUP_DIR", "WEB_DIR"} == APP_VARS
+            "BACKUP_KEEP", "BACKUP_DIR", "WEB_DIR", "SERVER_TIMEOUT_SECONDS", "SERVER_CONCURRENCY"} == APP_VARS
     assert "WEB_DIR" in STATIC_TXT
 
 
@@ -45,6 +45,8 @@ def test_env_example_app_level_names_parse_into_settings(monkeypatch):
         app_level["SERVER_URL"], app_level["DATA_DIR"], int(app_level["POLL_SECONDS"]), int(app_level["PORT"]))
     assert (s.backup_enabled, s.backup_time, s.backup_keep, str(s.backup_dir)) == (
         True, app_level["BACKUP_TIME"], int(app_level["BACKUP_KEEP"]), app_level["BACKUP_DIR"])
+    assert (s.server_timeout_seconds, s.server_concurrency) == (
+        int(app_level["SERVER_TIMEOUT_SECONDS"]), int(app_level["SERVER_CONCURRENCY"]))
 
 
 def test_env_example_compose_names_used_and_valid(monkeypatch):

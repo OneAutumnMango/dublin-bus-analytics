@@ -92,3 +92,33 @@ def test_invalid_backup_values_rejected(benv, name, bad):
 def test_valid_backup_time_boundaries(benv, t):
     benv.setenv("BACKUP_TIME", t)
     assert Settings.from_env().backup_time == t
+
+
+SENV = ("SERVER_TIMEOUT_SECONDS", "SERVER_CONCURRENCY")
+
+
+@pytest.fixture
+def senv(clean_env):
+    for k in SENV:
+        clean_env.delenv(k, raising=False)
+    return clean_env
+
+
+def test_server_tuning_defaults(senv):
+    s = Settings.from_env()
+    assert (s.server_timeout_seconds, s.server_concurrency) == (45, 2)
+    assert Settings("http://fake", Path("/x"), 30).server_timeout_seconds == 45
+
+
+def test_server_tuning_env_parses(senv):
+    senv.setenv("SERVER_TIMEOUT_SECONDS", "90")
+    senv.setenv("SERVER_CONCURRENCY", "4")
+    s = Settings.from_env()
+    assert (s.server_timeout_seconds, s.server_concurrency) == (90, 4)
+
+
+@pytest.mark.parametrize("name,bad", [("SERVER_CONCURRENCY", "0"), ("SERVER_TIMEOUT_SECONDS", "abc")])
+def test_server_tuning_invalid_rejected(senv, name, bad):
+    senv.setenv(name, bad)
+    with pytest.raises(ValueError, match=name):
+        Settings.from_env()
