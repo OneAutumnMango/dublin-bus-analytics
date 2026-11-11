@@ -28,3 +28,10 @@ test('detailed tooltips off -> null; mean off hides the headline; foot for low n
   assert.match(text(renderCard(doc, low, DEFAULTS)), /Fewer than 10/);
   assert.ok(!/NaN|undefined/.test(text(renderCard(doc, rangeTipData({ label: 'x', n: 0, mean: null }, {}), DEFAULTS))));
 });
+
+test('headline unit label defaults to "mean" and can be overridden by the payload', () => {
+  const { doc } = installDom();
+  const p = { title: 'S', head: { sec: 60 }, rows: [] };
+  assert.match(text(renderCard(doc, p, DEFAULTS)), /mean/);
+  assert.match(text(renderCard(doc, { ...p, head: { sec: 60, label: 'change vs previous stop' } }, DEFAULTS)), /change vs previous stop/);
+});

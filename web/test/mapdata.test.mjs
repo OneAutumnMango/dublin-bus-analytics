@@ -151,3 +151,62 @@ test('area size scales hexagons, circles and the smooth reach', () => {
   const small = M.smoothRaster(stops, { radiusM: M.smoothReach(150) }), big = M.smoothRaster(stops, { radiusM: M.smoothReach(1200) });
   assert.ok(big.width > small.width, 'a larger spread covers more ground');
 });
+
+const withChange = () => ({
+  routes: [{ route: '15', directions: { out: ['a', 'b'] } }, { route: '46A', directions: { out: ['b', 'c'] } }],
+  stops: [
+    { stop_id: 'a', lat: 53.3, lon: -6.2, n: 30, mean_delay: 60, mean_change: 60, n_change: 30, routes: [{ route: '15', n: 30, mean_delay: 60, mean_change: 60, n_change: 30 }] },
+    { stop_id: 'b', lat: 53.3005, lon: -6.2005, n: 40, mean_delay: 120, mean_change: 20, n_change: 40,
+      routes: [{ route: '15', n: 10, mean_delay: 120, mean_change: 60, n_change: 10 }, { route: '46A', n: 30, mean_delay: 120, mean_change: 7, n_change: 30 }] },
+    { stop_id: 'c', lat: 53.4, lon: -6.3, n: 5, mean_delay: 30, mean_change: null, n_change: 0, routes: [{ route: '46A', n: 5, mean_delay: 30, mean_change: null, n_change: 0 }] },
+  ],
+});
+
+test('withMetric: change maps n/mean_delay from n_change/mean_change incl. route rows; cumulative is identity', () => {
+  const d = withChange();
+  assert.strictEqual(M.withMetric(d.stops, 'cumulative'), d.stops);
+  const c = M.withMetric(d.stops, 'change');
+  assert.deepEqual(c.map((s) => [s.n, s.mean_delay]), [[30, 60], [40, 20], [0, null]]);
+  assert.deepEqual(c[1].routes.map((r) => [r.n, r.mean_delay]), [[10, 60], [30, 7]]);
+  assert.deepEqual(c[2].routes.map((r) => [r.n, r.mean_delay]), [[0, null]]);
+  assert.equal(d.stops[0].mean_delay, 60, 'input not mutated');
+  const old = M.withMetric([{ stop_id: 'x', n: 9, mean_delay: 5, routes: [{ route: '1', n: 9, mean_delay: 5 }] }, { stop_id: 'y', n: 2, mean_delay: 1 }], 'change');
+  assert.deepEqual(old.map((s) => [s.n, s.mean_delay]), [[0, null], [0, null]]);
+  assert.deepEqual(old[0].routes.map((r) => [r.n, r.mean_delay]), [[0, null]]);
+  assert.deepEqual(M.withMetric(undefined, 'change'), []);
+  noBad(c);
+});
+
+test('visibleStops after withMetric weights the change over visible routes only', () => {
+  const d = withChange();
+  const all = M.visibleStops({ ...d, stops: M.withMetric(d.stops, 'change') }, new Set(['15', '46A']));
+  assert.equal(all.find((s) => s.stop_id === 'b').mean_delay, (10 * 60 + 30 * 7) / 40);
+  const one = M.visibleStops({ ...d, stops: M.withMetric(d.stops, 'change') }, new Set(['15']));
+  assert.equal(one.find((s) => s.stop_id === 'b').mean_delay, 60);
+  const cum = M.visibleStops(d, new Set(['15']));
+  assert.equal(cum.find((s) => s.stop_id === 'b').mean_delay, 120);
+  assert.equal(M.visibleStops({ ...d, stops: M.withMetric(d.stops, 'change') }, new Set(['46A'])).find((s) => s.stop_id === 'c').mean_delay, null);
+});
+
+test('autoCap per metric', () => {
+  const mk = (...vals) => vals.map((v) => ({ n: 20, mean_delay: v }));
+  assert.equal(M.autoCap(mk(10, 20, 15)), 120, 'cumulative default unchanged');
+  assert.equal(M.autoCap(mk(10, 20, 15), 'cumulative'), 120);
+  assert.equal(M.autoCap(mk(10, 20, 15), 'change'), 30, 'floor 30 s');
+  assert.equal(M.autoCap(mk(100, 100), 'change'), 100);
+  assert.equal(M.autoCap(mk(5000), 'change'), 300);
+  assert.equal(M.autoCap(mk(5000), 'cumulative'), 600);
+  assert.equal(M.autoCap([], 'change'), 120);
+  assert.equal(M.autoCap([], 'cumulative'), 300);
+  assert.equal(M.autoCap([], undefined), 300);
+});
+
+test('tooltip payloads follow the metric', () => {
+  const p = { id: 'x', name: 'N', n: 20, delay: 5, routes: [] };
+  assert.equal(M.stopTipData(p).head.label, undefined);
+  assert.equal(M.stopTipData(p, 'cumulative').head.label, undefined);
+  assert.match(M.stopTipData(p, 'change').head.label, /change vs previous stop/i);
+  assert.match(M.cellTipData({ stops: 2, n: 3, delay: 5 }, 'change').head.label, /change/i);
+  assert.equal(M.cellTipData({ stops: 2, n: 3, delay: 5 }).head.label, undefined);
+  assert.deepEqual(M.METRICS.map((m) => m[0]), ['change', 'cumulative']);
+});

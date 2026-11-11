@@ -32,7 +32,7 @@ export async function render(ctx) {
         h('fieldset', { disabled: !s.tip.on }, h('legend', {}, 'Statistics to show'),
           h('div', { class: 'checks' }, Object.entries(STAT_LABELS).map(([k, l]) => check(l, s.tip.stats[k], (v) => setSettings({ tip: { stats: { [k]: v } } })))))),
       h('section', { class: 'card settings-group' }, h('h2', {}, 'Charts'),
-        field('Heatmap colour saturation', select(s.charts.heatCap, [[0, 'Automatic'], [2, '2 min'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [30, '30 min']], (v) => setSettings({ charts: { heatCap: Number(v) } })), 'Delays beyond this show the strongest colour.'),
+        field('Heatmap colour saturation', select(s.charts.heatCap, [[0, 'Automatic'], [1, '1 min'], [2, '2 min'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [30, '30 min']], (v) => setSettings({ charts: { heatCap: Number(v) } })), 'Delays beyond this show the strongest colour.'),
         field('Stops per page (route view)', select(s.charts.pageSize, [[20, '20'], [40, '40'], [80, '80']], (v) => setSettings({ charts: { pageSize: Number(v) } }))),
         check('Show the “Show data table” button under charts', s.charts.tableToggle, (v) => setSettings({ charts: { tableToggle: v } }))),
       h('section', { class: 'card settings-group' }, h('h2', {}, 'Map'),

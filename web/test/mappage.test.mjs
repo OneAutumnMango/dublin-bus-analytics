@@ -34,9 +34,9 @@ function stubMapLibre() {
 const mapResp = () => ({ filters: { since: 1_690_000_000, until: null, min_confidence: 1 }, minutes: null, n: 70, unavailable: [],
   routes: [{ route: '15', directions: { out: ['a', 'b'] } }, { route: '46A', directions: { out: ['b', 'c'] } }],
   stops: [
-    { stop_id: 'a', code: '2051', name: 'Alpha', lat: 53.3, lon: -6.2, n: 30, mean_delay: 90, routes: [{ route: '15', n: 30, mean_delay: 90 }] },
-    { stop_id: 'b', code: '7', name: 'Beta', lat: 53.3005, lon: -6.2005, n: 40, mean_delay: 225, routes: [{ route: '15', n: 10, mean_delay: 0 }, { route: '46A', n: 30, mean_delay: 300 }] },
-    { stop_id: 'c', code: '9', name: 'Gamma', lat: 53.31, lon: -6.21, n: 0, mean_delay: null, routes: [] }] });
+    { stop_id: 'a', code: '2051', name: 'Alpha', lat: 53.3, lon: -6.2, n: 30, mean_delay: 90, mean_change: 90, n_change: 30, routes: [{ route: '15', n: 30, mean_delay: 90, mean_change: 90, n_change: 30 }] },
+    { stop_id: 'b', code: '7', name: 'Beta', lat: 53.3005, lon: -6.2005, n: 40, mean_delay: 225, mean_change: 225, n_change: 40, routes: [{ route: '15', n: 10, mean_delay: 0, mean_change: 0, n_change: 10 }, { route: '46A', n: 30, mean_delay: 300, mean_change: 300, n_change: 30 }] },
+    { stop_id: 'c', code: '9', name: 'Gamma', lat: 53.31, lon: -6.21, n: 0, mean_delay: null, mean_change: null, n_change: 0, routes: [] }] });
 
 const ctxOf = () => ({ main: new FNode('main'), params: {}, query: {}, signal: new AbortController().signal, title() {}, go() {}, nowSec: () => 1_700_000_000 });
 const names = (g) => g.features.map((f) => f.properties.name ?? f.properties.route);
@@ -58,7 +58,7 @@ test('map page: layers, sources, legend, route toggles, regions toggle', async (
   assert.equal(map.sources.routes.data.features.length, 2);
   assert.equal(map.sources.routes.data.features.find((f) => f.properties.route === '15' && f.properties.dir === 'out').geometry.coordinates.length, 3, 'real shape, not stop-to-stop');
   assert.equal(map.sources.regions.data.features.length, 1);
-  assert.match(ctx.main.textContent, /on time/);
+  assert.match(ctx.main.textContent, /no change/);
   assert.match(ctx.main.textContent, /no data in this window/);
   assert.match(ctx.main.textContent, /tiles\.openfreemap\.org/);
   assert.ok(map.bounds, 'fits the routes on first load');
@@ -213,4 +213,73 @@ test('map page remembers its choices and restores them; area strength comes from
   assert.match(ctx.main.textContent, /06:00 – 10:30/);
   Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true, writable: true });
   S.resetSettings();
+});
+
+const twoStops = () => ({ ...mapResp(), n: 20,
+  routes: [{ route: '15', directions: { out: ['a', 'b'] } }],
+  stops: [
+    { stop_id: 'a', code: '1', name: 'Alpha', lat: 53.3, lon: -6.2, n: 20, mean_delay: 60, mean_change: 60, n_change: 20, routes: [{ route: '15', n: 20, mean_delay: 60, mean_change: 60, n_change: 20 }] },
+    { stop_id: 'b', code: '2', name: 'Beta', lat: 53.3005, lon: -6.2005, n: 20, mean_delay: 120, mean_change: 60, n_change: 20, routes: [{ route: '15', n: 20, mean_delay: 120, mean_change: 60, n_change: 20 }] }] });
+const delays = (map) => Object.fromEntries(map.sources.stops.data.features.map((f) => [f.properties.name, f.properties.delay]));
+const metricSelect = (ctx) => ctx.main.byTag('select').find((n) => n.children.some((o) => o.value === 'cumulative'));
+const withStore = (store) => Object.defineProperty(globalThis, 'localStorage', { value: store, configurable: true, writable: true });
+const memStore = (init = {}) => { const m = new Map(Object.entries(init)); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; };
+
+test('map page: change per stop is the default; cumulative on demand; 1 min then 2 min example; labels, cap, persistence', async () => {
+  const store = memStore(); withStore(store);
+  const { hooks, render } = await import('../js/pages/map.js');
+  hooks.makeCanvas = (r) => ({ width: r.width, height: r.height });
+  const S = await import('../js/settings.js'); S.resetSettings();
+  let rec = stubMapLibre();
+  const calls = installFetch({ 'GET /api/map': twoStops, 'GET /api/map/shapes': { shapes: {} } });
+  let ctx = ctxOf();
+  let done = render(ctx); await settle(); rec.maps[0].fire('load'); await done; await settle();
+  const map = rec.maps[0];
+  const sel = metricSelect(ctx);
+  assert.ok(sel, 'Colour by control exists');
+  assert.equal(sel.children.find((o) => o.selected).value, 'change');
+  assert.deepEqual(delays(map), { Alpha: 60, Beta: 60 });
+  assert.match(ctx.main.textContent, /Colour by/);
+  assert.match(ctx.main.textContent, /how much each stop adds to or removes from the delay/);
+  assert.match(ctx.main.textContent, /Mean change/);
+  assert.match(ctx.main.textContent, /gains 60 s or more/, 'auto cap in change mode follows the 60 s changes');
+  assert.deepEqual(map.paint['stops.circle-color'].slice(3, 4), [-60]);
+  const before = calls.length;
+  sel.value = 'cumulative'; sel.dispatch('change', { target: sel });
+  assert.deepEqual(delays(map), { Alpha: 60, Beta: 120 });
+  assert.equal(calls.length, before, 'no new request');
+  assert.match(ctx.main.textContent, /how early \(blue\) or late \(orange\)/);
+  assert.match(ctx.main.textContent, /Mean delay/);
+  assert.ok(!/Mean change/.test(ctx.main.textContent));
+  assert.match(ctx.main.textContent, /on time/);
+  assert.deepEqual(map.paint['stops.circle-color'].slice(3, 4), [-120], 'cumulative cap floor 120 s');
+  assert.equal(JSON.parse(store.getItem('dba-map')).metric, 'cumulative');
+  sel.value = 'change'; sel.dispatch('change', { target: sel });
+  assert.deepEqual(delays(map), { Alpha: 60, Beta: 60 });
+  assert.equal(JSON.parse(store.getItem('dba-map')).metric, 'change');
+
+  // stored preference is restored
+  sel.value = 'cumulative'; sel.dispatch('change', { target: sel });
+  rec = stubMapLibre(); installFetch({ 'GET /api/map': twoStops, 'GET /api/map/shapes': { shapes: {} } });
+  ctx = ctxOf(); done = render(ctx); await settle(); rec.maps[0].fire('load'); await done; await settle();
+  assert.deepEqual(delays(rec.maps[0]), { Alpha: 60, Beta: 120 });
+  assert.equal(metricSelect(ctx).children.find((o) => o.selected).value, 'cumulative');
+
+  // junk falls back to change
+  withStore(memStore({ 'dba-map': JSON.stringify({ metric: 'bogus' }) }));
+  rec = stubMapLibre(); installFetch({ 'GET /api/map': twoStops, 'GET /api/map/shapes': { shapes: {} } });
+  ctx = ctxOf(); done = render(ctx); await settle(); rec.maps[0].fire('load'); await done; await settle();
+  assert.deepEqual(delays(rec.maps[0]), { Alpha: 60, Beta: 60 });
+  Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true, writable: true });
+});
+
+test('map page: older payload without mean_change shows no data in change mode instead of crashing', async () => {
+  withStore(memStore());
+  const { render } = await import('../js/pages/map.js');
+  const old = () => { const d = twoStops(); for (const s of d.stops) { delete s.mean_change; delete s.n_change; for (const r of s.routes) { delete r.mean_change; delete r.n_change; } } return d; };
+  const rec = stubMapLibre(); installFetch({ 'GET /api/map': old, 'GET /api/map/shapes': { shapes: {} } });
+  const ctx = ctxOf(); const done = render(ctx); await settle(); rec.maps[0].fire('load'); await done; await settle();
+  assert.deepEqual(delays(rec.maps[0]), { Alpha: null, Beta: null });
+  assert.ok(!/NaN|undefined/.test(ctx.main.textContent));
+  Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true, writable: true });
 });

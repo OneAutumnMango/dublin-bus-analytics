@@ -37,7 +37,7 @@ export function renderCard(doc, payload, settings) {
   if (payload.head && settings.tip.stats.mean !== false) {
     const sec = payload.head.sec;
     const h = mk(doc, 'div', 'tip-head');
-    h.append(mk(doc, 'span', `tip-value ${sec < 0 ? 'early' : sec > 0 ? 'late' : ''}`, fmtTipValue({ fmt: 'delay', v: sec }, units)), mk(doc, 'span', 'tip-unit', 'mean'));
+    h.append(mk(doc, 'span', `tip-value ${sec < 0 ? 'early' : sec > 0 ? 'late' : ''}`, fmtTipValue({ fmt: 'delay', v: sec }, units)), mk(doc, 'span', 'tip-unit', payload.head.label || 'mean'));
     card.append(h);
   }
   const st = settings.tip.stats;

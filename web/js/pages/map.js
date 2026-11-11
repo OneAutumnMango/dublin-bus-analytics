@@ -3,7 +3,7 @@
 import { api, isAbort } from '../api.js';
 import { dataTable, emptyState, errorBox, h, link, notice, put } from '../dom.js';
 import { fmtCount, fmtDelay, fmtNum, makeLatest } from '../lib.js';
-import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, NEUTRAL, ORANGE, routeColour, routeLines, smoothRaster, smoothReach, stopFeatures, stopTipData, visibleStops, windowLabel } from '../mapdata.js';
+import { AREA_MODES, areaCells, autoCap, BLUE, cellTipData, colourStops, METRICS, NEUTRAL, ORANGE, routeColour, routeLines, smoothRaster, smoothReach, stopFeatures, stopTipData, visibleStops, windowLabel, withMetric } from '../mapdata.js';
 import { loadMapState, saveMapState } from '../mapstate.js';
 import { getSettings, onSettings } from '../settings.js';
 import { hideTip, showTip } from '../tooltip.js';
@@ -83,34 +83,45 @@ export async function render(ctx) {
   const tableHost = h('div', { class: 'map-table-host' });
   const canvas = h('div', { class: 'map-canvas', 'data-tip-host': '' });
   const legend = h('div', { class: 'map-legend' });
+  const subtitle = h('p', { class: 'subtitle' });
   put(main, h('h1', {}, 'Map'),
-    h('p', { class: 'subtitle' }, 'Your tracked routes. Stops are coloured by how early (blue) or late (orange) buses arrive there.'),
+    subtitle,
     h('div', { class: 'map-layout' }, panel, h('div', { class: 'map-wrap' }, canvas, legend)), tableHost);
 
+  const isChange = () => st.metric === 'change';
+  const SUBTITLE = {
+    change: 'Your tracked routes. Stops are coloured by how much each stop adds to or removes from the delay compared with the previous stop: blue = bus gains time, orange = bus loses time.',
+    cumulative: 'Your tracked routes. Stops are coloured by how early (blue) or late (orange) buses arrive there.',
+  };
+
   const saved = loadMapState(); // what you left on the map last time
-  const st = { data: null, visible: new Set(), hidden: new Set(saved.hidden), areas: saved.areas, shapes: {}, stops: saved.stops, win: saved.win, cap: 300, map: null, ready: false, stopsById: new Map() };
-  const persist = () => saveMapState({ areas: st.areas, stops: st.stops, win: st.win, hidden: [...st.hidden] });
+  const st = { metric: saved.metric, data: null, visible: new Set(), hidden: new Set(saved.hidden), areas: saved.areas, shapes: {}, stops: saved.stops, win: saved.win, cap: 300, map: null, ready: false, stopsById: new Map() };
+  subtitle.textContent = SUBTITLE[st.metric];
+  const persist = () => saveMapState({ metric: st.metric, areas: st.areas, stops: st.stops, win: st.win, hidden: [...st.hidden] });
   const latest = makeLatest(signal);
   const query = () => ({ ...s.apiQuery, ...(st.win[0] === 0 && st.win[1] === MAX ? {} : { minutes_from: st.win[0], minutes_to: st.win[1] }) });
 
   function capNow(stops) {
     const fixed = getSettings().charts.heatCap;
-    return fixed > 0 ? fixed * 60 : autoCap(stops);
+    return fixed > 0 ? fixed * 60 : autoCap(stops, st.metric);
   }
 
   function drawLegend() {
-    const m = fmtNum(st.cap / 60, st.cap % 60 ? 1 : 0);
+    const m = st.cap < 120 ? `${Math.round(st.cap)} s` : `${fmtNum(st.cap / 60, st.cap % 60 ? 1 : 0)} min`;
     const bar = h('div', { class: 'lg-bar', 'aria-hidden': 'true' });
     if (bar.style) bar.style.background = `linear-gradient(90deg, ${BLUE}, ${NEUTRAL}, ${ORANGE})`; // CSSOM: allowed by the CSP
-    legend.replaceChildren(h('div', { class: 'lg-title' }, 'Mean delay vs schedule'), bar,
-      h('div', { class: 'lg-ticks' }, h('span', {}, `−${m} min or earlier`), h('span', {}, 'on time'), h('span', {}, `+${m} min or later`)),
+    legend.replaceChildren(h('div', { class: 'lg-title' }, isChange() ? 'Mean change in delay vs previous stop' : 'Mean delay vs schedule'), bar,
+      h('div', { class: 'lg-ticks' }, isChange()
+        ? [h('span', {}, `gains ${m} or more`), h('span', {}, 'no change'), h('span', {}, `loses ${m} or more`)]
+        : [h('span', {}, `−${m} or earlier`), h('span', {}, 'on time'), h('span', {}, `+${m} or later`)]),
       h('div', { class: 'lg-nodata' }, h('span', { class: 'lg-dot' }), 'no data in this window'));
   }
 
   // Push the current selection into the map sources.
   function refresh() {
     if (!st.data) return;
-    const stops = visibleStops(st.data, st.visible);
+    subtitle.textContent = SUBTITLE[st.metric];
+    const stops = visibleStops({ ...st.data, stops: withMetric(st.data.stops, st.metric) }, st.visible);
     st.stopsById = new Map(stops.map((x) => [x.stop_id, x]));
     st.cap = capNow(stops);
     drawLegend();
@@ -152,11 +163,11 @@ export async function render(ctx) {
   // Accessible alternative to the canvas, and the fallback when the map cannot load.
   function drawTable(stops) {
     const rows = [...stops].sort((a, b) => (b.mean_delay ?? -Infinity) - (a.mean_delay ?? -Infinity)).slice(0, 300);
-    tableBox.replaceChildren(h('summary', {}, `Stops as a table (${stops.length}${stops.length > 300 ? ', first 300 by mean delay' : ''})`),
-      dataTable({ caption: 'Mean delay per stop for the routes shown (negative = early)', rows, columns: [
+    tableBox.replaceChildren(h('summary', {}, `Stops as a table (${stops.length}${stops.length > 300 ? `, first 300 by ${isChange() ? 'mean change' : 'mean delay'}` : ''})`),
+      dataTable({ caption: isChange() ? 'Mean change in delay compared with the previous stop, per stop, for the routes shown (negative = bus gains time)' : 'Mean delay per stop for the routes shown (negative = early)', rows, columns: [
         { label: 'Stop', get: (x) => (x.code ? `${x.name || x.stop_id} (${x.code})` : x.name || x.stop_id) },
         { label: 'Routes', get: (x) => x.routes.map((r) => r.route).join(', ') || '–' },
-        { label: 'n', num: true, get: (x) => fmtCount(x.n) }, { label: 'Mean delay', num: true, get: (x) => fmtDelay(x.mean_delay) }] }));
+        { label: 'n', num: true, get: (x) => fmtCount(x.n) }, { label: isChange() ? 'Mean change' : 'Mean delay', num: true, get: (x) => fmtDelay(x.mean_delay) }] }));
   }
 
   function drawPanel() {
@@ -177,6 +188,8 @@ export async function render(ctx) {
       h('div', { class: 'row' }, h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => setAll(true) } }, 'All'), h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => setAll(false) } }, 'None'),
         h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => fit() } }, 'Fit to routes')),
       h('h2', {}, 'Layers'),
+      h('label', { for: 'metric' }, 'Colour by',
+        h('select', { id: 'metric', on: { change: (e) => { st.metric = METRICS.some(([k]) => k === e.target.value) ? e.target.value : st.metric; persist(); refresh(); } } }, METRICS.map(([v, l]) => h('option', { value: v, selected: v === st.metric }, l)))),
       h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: st.stops, on: { change: (e) => { st.stops = e.target.checked; persist(); refresh(); } } }), 'Show stops'),
       h('label', { for: 'areas' }, 'Colour areas where nearby stops run early or late',
         h('select', { id: 'areas', on: { change: (e) => { st.areas = e.target.value; persist(); refresh(); } } }, AREA_MODES.map(([v, l]) => h('option', { value: v, selected: v === st.areas }, l)))),
@@ -221,8 +234,8 @@ export async function render(ctx) {
       const cell = hit ? null : m.queryRenderedFeatures(e.point, { layers: ['regions'] })[0];
       m.getCanvas().style.cursor = hit || cell ? 'pointer' : '';
       const x = e.originalEvent?.clientX ?? 0, y = e.originalEvent?.clientY ?? 0;
-      if (hit) { const stop = st.stopsById.get(hit.properties.id); if (stop) { showTip(stopTipData({ id: stop.stop_id, name: stop.name, code: stop.code, n: stop.n, delay: stop.mean_delay, routes: stop.routes }), x, y); return; } }
-      if (cell) { showTip(cellTipData(cell.properties), x, y); return; }
+      if (hit) { const stop = st.stopsById.get(hit.properties.id); if (stop) { showTip(stopTipData({ id: stop.stop_id, name: stop.name, code: stop.code, n: stop.n, delay: stop.mean_delay, routes: stop.routes }, st.metric), x, y); return; } }
+      if (cell) { showTip(cellTipData(cell.properties, st.metric), x, y); return; }
       hideTip();
     });
     m.getCanvas().addEventListener?.('mouseleave', hideTip);

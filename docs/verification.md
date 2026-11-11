@@ -34,6 +34,7 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 
 - Routes page: tracked list, Backup card.
 - Route page: heatmap legibility (colour and labels, light and dark).
+- Map page, "Colour by": the default "Change per stop" colours each stop by the delay it adds over the previous stop of the same trip (a direction's first stop uses its own delay); "Cumulative delay" colours by delay against schedule. On a route with a known late-building run, compare both modes: change mode shows the stops where lateness builds in orange and later stops near neutral, while cumulative mode shows orange growing along the route. Subtitle, legend, tooltip and table header switch with the mode, and the choice survives a reload.
 - An 80-stop route chart: stop label collisions.
 - 360 px wide viewport: no horizontal scroll, controls usable.
 - Theme toggle: persists across reload, both themes readable.

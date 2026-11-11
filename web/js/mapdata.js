@@ -19,6 +19,21 @@ export function delayColour(sec, capSec) {
 export const minutesLabel = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 export const windowLabel = (a, b) => `${minutesLabel(a)} – ${minutesLabel(b)}${a > b ? ' (overnight)' : ''}`;
 
+// What the map colours by: the delay each stop adds over the previous stop (default), or the cumulative delay.
+export const METRICS = [['change', 'Change per stop'], ['cumulative', 'Cumulative delay']];
+export const METRIC_DEFAULT = 'change';
+
+// Map stops (and their route rows) onto the n / mean_delay shape every other helper reads. 'change' substitutes
+// n_change / mean_change (missing or empty -> n 0, no data); 'cumulative' returns the stops untouched.
+export function withMetric(stops, metric) {
+  if (metric !== 'change') return stops || [];
+  const one = (o) => {
+    const n = Number.isFinite(o.n_change) && o.n_change > 0 && isNum(o.mean_change) ? o.n_change : 0;
+    return { ...o, n, mean_delay: n ? o.mean_change : null };
+  };
+  return (stops || []).map((s) => ({ ...one(s), routes: (s.routes || []).map(one) }));
+}
+
 // Stops of the visible routes, with n / mean recomputed from those routes only. data = /api/map response.
 export function visibleStops(data, visible) {
   const listed = new Set();
@@ -148,21 +163,24 @@ export function areaCells(mode, stops, sizeM = 400) {
 
 const head = (sec) => (isNum(sec) ? { sec } : null);
 
-export function stopTipData(p) { // p = feature properties of a stop plus `routes` rows
+const headFor = (sec, metric) => { const h = head(sec); return h && metric === 'change' ? { ...h, label: 'change vs previous stop' } : h; };
+
+export function stopTipData(p, metric = 'cumulative') { // p = feature properties of a stop plus `routes` rows
   const rows = (p.routes || []).map((r) => ({ k: 'route', l: `Route ${r.route}`, fmt: 'delay', v: r.mean_delay }));
   rows.push({ k: 'n', l: 'Samples', fmt: 'count', v: p.n ?? 0 });
   const name = p.name || p.id;
-  return { title: p.code ? `${name} (${p.code})` : name, head: head(p.delay), rows, foot: p.n > 0 && p.n < 10 ? LOW_N_NOTE : undefined };
+  return { title: p.code ? `${name} (${p.code})` : name, head: headFor(p.delay, metric), rows, foot: p.n > 0 && p.n < 10 ? LOW_N_NOTE : undefined };
 }
 
-export function cellTipData(p) {
-  return { title: 'Area', sub: `${p.stops} stops with data`, head: head(p.delay), rows: [{ k: 'n', l: 'Samples', fmt: 'count', v: p.n }] };
+export function cellTipData(p, metric = 'cumulative') {
+  return { title: 'Area', sub: `${p.stops} stops with data`, head: headFor(p.delay, metric), rows: [{ k: 'n', l: 'Samples', fmt: 'count', v: p.n }] };
 }
 
 // Colour saturation in seconds when the user has not fixed one: the 90th percentile of |mean| over stops with
-// n >= 10, kept between 2 and 10 minutes (5 minutes when nothing qualifies).
-export function autoCap(stops) {
+// n >= 10, kept between 2 and 10 minutes (5 when nothing qualifies); for per-stop 'change' between 30 s and 5 minutes (2).
+export function autoCap(stops, metric = 'cumulative') {
+  const [lo, hi, dflt] = metric === 'change' ? [30, 300, 120] : [120, 600, 300];
   const v = stops.filter((s) => s.n >= 10 && isNum(s.mean_delay)).map((s) => Math.abs(s.mean_delay)).sort((a, b) => a - b);
-  if (!v.length) return 300;
-  return Math.max(120, Math.min(600, v[Math.min(v.length - 1, Math.floor(v.length * 0.9))]));
+  if (!v.length) return dflt;
+  return Math.max(lo, Math.min(hi, v[Math.min(v.length - 1, Math.floor(v.length * 0.9))]));
 }
