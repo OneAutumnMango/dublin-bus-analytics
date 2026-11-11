@@ -57,4 +57,4 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 - With the correct `confirm`, the response counts equal the preview; the preview afterwards is all zero and other days are unchanged in the UI.
 - On a day overlapping a gzipped month, `skipped_months` names the `.db.gz` file and its checksum is unchanged.
 - While the tracker is running, the collector keeps recording during a large removal (no `database is locked` in its log).
-
+- Web UI, Routes page > Backup card > "Remove a day of data": the date defaults to today (Dublin). Press Preview on a test day: the counts match the curl preview and a "Remove these rows" button appears. Change the date or route: the button and text disappear. Preview again, remove: the "Removed ..." counts match, and a second Preview says "Nothing recorded for that day."

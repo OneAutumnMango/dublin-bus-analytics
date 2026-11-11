@@ -414,3 +414,121 @@ test('stop page: on-time tile shows the on-time percentage, reliability its own 
   assert.match(t, /2\.5th to 97\.5th percentile/);
   assert.ok(!/100%/.test(t));
 });
+
+// ---- remove a day of data ----
+const PREV = { date: '2026-11-10', route: '', window: { start: 1, end: 2 }, arrivals: 1234, forecasts: 5, samples: 6, gaps: 7, months: ['a.db'], skipped_months: [], truncated: false };
+const dublinToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Dublin' }).format(new Date());
+async function dayPage(handlers = {}, ctxOver = {}) {
+  const calls = installFetch({ ...NOBACKUP, 'GET /api/routes/tracked': { routes: ['15', '15/A'] }, ...handlers });
+  const ctx = Object.assign(ctxOf({}), ctxOver);
+  await (await import('../js/pages/routes.js')).render(ctx);
+  await settle();
+  const m = ctx.main;
+  const date = m.byTag('input').find((i) => i.getAttribute('id') === 'day-date');
+  const sel = m.byTag('select').find((s) => s.getAttribute('id') === 'day-route');
+  const click = async (re) => { const b = m.byText('button', re)[0]; b.dispatch('click', { currentTarget: b }); await settle(); };
+  const status = () => m.all((n) => n.getAttribute('id') === 'day-status')[0];
+  return { calls, ctx, m, date, sel, click, status, rm: () => m.byText('button', /Remove these rows/)[0] };
+}
+
+test('remove day: section has labelled date (default today in Dublin) and route select', async () => {
+  const p = await dayPage();
+  assert.match(text(p.m), /Remove a day of data/);
+  assert.equal(p.date.getAttribute('type'), 'date');
+  assert.equal(p.date.value, dublinToday());
+  assert.ok(p.m.byTag('label').some((l) => l.getAttribute('for') === 'day-date'));
+  assert.ok(p.m.byTag('label').some((l) => l.getAttribute('for') === 'day-route'));
+  assert.deepEqual(p.sel.children.map((o) => o.textContent), ['All routes', '15', '15/A']);
+  assert.equal(p.status().getAttribute('role'), 'status');
+  assert.equal(p.rm(), undefined);
+});
+
+test('remove day: preview shows counts, skipped warning; remove button only after preview', async () => {
+  const p = await dayPage({ 'GET /api/data/day': { ...PREV, skipped_months: ['2026-10.db.gz'] } });
+  p.date.value = '2026-11-10'; p.sel.value = '15/A';
+  await p.click(/^Preview$/);
+  assert.match(p.calls.at(-1).url, /date=2026-11-10&route=15%2FA/);
+  assert.match(text(p.status()), /Would remove 1,234 arrivals, 5 forecasts, 6 samples, 7 gaps for 2026-11-10 \(route 15\/A\)\./);
+  assert.match(text(p.status()), /Archived \(gzipped\) months cannot be edited and will be skipped: 2026-10\.db\.gz\. Samples there stay\./);
+  assert.match(text(p.rm()), /1,234 arrivals/);
+});
+
+test('remove day: all zero says nothing recorded and offers no removal', async () => {
+  const p = await dayPage({ 'GET /api/data/day': { ...PREV, arrivals: 0, forecasts: 0, samples: 0, gaps: 0 } });
+  await p.click(/^Preview$/);
+  assert.match(text(p.status()), /Nothing recorded for that day\./);
+  assert.equal(p.rm(), undefined);
+});
+
+test('remove day: changing date or route hides the remove button and clears the preview', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV });
+  await p.click(/^Preview$/);
+  assert.ok(p.rm());
+  p.date.dispatch('change');
+  assert.equal(p.rm(), undefined);
+  assert.equal(text(p.status()), '');
+  await p.click(/^Preview$/);
+  assert.ok(p.rm());
+  p.sel.value = '15'; p.sel.dispatch('change');
+  assert.equal(p.rm(), undefined);
+  await p.click(/^Preview$/);
+  p.date.dispatch('input');
+  assert.equal(p.rm(), undefined);
+});
+
+test('remove day: remove posts confirm=previewed date and shows the result', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': { ...PREV, arrivals: 1234, skipped_months: ['x.db.gz'] } });
+  p.date.value = '2026-11-10';
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  const c = p.calls.find((x) => x.key === 'POST /api/data/day/remove');
+  assert.equal(c.url, '/api/data/day/remove?date=2026-11-10&confirm=2026-11-10');
+  assert.match(text(p.status()), /Removed 1,234 arrivals, 5 forecasts, 6 samples, 7 gaps\./);
+  assert.match(text(p.status()), /x\.db\.gz/);
+  assert.equal(p.rm(), undefined);
+});
+
+test('remove day: both buttons are disabled while the removal runs', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': async () => { await gate; return PREV; } });
+  await p.click(/^Preview$/);
+  const rmBtn = p.rm();
+  rmBtn.dispatch('click', { currentTarget: rmBtn });
+  await settle();
+  assert.equal(rmBtn.disabled, true);
+  assert.equal(p.m.byText('button', /^Preview$/)[0].disabled, true);
+  release();
+  await settle();
+  assert.equal(p.m.byText('button', /^Preview$/)[0].disabled, false);
+});
+
+test('remove day: 409 with done shows partial counts; 422 and 403 show the error', async () => {
+  let p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': { __status: 409, body: { detail: 'file locked', done: { arrivals: 10, forecasts: 2, samples: 3, gaps: 0 } } } });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  assert.match(text(p.status()), /file locked/);
+  assert.match(text(p.status()), /Part of the day was removed: 10 arrivals, 2 forecasts, 3 samples, 0 gaps; try again/);
+  p = await dayPage({ 'GET /api/data/day': fail(422, 'bad date') });
+  await p.click(/^Preview$/);
+  assert.match(text(p.status()), /Invalid request: bad date/);
+  assert.equal(p.rm(), undefined);
+  p = await dayPage({ 'GET /api/data/day': fail(403, 'cross-origin') });
+  await p.click(/^Preview$/);
+  assert.match(text(p.status()), /cross-origin/);
+});
+
+test('remove day: no update after the page is destroyed', async () => {
+  const ac = new AbortController();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const p = await dayPage({ 'GET /api/data/day': async () => { await gate; return PREV; } }, { signal: ac.signal });
+  const b = p.m.byText('button', /^Preview$/)[0];
+  b.dispatch('click', { currentTarget: b });
+  await settle();
+  ac.abort();
+  release();
+  await settle();
+  assert.doesNotMatch(text(p.status()), /Would remove/);
+  assert.equal(p.rm(), undefined);
+});

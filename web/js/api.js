@@ -2,8 +2,9 @@
 import { buildQuery } from './lib.js';
 
 export class ApiError extends Error {
-  constructor(kind, message, status = 0) {
+  constructor(kind, message, status = 0, body = null) {
     super(message);
+    this.body = body; // parsed JSON error body, when there was one
     this.kind = kind; // network | timeout | abort | http | parse
     this.status = status;
   }
@@ -18,6 +19,7 @@ export function errorMessage(status, bodyText) {
   } catch { /* body is not JSON */ }
   if (status === 422) return `Invalid request: ${detail || 'check the filter values'}`;
   if (status === 403 || status === 429) return detail || `The API refused the request (HTTP ${status})`;
+  if (status === 409) return detail || 'The request conflicts with another operation; try again shortly';
   if (status === 404) return `Not found${detail ? `: ${detail}` : ''}`;
   if (status === 502) return `The bus data server is unavailable${detail ? ` (${detail})` : ''}`;
   return `The API answered HTTP ${status}`;
@@ -42,7 +44,11 @@ export async function request(path, { method = 'GET', signal, timeout = 15000, f
       throw new ApiError('network', 'Cannot reach the analytics API');
     }
     const text = await res.text();
-    if (!res.ok) throw new ApiError('http', errorMessage(res.status, text), res.status);
+    if (!res.ok) {
+      let body = null;
+      try { body = JSON.parse(text); } catch { /* not JSON */ }
+      throw new ApiError('http', errorMessage(res.status, text), res.status, body && typeof body === 'object' ? body : null);
+    }
     try { return JSON.parse(text); } catch { throw new ApiError('parse', 'The API returned an unreadable response'); }
   } finally {
     clearTimeout(timer);
@@ -71,6 +77,8 @@ export function makeApi(fetchFn = globalThis.fetch) {
     stopStats: (s, route, q, o) => get(`/api/stops/${enc(s)}/stats${qs({ route, ...q })}`, o),
     series: (trip, stop, q, o) => get(`/api/trips/${enc(trip)}/series${qs({ stop, ...q })}`, o),
     runBackup: (o) => request('/api/backup', { ...o, method: 'POST', timeout: 120000, fetchFn }),
+    dayPreview: ({ date, route } = {}, o) => get(`/api/data/day${qs({ date, route })}`, o),
+    removeDay: ({ date, route } = {}, o) => request(`/api/data/day/remove${qs({ date, route, confirm: date })}`, { ...o, method: 'POST', timeout: 120000, fetchFn }),
   };
 }
 

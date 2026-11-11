@@ -100,3 +100,25 @@ test('exportUrl builds the query', () => {
   assert.equal(A.exportUrl({ route: '15', gzip: true }), '/api/export.json?route=15&gzip=1');
   assert.equal(A.exportUrl({ route: '', gzip: false }), '/api/export.json');
 });
+
+test('dayPreview and removeDay build their URLs', async () => {
+  const urls = [];
+  const api = A.makeApi(async (url, init) => { urls.push([init.method, url]); return resp(200, {}); });
+  await api.dayPreview({ date: '2026-11-11' });
+  await api.dayPreview({ date: '2026-11-11', route: '15/A' });
+  await api.dayPreview({ date: '2026-11-11', route: '' });
+  await api.removeDay({ date: '2026-11-11', route: '15/A' });
+  await api.removeDay({ date: '2026-11-11' });
+  assert.deepEqual(urls, [
+    ['GET', '/api/data/day?date=2026-11-11'],
+    ['GET', '/api/data/day?date=2026-11-11&route=15%2FA'],
+    ['GET', '/api/data/day?date=2026-11-11'],
+    ['POST', '/api/data/day/remove?date=2026-11-11&route=15%2FA&confirm=2026-11-11'],
+    ['POST', '/api/data/day/remove?date=2026-11-11&confirm=2026-11-11'],
+  ]);
+});
+
+test('409 errors carry the server detail and parsed body', async () => {
+  const api = A.makeApi(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ detail: 'busy', done: { arrivals: 3 } }) }));
+  await assert.rejects(api.removeDay({ date: '2026-11-11' }), (e) => e.status === 409 && e.message === 'busy' && e.body.done.arrivals === 3);
+});

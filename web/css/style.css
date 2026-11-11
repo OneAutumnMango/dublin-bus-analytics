@@ -86,6 +86,9 @@ figure.card { margin-bottom: var(--s5); }
 .btn-quiet:hover { background: var(--hover); filter: none; border-color: var(--accent); }
 .btn-danger { background: transparent; color: var(--err); border-color: transparent; box-shadow: none; }
 .btn-danger:hover { background: var(--err-bg); filter: none; }
+.card .btn-danger.solid { background: var(--err); color: var(--err-bg); border-color: var(--err); font-weight: 600; }
+.card .btn-danger.solid:hover { background: var(--err); filter: brightness(1.1); }
+#day-status p { margin: var(--s1) 0 0; }
 input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--control-border); border-radius: var(--radius-sm); padding: 0 var(--s2);
   min-height: 30px; max-width: 100%; transition: border-color .15s, box-shadow .15s; }
 input:hover, select:hover { border-color: var(--accent); }

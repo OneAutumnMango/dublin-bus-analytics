@@ -180,6 +180,8 @@ curl -X POST "http://127.0.0.1:8081/api/data/day/remove?date=2026-11-11&confirm=
 
 Add `route=15` to limit it to one route. `confirm` must equal `date`. The preview returns `arrivals`, `forecasts`, `samples`, `gaps`, the month files that would be edited (`months`) and gzipped months that overlap the day and cannot be edited (`skipped_months`); the remove response has the same shape with what was actually deleted.
 
+In the web UI this is the "Remove a day of data" section of the Backup card on the Routes page: pick a date and route, press Preview, then "Remove these rows" (shown only for the previewed date and route).
+
 - Deleted: arrivals of that `service_date`, their forecasts, raw samples in the day's local window (23 or 25 hours on DST days) and gaps starting in it. `routes_tracked` and `meta_kv` are kept; nothing is vacuumed.
 - With `route`, only samples belonging to that route's arrivals of the day go; samples without an arrival (buses dropped before arriving) and gaps cannot be attributed to a route and stay.
 - A gzipped (closed) month is immutable and is skipped and reported; extract it by hand if you must clean it.

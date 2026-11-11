@@ -3,6 +3,13 @@ import { api, backupAvailable, backupDownloadUrl, exportUrl, isAbort } from '../
 import { h, link, put } from '../dom.js';
 import { fmtCount } from '../lib.js';
 
+function todayDublin() {
+  try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Dublin' }).format(new Date()); } catch {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+}
+
 export async function render(ctx) {
   const { main, signal } = ctx;
   ctx.title('Routes');
@@ -28,10 +35,53 @@ export async function render(ctx) {
   const gzBox = h('input', { type: 'checkbox', id: 'export-gz', on: { change: () => update() } });
   const exportLink = link(exportUrl(), 'Download JSON', { class: 'btn btn-quiet', download: '' });
   const update = () => exportLink.setAttribute('href', exportUrl({ route: routeSel.value, gzip: gzBox.checked }));
+  const daySel = h('select', { id: 'day-route', on: { change: () => reset() } }, h('option', { value: '' }, 'All routes'));
   api.tracked({ signal }).then((r) => {
     if (signal.aborted) return;
-    for (const name of r.routes || []) routeSel.append(h('option', { value: name }, name));
+    for (const name of r.routes || []) { routeSel.append(h('option', { value: name }, name)); daySel.append(h('option', { value: name }, name)); }
   }).catch(() => { /* keep just "All routes" */ });
+
+  // Remove a day of data: preview first, the removal is tied to the exact date + route that was previewed.
+  const dateIn = h('input', { type: 'date', id: 'day-date', value: todayDublin(), on: { change: () => reset(), input: () => reset() } });
+  const dayStatus = h('div', { id: 'day-status', role: 'status', class: 'muted' });
+  const rmSlot = h('span', {});
+  const previewBtn = h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => preview() } }, 'Preview');
+  let token = 0; // bumped on every change/preview/remove so late answers are dropped
+  const say = (...lines) => dayStatus.replaceChildren(...lines.filter(Boolean).map((l) => h('p', {}, l)));
+  const counts = (r) => `${fmtCount(r.arrivals)} arrivals, ${fmtCount(r.forecasts)} forecasts, ${fmtCount(r.samples)} samples, ${fmtCount(r.gaps)} gaps`;
+  const skipNote = (r) => (r.skipped_months?.length ? `Archived (gzipped) months cannot be edited and will be skipped: ${r.skipped_months.join(', ')}. Samples there stay.` : '');
+  function reset() { token++; rmSlot.replaceChildren(); dayStatus.replaceChildren(); previewBtn.disabled = false; }
+  async function preview() {
+    const date = dateIn.value, route = daySel.value;
+    if (!date) { say('Choose a date first.'); return; }
+    const my = ++token;
+    rmSlot.replaceChildren();
+    say('Checking…');
+    try {
+      const r = await api.dayPreview({ date, route }, { signal });
+      if (signal.aborted || my !== token) return;
+      if (!(r.arrivals + r.forecasts + r.samples + r.gaps)) { say('Nothing recorded for that day.', skipNote(r)); return; }
+      say(`Would remove ${counts(r)} for ${date}${route ? ` (route ${route})` : ''}.`, skipNote(r));
+      rmSlot.replaceChildren(h('button', { class: 'btn btn-danger solid', type: 'button', on: { click: () => remove(date, route) } }, `Remove these rows (${fmtCount(r.arrivals)} arrivals)`));
+    } catch (e) { if (!isAbort(e) && !signal.aborted && my === token) say(e.message); }
+  }
+  async function remove(date, route) {
+    const my = ++token;
+    const rmBtn = rmSlot.all((n) => n.tag === 'button')[0];
+    const busy = (v) => { previewBtn.disabled = v; if (rmBtn) rmBtn.disabled = v; };
+    busy(true);
+    say('Removing…');
+    try {
+      const r = await api.removeDay({ date, route }, { signal });
+      if (signal.aborted || my !== token) return;
+      rmSlot.replaceChildren();
+      say(`Removed ${counts(r)}.`, skipNote(r));
+    } catch (e) {
+      if (isAbort(e) || signal.aborted || my !== token) return;
+      const d = e.body?.done;
+      say(e.message, d && `Part of the day was removed: ${counts({ arrivals: 0, forecasts: 0, samples: 0, gaps: 0, ...d })}; try again.`);
+    } finally { if (!signal.aborted) busy(false); }
+  }
 
   put(main, h('h1', {}, 'Routes'),
     h('p', { class: 'subtitle' }, 'Use the sidebar to find a route and start tracking it. For every tracked route the analytics service logs each stop, then compares actual with scheduled arrivals. Pick a tracked route to see its analytics.'),
@@ -40,5 +90,9 @@ export async function render(ctx) {
       h('h3', {}, 'Export as JSON'),
       h('p', { class: 'hint' }, 'A readable copy of arrivals, forecasts and samples. Choose one route or all, then download.'),
       h('div', { class: 'row' }, h('label', { for: 'export-route' }, 'Route'), routeSel,
-        h('label', { for: 'export-gz', class: 'inline' }, gzBox, ' compressed (.gz)'), exportLink)));
+        h('label', { for: 'export-gz', class: 'inline' }, gzBox, ' compressed (.gz)'), exportLink),
+      h('h3', {}, 'Remove a day of data'),
+      h('p', { class: 'hint' }, 'Permanently deletes the arrivals, forecasts, samples and gaps recorded on one Europe/Dublin day. There is no undo and no automatic backup: run a backup first. Preview shows what would go; nothing is deleted until you press the remove button.'),
+      h('div', { class: 'row' }, h('label', { for: 'day-date' }, 'Date'), dateIn, h('label', { for: 'day-route' }, 'Route'), daySel, previewBtn, rmSlot),
+      dayStatus));
 }
