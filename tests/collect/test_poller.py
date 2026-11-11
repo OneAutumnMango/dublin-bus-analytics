@@ -12,7 +12,7 @@ from app.core.config import Settings
 from app.core.db import open_meta
 from app.core.models import Arrival
 from app.collect.poller import LazyTracker, Poller, seq_lookup
-from app.collect.serverclient import ServerClient
+from app.collect.serverclient import ServerClient, ServerUnavailable
 from app.collect.tracker import IngestResult, Tracker
 from tests.support.fake_server import FakeServer
 
@@ -616,3 +616,44 @@ async def test_create_app_injected_client_used_by_poller_and_closed_once(tmp_pat
     with TestClient(app):
         assert not http.is_closed
     assert http.is_closed  # lifespan closed the client it was given
+
+
+async def test_tick_never_exceeds_server_concurrency(env, monkeypatch):
+    env.poller.settings = Settings("http://fake", env.tmp, 30, server_concurrency=2)
+    routes = [f"R{i}" for i in range(6)]
+    for i, r in enumerate(routes):
+        one_route(env, r, trip=f"t{i}")
+    inflight = peak = 0
+    fetched = []
+
+    async def fetch(route):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        inflight -= 1
+        fetched.append(route)
+        return []
+    monkeypatch.setattr(env.client, "route_arrivals", fetch)
+    await env.poller.tick(T0)
+    assert peak == 2
+    assert sorted(fetched) == sorted(routes)
+
+
+async def test_failure_in_one_route_does_not_block_others(env, monkeypatch):
+    env.poller.settings = Settings("http://fake", env.tmp, 30, server_concurrency=1)
+    routes = ["R0", "R1", "R2"]
+    for i, r in enumerate(routes):
+        one_route(env, r, trip=f"t{i}")
+    fetched = []
+
+    async def fetch(route):
+        if route == "R0":
+            raise ServerUnavailable("down")
+        fetched.append(route)
+        return []
+    monkeypatch.setattr(env.client, "route_arrivals", fetch)
+    await env.poller.tick(T0)
+    assert sorted(fetched) == ["R1", "R2"]
+    assert env.gaps() == []

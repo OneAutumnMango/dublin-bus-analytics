@@ -121,8 +121,12 @@ class Poller:
         if not down:
             self._gap_open = None
 
-    async def _one(self, route: str, now: int):
-        arrivals = await self.client.route_arrivals(route)  # may raise; handled in tick
+    async def _one(self, route: str, now: int, sem: asyncio.Semaphore | None = None):
+        if sem is None:
+            arrivals = await self.client.route_arrivals(route)  # may raise; handled in tick
+        else:
+            async with sem:  # only the fetch is limited, not ingest
+                arrivals = await self.client.route_arrivals(route)
         try:
             res = await self.tracker.ingest(route, arrivals, now)
         except Exception:
@@ -141,7 +145,8 @@ class Poller:
 
     async def tick(self, now: int) -> None:
         routes = self.tracked()
-        results = await asyncio.gather(*(self._one(r, now) for r in routes), return_exceptions=True)
+        sem = asyncio.Semaphore(self.settings.server_concurrency)
+        results = await asyncio.gather(*(self._one(r, now, sem) for r in routes), return_exceptions=True)
         down = fetched = False
         for route, res in zip(routes, results):
             if isinstance(res, ServerUnavailable):
