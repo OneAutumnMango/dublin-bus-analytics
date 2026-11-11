@@ -147,25 +147,40 @@ def stop_changes(trip_rows, direction_lists) -> dict:
 
     trip_rows: {trip occurrence: {stop_id: delay}}; a stop seen more than once on one occurrence
     (loop trips) is ambiguous and stored as None. direction_lists: {direction: [stop_id, ...]} in
-    travel order. For index 0 the change is the stop's own delay (baseline on time); otherwise
-    delay(stop) - delay(previous stop), only when the trip has both (and neither is ambiguous).
-    A stop in several lists accumulates from each. Does not touch segment_delta/accumulation.
+    travel order. Rule per list position i: i > 0 -> delay(stop) - delay(previous stop), only when the
+    trip has both. i == 0 -> the stop's own delay (baseline on time), but only when the trip also has
+    the list's second stop, so a trip of another direction passing through a shared terminus does not
+    count there. A stop repeated within one list counts once per trip (first position). A stop in
+    several lists accumulates from each. Work is O(rows + matches): each trip's own stops are looked up
+    in a precomputed stop -> [(list, position)] index. Does not touch segment_delta/accumulation.
     """
-    acc: dict[str, list] = {}
-    for stops in direction_lists.values():
+    lists = list(direction_lists.values())
+    index: dict[str, list] = {}
+    for k, stops in enumerate(lists):
+        seen = set()
         for i, sid in enumerate(stops):
-            for t in trip_rows.values():
-                d = t.get(sid)
-                if d is None:
-                    continue
+            if sid not in seen:
+                seen.add(sid)
+                index.setdefault(sid, []).append((k, i))
+    acc: dict[str, list] = {}
+    for t in trip_rows.values():
+        for sid, d in t.items():
+            if d is None:
+                continue
+            for k, i in index.get(sid, ()):
+                stops = lists[k]
                 if i > 0:
                     p = t.get(stops[i - 1])
                     if p is None:
                         continue
-                    d = d - p
+                    c = d - p
+                else:
+                    if len(stops) > 1 and t.get(stops[1]) is None:
+                        continue
+                    c = d
                 a = acc.setdefault(sid, [0, 0])
                 a[0] += 1
-                a[1] += d
+                a[1] += c
     return acc
 
 

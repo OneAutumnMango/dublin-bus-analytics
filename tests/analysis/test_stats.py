@@ -449,15 +449,80 @@ def test_stop_changes_pure():
     trips = {("A", "d"): {"s1": 60, "s2": 120, "s3": 120}, ("B", "d"): {"s1": 0, "s3": 180},
              ("C", "d"): {"s2": 50}}
     got = stop_changes(trips, {"out": ["s1", "s2", "s3"], "back": ["s3", "s1"]})
-    # out: s1 -> A 60, B 0; s2 -> A 60 (C lacks s1); s3 -> A 0 (B lacks s2)
-    # back: s3 first -> A 120, B 180; s1 -> A 60-120, B 0-180
-    assert got["s1"] == [4, 60 + 0 - 60 - 180]
+    # out: s1 (first, needs s2) -> A 60; s2 -> A 60; s3 -> A 0 (B lacks s2)
+    # back: s3 first needs s1: A 120, B 180; s1 -> A 60-120, B 0-180
+    assert got["s1"] == [3, 60 - 60 - 180]
     assert got["s2"] == [1, 60]
     assert got["s3"] == [3, 0 + 120 + 180]
+
+
+def test_stop_changes_shared_terminus_not_polluted():
+    from app.analysis.stats import stop_changes
+    lists = {"out": ["s1", "s2", "s3"], "back": ["s3", "s4", "s5"]}
+    trips = {("A", "d"): {"s1": 60, "s2": 120, "s3": 120},
+             ("B", "d"): {"s3": 30, "s4": 50, "s5": 50}}
+    got = stop_changes(trips, lists)
+    assert got["s3"] == [2, 0 + 30]  # A at s3 as out-last (0); only B as back-first (own delay 30)
+    assert got["s1"] == [1, 60] and got["s2"] == [1, 60]
+    assert got["s4"] == [1, 20] and got["s5"] == [1, 0]
+
+
+def test_stop_changes_loop_list_does_not_double_count():
+    from app.analysis.stats import stop_changes
+    got = stop_changes({("A", "d"): {"a": 5, "b": 9}}, {"out": ["a", "b", "a"]})
+    assert got == {"a": [1, 5], "b": [1, 4]}
+
+
+def _stop_changes_ref(trips, lists):
+    acc = {}
+    for stops in lists.values():
+        seen = set()
+        for i, sid in enumerate(stops):
+            if sid in seen:
+                continue
+            seen.add(sid)
+            for t in trips.values():
+                d = t.get(sid)
+                if d is None:
+                    continue
+                if i > 0:
+                    pr = t.get(stops[i - 1])
+                    if pr is None:
+                        continue
+                    d -= pr
+                elif len(stops) > 1 and t.get(stops[1]) is None:
+                    continue
+                a = acc.setdefault(sid, [0, 0])
+                a[0] += 1
+                a[1] += d
+    return acc
+
+
+def test_stop_changes_matches_reference_randomised():
+    import random
+    from app.analysis.stats import stop_changes
+    rnd = random.Random(7)
+    ids = list("abcdefg")
+    for _ in range(300):
+        lists = {f"d{k}": [rnd.choice(ids) for _ in range(rnd.randint(1, 6))] for k in range(rnd.randint(1, 3))}
+        trips = {}
+        for n in range(rnd.randint(0, 6)):
+            trips[(n, "d")] = {sid: rnd.choice([None, rnd.randint(-5, 9)]) for sid in ids if rnd.random() < .7}
+        assert stop_changes(trips, lists) == _stop_changes_ref(trips, lists)
+
+
+def test_stop_changes_scales():
+    import time
+    from app.analysis.stats import stop_changes
+    stops = [f"s{i}" for i in range(120)]
+    trips = {(n, "d"): {s: n + i for i, s in enumerate(stops)} for n in range(2000)}
+    t0 = time.perf_counter()
+    got = stop_changes(trips, {"out": stops, "back": stops[::-1]})
+    assert got["s5"][0] == 4000 and time.perf_counter() - t0 < 5
 
 
 def test_stop_changes_ambiguous_stop_skipped():
     from app.analysis.stats import stop_changes
     # None marks a stop seen twice on one trip occurrence
     trips = {("A", "d"): {"s1": 10, "s2": None, "s3": 50}}
-    assert stop_changes(trips, {"out": ["s1", "s2", "s3"]}) == {"s1": [1, 10]}
+    assert stop_changes(trips, {"out": ["s1", "s2", "s3"]}) == {}  # s1 first needs s2 (ambiguous); s2 skipped; s3 needs s2

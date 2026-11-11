@@ -2367,7 +2367,7 @@ def test_map_change_missing_previous_stop(env):
     env.trip("A", [("s1", 60), ("s3", 200)])
     env.add(stop="s2", delay=90, scheduled=T0 + 500, trip="C")
     by = _chg(env.get("/api/map").json())
-    assert (by["s1"]["mean_change"], by["s1"]["n_change"]) == (60, 1)
+    assert (by["s1"]["mean_change"], by["s1"]["n_change"]) == (None, 0)  # first stop needs the second stop too
     assert (by["s2"]["mean_change"], by["s2"]["n_change"]) == (None, 0)
     assert (by["s3"]["mean_change"], by["s3"]["n_change"]) == (None, 0)
     assert (by["s2"]["n"], by["s2"]["mean_delay"]) == (1, 90)
@@ -2420,3 +2420,15 @@ def test_map_change_no_data_is_null(env):
     _chg_env(env)
     by = _chg(env.get("/api/map").json())
     assert by["s1"]["mean_change"] is None and by["s1"]["n_change"] == 0
+
+
+def test_map_change_shared_terminus_between_directions(env):
+    env.c.put("/api/routes/tracked/15")
+    env.fake.set_route_stops("15", {
+        "out": [_stop(x, x.upper(), 53.3 + i / 100, -6.2) for i, x in enumerate(("s1", "s2", "s3"))],
+        "back": [_stop(x, x.upper(), 53.4 + i / 100, -6.2) for i, x in enumerate(("s3", "s4", "s5"))]})
+    env.trip("A", [("s1", 60), ("s2", 120), ("s3", 120)])
+    env.trip("B", [("s3", 30), ("s4", 50), ("s5", 50)], t0=T0 + 1000)
+    by = _chg(env.get("/api/map").json())
+    assert [by[s]["mean_change"] for s in ("s1", "s2")] == [60, 60]
+    assert by["s3"]["n_change"] == 2 and by["s3"]["mean_change"] == 15  # A: 0 (out-last), B: 30 (back-first)

@@ -835,8 +835,9 @@ async def map_data(request: Request, p: P):
              routes: [{route, n, mean_delay, n_change, mean_change}]}]}.
     mean_delay is the cumulative delay (actual - scheduled) at the stop. mean_change is the per-stop change:
     delay at the stop minus delay at the previous stop of the same trip occurrence (trip_id, service_date)
-    in the server's direction order; the first stop of a direction uses its own delay. A trip counts at a
-    stop only if it has both adjacent stops (and neither occurs twice in it); n_change counts those trips,
+    in the server's direction order; the first stop of a direction uses its own delay, but only for trips that
+    also have the direction's second stop (so the other direction's trips at a shared terminus are ignored).
+    A trip counts at a stop only if it has both adjacent stops (and neither occurs twice in it); n_change counts those trips,
     mean_change is null when 0. At stop level mean_change is the n_change-weighted mean over its routes.
     A stop on several routes/directions appears once; stops without coordinates are skipped;
     routes whose stop list the server cannot give are named in `unavailable`."""
