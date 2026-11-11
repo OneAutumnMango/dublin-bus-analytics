@@ -21,3 +21,8 @@ def test_create_app_default_settings(monkeypatch):
     monkeypatch.setenv("SERVER_URL", "http://env")
     assert create_app().state.settings.server_url == "http://env"
 
+
+
+def test_create_app_uses_configured_timeout(tmp_path):
+    app = create_app(Settings("http://fake", tmp_path, 30, server_timeout_seconds=9), start_background=False)
+    assert app.state.client._client.timeout.read == 9

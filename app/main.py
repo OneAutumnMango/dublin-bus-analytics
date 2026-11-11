@@ -49,7 +49,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.state.settings = settings
     app.include_router(api_router)
     # constructors do no I/O (LazyTracker opens the DB on first ingest), so importing this module is safe
-    app.state.client = client or ServerClient(settings.server_url)
+    app.state.client = client or ServerClient(settings.server_url, read_timeout_s=settings.server_timeout_seconds)
     app.state.tracker = LazyTracker(settings.data_dir, seq_lookup)
     app.state.poller = Poller(settings, app.state.client, app.state.tracker)
     app.state.scheduler = BackupScheduler(settings)
