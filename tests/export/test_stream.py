@@ -190,3 +190,67 @@ def test_no_sample_files_gives_empty_samples(tmp_path):
     _build(tmp_path)
     assert _doc(tmp_path)["samples"] == []
     assert sample_months(tmp_path) == []
+
+
+# ---- review fixes ----
+def test_many_rows_and_empty_month_give_valid_json(tmp_path):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + i, f"a{i:05d}") for i in range(2500)], gz=True)
+    _month(tmp_path, FEB, [])
+    _month(tmp_path, MAR, [_s(MAR + i, f"b{i:05d}") for i in range(1500)])
+    d = _doc(tmp_path)
+    assert len(d["samples"]) == 4000
+    assert d["complete"] is True
+
+
+def _spy_open(monkeypatch):
+    seen = []
+    real = stream.open_samples_readonly
+
+    def spy(d, ts, check_same_thread=True):
+        seen.append((ts, _tmp_listing()))
+        return real(d, ts, check_same_thread)
+    monkeypatch.setattr(stream, "open_samples_readonly", spy)
+    return seen
+
+
+def test_previous_temp_copy_removed_before_next_month_opens(tmp_path, monkeypatch):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + 1, "a")], gz=True)
+    _month(tmp_path, FEB, [_s(FEB + 1, "b")], gz=True)
+    before = _tmp_listing()
+    seen = _spy_open(monkeypatch)
+    _doc(tmp_path)
+    assert [ts for ts, _ in seen] == [JAN, FEB]
+    assert all(listing == before for _, listing in seen)
+    assert _tmp_listing() == before
+
+
+def test_temp_copy_removed_when_generator_closed_early(tmp_path):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + i, f"a{i:05d}") for i in range(2500)], gz=True)
+    before = _tmp_listing()
+    gen = iter_export(tmp_path)
+    for _ in gen:
+        if _tmp_listing() != before:
+            break
+    assert _tmp_listing() != before
+    gen.close()
+    assert _tmp_listing() == before
+
+
+def test_temp_copy_removed_when_error_mid_month(tmp_path, monkeypatch):
+    _build(tmp_path)
+    _month(tmp_path, JAN, [_s(JAN + 1, "a")], gz=True)
+    before = _tmp_listing()
+    real = stream._dumps
+
+    def boom(o):
+        if isinstance(o, dict) and "trip_id" in o:
+            raise RuntimeError("boom")
+        return real(o)
+    monkeypatch.setattr(stream, "_dumps", boom)
+    import pytest
+    with pytest.raises(RuntimeError):
+        _doc(tmp_path)
+    assert _tmp_listing() == before

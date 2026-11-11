@@ -93,10 +93,8 @@ def _iter_samples(data_dir: Path, route, since, until) -> Iterator[str]:
                     sql += " where " + " and ".join(where)
                 sql += " order by trip_id, stop_id, seq, ts"
                 conn.execute("begin")
-                for chunk in _array(conn.execute(sql, args)):
-                    if chunk in ("[", "]"):
-                        continue
-                    yield ("" if first else ",") + chunk
+                for rows in _rows(conn.execute(sql, args)):
+                    yield ("" if first else ",") + ",".join(_dumps(r) for r in rows)
                     first = False
             finally:
                 conn.close()
