@@ -1,5 +1,5 @@
 // Routes (home) page: welcome text and backups. Route search and tracking live in the persistent sidebar.
-import { api, backupAvailable, backupDownloadUrl, isAbort } from '../api.js';
+import { api, backupAvailable, backupDownloadUrl, exportUrl, isAbort } from '../api.js';
 import { h, link, put } from '../dom.js';
 import { fmtCount } from '../lib.js';
 
@@ -24,8 +24,21 @@ export async function render(ctx) {
   noBackup();
   backupAvailable({ signal }).then((ok) => { if (signal.aborted) return; if (ok === false) noBackup(); else showDownload(backupDownloadUrl()); });
 
+  const routeSel = h('select', { id: 'export-route', on: { change: () => update() } }, h('option', { value: '' }, 'All routes'));
+  const gzBox = h('input', { type: 'checkbox', id: 'export-gz', on: { change: () => update() } });
+  const exportLink = link(exportUrl(), 'Download JSON', { class: 'btn btn-quiet', download: '' });
+  const update = () => exportLink.setAttribute('href', exportUrl({ route: routeSel.value, gzip: gzBox.checked }));
+  api.tracked({ signal }).then((r) => {
+    if (signal.aborted) return;
+    for (const name of r.routes || []) routeSel.append(h('option', { value: name }, name));
+  }).catch(() => { /* keep just "All routes" */ });
+
   put(main, h('h1', {}, 'Routes'),
     h('p', { class: 'subtitle' }, 'Use the sidebar to find a route and start tracking it. For every tracked route the analytics service logs each stop, then compares actual with scheduled arrivals. Pick a tracked route to see its analytics.'),
     h('section', { class: 'card', 'aria-labelledby': 'h-backup' }, h('h2', { id: 'h-backup' }, 'Backup'),
-      h('p', { class: 'hint' }, 'A backup is a tar of the stored data. Scheduled backups also run daily.'), backupBox));
+      h('p', { class: 'hint' }, 'A backup is a tar of the stored data. Scheduled backups also run daily.'), backupBox,
+      h('h3', {}, 'Export as JSON'),
+      h('p', { class: 'hint' }, 'A readable copy of arrivals, forecasts and samples. Choose one route or all, then download.'),
+      h('div', { class: 'row' }, h('label', { for: 'export-route' }, 'Route'), routeSel,
+        h('label', { for: 'export-gz' }, gzBox, ' compressed (.gz)'), exportLink)));
 }

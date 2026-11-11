@@ -41,6 +41,37 @@ test('routes page: backup button shows the file and updates the download link; l
   assert.equal(ctx.main.byText('a', /Download latest/)[0].getAttribute('href'), '/api/backup/download?file=b%201.tar');
 });
 
+test('routes page: Download JSON link follows the route select and compressed checkbox', async () => {
+  installFetch({ ...NOBACKUP, 'GET /api/routes/tracked': { routes: ['15', '15/A'] } });
+  const ctx = ctxOf({});
+  await (await import('../js/pages/routes.js')).render(ctx);
+  await settle();
+  const a = () => ctx.main.byText('a', /Download JSON/)[0];
+  assert.equal(a().getAttribute('href'), '/api/export.json');
+  assert.ok(a().hasAttribute('download'));
+  const sel = ctx.main.byTag('select')[0];
+  assert.deepEqual(sel.children.map((o) => o.textContent), ['All routes', '15', '15/A']);
+  assert.ok(ctx.main.byTag('label').some((l) => /Route/.test(l.textContent)));
+  sel.value = '15/A';
+  sel.dispatch('change');
+  assert.equal(a().getAttribute('href'), '/api/export.json?route=15%2FA');
+  const box = ctx.main.byTag('input').find((i) => i.getAttribute('type') === 'checkbox');
+  assert.ok(ctx.main.byTag('label').some((l) => /compressed \(\.gz\)/.test(l.textContent)));
+  box.checked = true;
+  box.dispatch('change');
+  assert.match(a().getAttribute('href'), /route=15%2FA/);
+  assert.match(a().getAttribute('href'), /gzip=1/);
+});
+
+test('routes page: tracked-routes error leaves only All routes', async () => {
+  installFetch({ ...NOBACKUP, 'GET /api/routes/tracked': fail(502, 'down') });
+  const ctx = ctxOf({});
+  await (await import('../js/pages/routes.js')).render(ctx);
+  await settle();
+  assert.deepEqual(ctx.main.byTag('select')[0].children.map((o) => o.textContent), ['All routes']);
+  assert.equal(ctx.main.byText('a', /Download JSON/)[0].getAttribute('href'), '/api/export.json');
+});
+
 const routePage = () => import('../js/pages/route.js');
 
 test('route page: chart rows, links, low_n greyed, names as text, truncated + order notices', async () => {

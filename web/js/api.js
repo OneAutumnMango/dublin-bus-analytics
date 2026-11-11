@@ -75,6 +75,7 @@ export function makeApi(fetchFn = globalThis.fetch) {
 }
 
 export const api = makeApi((...a) => globalThis.fetch(...a)); // late-bound so tests can stub fetch
+export const exportUrl = ({ route, gzip } = {}) => `/api/export.json${qs({ route, gzip: gzip ? 1 : '' })}`;
 export const backupDownloadUrl = (file) => `/api/backup/download${qs({ file })}`;
 
 // true: a backup can be downloaded; false: none yet (404); null: unknown. Reads headers only (Range 0-0, then aborts).
