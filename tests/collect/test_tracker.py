@@ -1561,9 +1561,38 @@ async def test_other_routes_ticks_never_finalise_a_route_bus(tr, tmp_path):
     assert [r[0] for r in meta_rows(tmp_path)] == ["a"]
 
 
-async def test_abandoned_zero_state_is_swept_after_ttl(tr):
-    await tr.ingest("15", [arr(0)], T0)
+async def test_abandoned_zero_state_is_finalised_with_fallback_by_sweep(tr, tmp_path):
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], T0)
     await tr.ingest("16", [], T0 + FINALISED_TTL_S)
-    assert len(tr._live) == 1
-    await tr.ingest("16", [], T0 + FINALISED_TTL_S + 1)
-    assert tr._live == {}
+    assert len(tr._live) == 1 and meta_rows(tmp_path) == []
+    res = await tr.ingest("16", [], T0 + FINALISED_TTL_S + 1)  # route 15 stopped being polled
+    assert res.finalised == 1 and tr._live == {}
+    assert meta_rows(tmp_path) == [("t1", T0 + 300, T0 + 90, T0 + 90 - (T0 + 300), 1, 1)]
+    assert ("t1", "s1", 0) in tr._finalised
+
+
+async def test_failed_tick_rolls_back_sweep_finalise(tmp_path):
+    t = Tracker(tmp_path, make_lookup())
+    await t.ingest("15", [arr(0, expected=T0 + 90)], T0)
+    before = snapshot(t)
+    t._on_finalised = lambda i, r: 1 / 0
+    with pytest.raises(ZeroDivisionError):
+        await t.ingest("16", [], T0 + FINALISED_TTL_S + 1)
+    assert snapshot(t) == before and rows(tmp_path, "select * from arrivals") == []
+    t.close()
+
+
+async def test_shielded_zero_bus_is_swept_with_fallback(tr, tmp_path):
+    await tr.ingest("15", [arr(0, expected=T0 + 90)], T0)
+    await tr.ingest("15", [arr(0, realtime=None)], T0 + HOLD_MAX_S + 100)  # invalid: shields, not a sighting
+    assert meta_rows(tmp_path) == []
+    res = await tr.ingest("15", [arr(0, realtime=None)], T0 + FINALISED_TTL_S + 1)
+    assert res.finalised == 1
+    assert meta_rows(tmp_path) == [("t1", T0 + 300, T0 + 90, T0 + 90 - (T0 + 300), 1, 1)]
+
+
+async def test_stale_dropped_non_zero_state_is_evicted_without_row(tr, tmp_path):
+    await tr.ingest("15", [arr(5)], T0)
+    assert (await tr.ingest("15", [], T0 + 30)).dropped == 1
+    res = await tr.ingest("16", [], T0 + 30 + FINALISED_TTL_S + 1)
+    assert res.finalised == 0 and tr._live == {} and meta_rows(tmp_path) == []

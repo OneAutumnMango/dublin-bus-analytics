@@ -29,6 +29,10 @@ Ordering rule: an ingest whose `now` is <= the last accepted `now` for that rout
 (returns zeros with stale=True). Stale/duplicate polls must not rewrite history or cause bogus vanishes.
 Within one tick, repeated keys collapse to the last occurrence.
 
+Limitation: a feed that drops a bus for a single poll right after due 0 yields an early actual
+(same exposure as before this rule). A held zero bus not listed for FINALISED_TTL_S is finalised
+with the fallback by the sweep.
+
 shortcut: in-flight (unfinalised) keys are lost on restart; at most one arrival per live bus
 per stop is dropped (the loss window is now up to HOLD_MAX_S longer, as a bus is held live
 after due 0). The UNIQUE constraint prevents double-counting after restart. Upgrade by
@@ -283,9 +287,23 @@ class Tracker:
             self._lock = asyncio.Lock()
         return self._lock
 
-    def _sweep(self, now: int) -> None:
+    def _sweep(self, now: int) -> int:
+        """Evict expired state; returns the number of arrivals finalised from abandoned zero states."""
+        n = 0
+        # a held zero bus not listed for FINALISED_TTL_S (route no longer polled, or shielded for ever)
+        # is finalised with the fallback instead of being lost
+        for k in [k for k, s in self._live.items()
+                  if s.saw_zero and s.gone_at is None and now - s.last_seen > FINALISED_TTL_S]:
+            self._mark("_live", k)
+            st = self._live.pop(k)
+            try:
+                row = self._row(k, st, st.zero_expected)
+            except Exception:
+                log.warning("abandoned arrival %s not stored", k, exc_info=True)
+                continue
+            n += self._insert(k, row, now)
         for store, ok in (("_finalised", lambda t: t),
-                          ("_live", lambda s: s.gone_at if s.gone_at is not None else (s.last_seen if s.saw_zero else None)),
+                          ("_live", lambda s: s.gone_at),
                           ("_seq", lambda v: v[1])):
             d = getattr(self, store)
             for k in [k for k, v in d.items() if (t := ok(v)) is not None and now - t > FINALISED_TTL_S]:
@@ -295,6 +313,7 @@ class Tracker:
         # tick losing them is harmless (they would be swept again on the next tick)
         for k in [k for k, t in self._neg.items() if now - t >= NEG_TTL_S]:
             del self._neg[k]
+        return n
 
     @staticmethod
     def _shielded(key: tuple, st: _State, unkeyed: set) -> bool:
@@ -305,9 +324,9 @@ class Tracker:
                       resolved: dict) -> IngestResult:
         self._mark("_last_now", route)
         self._last_now[route] = now
-        self._sweep(now)
         samples = self._samples_conn(now)
-        written = finalised = dropped = 0
+        written = dropped = 0
+        finalised = self._sweep(now)
         skipped = len(invalid)
         seen: set[tuple] = set()
         # (trip, stop) of skipped arrivals: never treated as vanished
@@ -376,7 +395,10 @@ class Tracker:
             st = copy.copy(self._live[key])
             if st.saw_zero:
                 del self._live[key]
-                est = max((st.last_seen + now) // 2, st.zero_at)
+                # last_seen >= zero_at always, so est >= zero_at. A shielded tick is not a sighting
+                # (last_seen is not updated), so est can be early by up to half the shielded interval,
+                # bounded by the HOLD_MAX_S check below.
+                est = (st.last_seen + now) // 2
                 actual = est if est - st.zero_at <= HOLD_MAX_S else st.zero_expected
                 finalised += self._insert(key, self._row(key, st, actual), now)
             elif st.last_due <= FINALISE_DUE_MAX:

@@ -77,7 +77,7 @@ Invalid values stop the app at startup with a message naming the variable. See `
 
 ### How delays are measured
 
-`delay = actual - scheduled`. From version 0.3.0, `actual` is the time the bus left the stop's arrival list (the midpoint between the last poll that listed it and the first that did not), once it has shown as due now. If the bus stays listed for more than 10 minutes after first showing due now (some feeds keep passed stops), `actual` falls back to the feed's predicted time at that first due-now reading. Buses that vanish without ever showing due now are stored with the last predicted time and lower confidence, as before. Rows stored before this change used the predicted time only.
+`delay = actual - scheduled`. From version 0.3.0, `actual` is the time the bus left the stop's arrival list (the midpoint between the last poll that listed it and the first that did not), once it has shown as due now. If the bus stays listed for more than 10 minutes after first showing due now (some feeds keep passed stops), `actual` falls back to the feed's predicted time at that first due-now reading. The same 10-minute window also bounds the leave-time estimate after a gap in polling. A bus that vanishes without ever showing due now is stored (confidence 0) with its last predicted time only if that prediction was within 2 minutes of arrival; otherwise it is dropped. A feed that drops a bus for one poll right after due now gives an early `actual`. Rows stored before this change used the predicted time only.
 
 ## Run the tests
 
