@@ -1,11 +1,11 @@
 # Production compose for the released analytics image, alongside an already running dublin-bus-server on the same
-# `caddy_net` network. Pin the tag you pushed (0.1.0, or 0.1 / latest to follow updates).
+# `caddy_net` network. Pin the tag you pushed (0.2.0, or 0.1 / latest to follow updates).
 #
 # The analytics UI and API have NO authentication (they can track routes, run backups and download them). Do not
 # publish it to the internet as is: keep the port off, or put it behind Caddy with basic auth / a VPN.
 services:
   dublin-bus-analytics:
-    image: ghcr.io/oneautumnmango/dublin-bus-analytics:0.1.0
+    image: ghcr.io/oneautumnmango/dublin-bus-analytics:0.2.0
     container_name: dublin-bus-analytics
     restart: unless-stopped
     # Local-only access (browse http://127.0.0.1:8181); remove it if Caddy reaches the container by name instead.
