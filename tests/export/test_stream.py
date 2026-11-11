@@ -1,6 +1,7 @@
 import gzip
 import json
 import threading
+import zlib
 
 from app.core.db import open_meta
 from app.export.stream import gzip_chunks, iter_export
@@ -279,6 +280,11 @@ def test_gzip_flushes_per_chunk_and_is_lazy():
             yield c
 
     g = gzip_chunks(src())
-    first = next(g)  # header + first flushed chunk, before the rest is pulled
-    assert pulled == ["aaa"] and first
-    assert gzip.decompress(first + b"".join(g)) == b"aaabbbccc"
+    dec = zlib.decompressobj(wbits=31)
+    out = b""
+    out += dec.decompress(next(g))
+    assert pulled == ["aaa"] and out == b"aaa"
+    out += dec.decompress(next(g))
+    assert pulled == ["aaa", "bbb"] and out == b"aaabbb"
+    out += b"".join(dec.decompress(p) for p in g)
+    assert out == b"aaabbbccc" and dec.eof

@@ -41,7 +41,7 @@ def test_gate_lease_expires():
     assert g.try_acquire() is not None
 
 
-def test_gate_thread_contention_exactly_one_wins():
+def test_gate_thread_contention_smoke_exactly_one_wins():
     g = ExportGate()
     n = 32
     barrier = threading.Barrier(n)
