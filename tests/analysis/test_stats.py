@@ -442,3 +442,22 @@ def test_filter_minutes_inclusive_wrap_and_single_minute():
     assert keys(minutes=(630, 630)) == ["10:30"]  # equal bounds = that single minute, not all day
     assert len(keys(minutes=(0, 1439))) == len(rows)
     assert filter_rows([{"confidence": 1, "realtime": 1}], minutes=(0, 1439)) == []  # no `scheduled` fails
+
+
+def test_stop_changes_pure():
+    from app.analysis.stats import stop_changes
+    trips = {("A", "d"): {"s1": 60, "s2": 120, "s3": 120}, ("B", "d"): {"s1": 0, "s3": 180},
+             ("C", "d"): {"s2": 50}}
+    got = stop_changes(trips, {"out": ["s1", "s2", "s3"], "back": ["s3", "s1"]})
+    # out: s1 -> A 60, B 0; s2 -> A 60 (C lacks s1); s3 -> A 0 (B lacks s2)
+    # back: s3 first -> A 120, B 180; s1 -> A 60-120, B 0-180
+    assert got["s1"] == [4, 60 + 0 - 60 - 180]
+    assert got["s2"] == [1, 60]
+    assert got["s3"] == [3, 0 + 120 + 180]
+
+
+def test_stop_changes_ambiguous_stop_skipped():
+    from app.analysis.stats import stop_changes
+    # None marks a stop seen twice on one trip occurrence
+    trips = {("A", "d"): {"s1": 10, "s2": None, "s3": 50}}
+    assert stop_changes(trips, {"out": ["s1", "s2", "s3"]}) == {"s1": [1, 10]}

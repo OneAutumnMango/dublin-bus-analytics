@@ -142,6 +142,33 @@ def accumulation(rows_by_trip_ordered) -> list[dict]:
             for s in sorted(delays)]
 
 
+def stop_changes(trip_rows, direction_lists) -> dict:
+    """Per-stop change in delay: {stop_id: [n, sum]}.
+
+    trip_rows: {trip occurrence: {stop_id: delay}}; a stop seen more than once on one occurrence
+    (loop trips) is ambiguous and stored as None. direction_lists: {direction: [stop_id, ...]} in
+    travel order. For index 0 the change is the stop's own delay (baseline on time); otherwise
+    delay(stop) - delay(previous stop), only when the trip has both (and neither is ambiguous).
+    A stop in several lists accumulates from each. Does not touch segment_delta/accumulation.
+    """
+    acc: dict[str, list] = {}
+    for stops in direction_lists.values():
+        for i, sid in enumerate(stops):
+            for t in trip_rows.values():
+                d = t.get(sid)
+                if d is None:
+                    continue
+                if i > 0:
+                    p = t.get(stops[i - 1])
+                    if p is None:
+                        continue
+                    d = d - p
+                a = acc.setdefault(sid, [0, 0])
+                a[0] += 1
+                a[1] += d
+    return acc
+
+
 def forecast_accuracy(forecast_rows) -> dict:
     """{horizon_min: {n, mean_error, mae, p_low, p_high}} from rows with keys
     horizon_min and error_s (or error; error_s preferred) (seconds, actual minus predicted; positive = bus later than predicted). p_low/p_high = 5th/95th pct."""

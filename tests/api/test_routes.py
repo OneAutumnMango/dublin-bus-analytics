@@ -2336,3 +2336,87 @@ def test_map_shapes_nothing_tracked_and_unknown_route(env):
     assert env.get("/api/map/shapes").json() == {"shapes": {}}
     env.c.put("/api/routes/tracked/99")  # server knows nothing about it
     assert env.get("/api/map/shapes").json() == {"shapes": {}}
+
+
+# ---------- map: per-stop change in delay ----------
+
+def _chg_env(env, stops=("s1", "s2", "s3"), route="15"):
+    env.c.put(f"/api/routes/tracked/{route}")
+    env.fake.set_route_stops(route, {"out": [_stop(s, s.upper(), 53.3 + i / 100, -6.2) for i, s in enumerate(stops)]})
+
+
+def _chg(j):
+    return {s["stop_id"]: s for s in j["stops"]}
+
+
+def test_map_change_example_and_two_trips(env):
+    _chg_env(env)
+    env.trip("A", [("s1", 60), ("s2", 120), ("s3", 120)])
+    by = _chg(env.get("/api/map").json())
+    assert [(by[s]["mean_change"], by[s]["n_change"]) for s in ("s1", "s2", "s3")] == [(60, 1), (60, 1), (0, 1)]
+    assert [(by[s]["n"], by[s]["mean_delay"]) for s in ("s1", "s2", "s3")] == [(1, 60), (1, 120), (1, 120)]
+    env.trip("B", [("s1", 0), ("s2", 60), ("s3", 180)], t0=T0 + 10)
+    by = _chg(env.get("/api/map").json())
+    assert [by[s]["mean_change"] for s in ("s1", "s2", "s3")] == [30, 60, 60]
+    assert [by[s]["n_change"] for s in ("s1", "s2", "s3")] == [2, 2, 2]
+    assert by["s3"]["routes"][0]["mean_change"] == 60 and by["s3"]["routes"][0]["n_change"] == 2
+
+
+def test_map_change_missing_previous_stop(env):
+    _chg_env(env)
+    env.trip("A", [("s1", 60), ("s3", 200)])
+    env.add(stop="s2", delay=90, scheduled=T0 + 500, trip="C")
+    by = _chg(env.get("/api/map").json())
+    assert (by["s1"]["mean_change"], by["s1"]["n_change"]) == (60, 1)
+    assert (by["s2"]["mean_change"], by["s2"]["n_change"]) == (None, 0)
+    assert (by["s3"]["mean_change"], by["s3"]["n_change"]) == (None, 0)
+    assert (by["s2"]["n"], by["s2"]["mean_delay"]) == (1, 90)
+    assert (by["s3"]["n"], by["s3"]["mean_delay"]) == (1, 200)
+
+
+def test_map_change_duplicate_stop_in_trip_skipped(env):
+    _chg_env(env)
+    env.trip("L", [("s1", 10), ("s2", 20), ("s1", 30), ("s3", 50)])
+    by = _chg(env.get("/api/map").json())
+    assert by["s1"]["n_change"] == 0 and by["s1"]["mean_change"] is None
+    assert by["s2"]["n_change"] == 0  # previous stop ambiguous
+    assert by["s3"]["n_change"] == 1 and by["s3"]["mean_change"] == 50 - 20  # s2 is unambiguous
+    assert by["s1"]["n"] == 2 and by["s1"]["mean_delay"] == 20
+
+
+def test_map_change_two_routes_share_stop(env):
+    _chg_env(env, ("s1", "s2"), "15")
+    _chg_env(env, ("s1", "s2"), "46A")
+    env.trip("A", [("s1", 0), ("s2", 60)], route="15")
+    env.trip("B", [("s1", 0), ("s2", 60)], route="15", t0=T0 + 5)
+    env.trip("C", [("s1", 0), ("s2", 300)], route="46A", t0=T0 + 10)
+    s2 = _chg(env.get("/api/map").json())["s2"]
+    assert s2["n_change"] == 3 and s2["mean_change"] == (60 + 60 + 300) / 3
+    assert {r["route"]: (r["n_change"], r["mean_change"]) for r in s2["routes"]} == {"15": (2, 60), "46A": (1, 300)}
+
+
+def test_map_change_filters_apply(env):
+    _chg_env(env)
+    env.add(stop="s1", delay=100, scheduled=T0, trip="A", confidence=0)
+    env.add(stop="s2", delay=160, scheduled=T0 + 60, trip="A")
+    env.add(stop="s3", delay=160, scheduled=T0 + 120, trip="A")
+    by = _chg(env.get("/api/map", min_confidence=0).json())
+    assert by["s2"]["mean_change"] == 60 and by["s2"]["n_change"] == 1
+    by = _chg(env.get("/api/map").json())  # s1 row dropped: s2 loses previous, s3 still has s2
+    assert by["s2"]["n_change"] == 0 and by["s2"]["mean_change"] is None
+    assert by["s3"]["mean_change"] == 0 and by["s3"]["n_change"] == 1
+
+
+def test_map_change_minutes_window(env):
+    _chg_env(env)
+    base = int(datetime(2026, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+    env.add(stop="s1", delay=10, scheduled=base + 3 * 3600, trip="A", date="2026-01-12")
+    env.add(stop="s2", delay=40, scheduled=base + 7 * 3600, trip="A", date="2026-01-12")
+    by = _chg(env.get("/api/map", minutes_from=360, minutes_to=480).json())
+    assert by["s2"]["n_change"] == 0 and by["s2"]["n"] == 1
+
+
+def test_map_change_no_data_is_null(env):
+    _chg_env(env)
+    by = _chg(env.get("/api/map").json())
+    assert by["s1"]["mean_change"] is None and by["s1"]["n_change"] == 0

@@ -804,18 +804,26 @@ async def trip_series(request: Request, trip_id: TripP, stop: SeriesStop, seq: Q
 
 # ---- map ----
 
-def _route_totals(request, r, p):
-    """({stop_id: [n, sum of delays]}, truncated) for one route under the filters."""
+def _route_totals(request, r, p, lists):
+    """({stop_id: [n, sum of delays]}, {stop_id: [n_change, sum of changes]}, truncated) for one route under
+    the filters. The change metric needs one {stop_id: delay} dict per trip occurrence (trip_id,
+    service_date), built during the scan and freed before returning; a duplicate stop within one
+    occurrence is stored as None (ambiguous)."""
     acc: dict[str, list] = defaultdict(lambda: [0, 0])
+    trips: dict[tuple, dict] = {}
 
     def fn(rows):
-        for sid, d, _ in rows:
+        for tid, sd, sid, d, _ in rows:
             a = acc[sid]
             a[0] += 1
             a[1] += d
+            t = trips.setdefault((tid, sd), {})
+            t[sid] = None if sid in t else d
 
-    _scan_arrivals(request, p, "route = ?", [r], "stop_id, delay", fn)
-    return dict(acc), p["truncated"]
+    _scan_arrivals(request, p, "route = ?", [r], "trip_id, service_date, stop_id, delay", fn)
+    changes = stats.stop_changes(trips, lists)
+    trips.clear()
+    return dict(acc), changes, p["truncated"]
 
 
 @router.get("/map")
@@ -823,7 +831,13 @@ async def map_data(request: Request, p: P):
     """Every tracked route's stops with position (lat/lon from the server's stop lists) and mean delay under
     the filters (`minutes_from`/`minutes_to` = Dublin-local minute-of-day window, wraps midnight).
     {filters, routes: [{route, directions: {name: [stop_id]}}], unavailable: [route], n,
-    stops: [{stop_id, code, name, lat, lon, n, mean_delay, routes: [{route, n, mean_delay}]}]}.
+    stops: [{stop_id, code, name, lat, lon, n, mean_delay, n_change, mean_change,
+             routes: [{route, n, mean_delay, n_change, mean_change}]}]}.
+    mean_delay is the cumulative delay (actual - scheduled) at the stop. mean_change is the per-stop change:
+    delay at the stop minus delay at the previous stop of the same trip occurrence (trip_id, service_date)
+    in the server's direction order; the first stop of a direction uses its own delay. A trip counts at a
+    stop only if it has both adjacent stops (and neither occurs twice in it); n_change counts those trips,
+    mean_change is null when 0. At stop level mean_change is the n_change-weighted mean over its routes.
     A stop on several routes/directions appears once; stops without coordinates are skipped;
     routes whose stop list the server cannot give are named in `unavailable`."""
     routes, info, unavailable, per_route, truncated = [], {}, [], {}, False
@@ -838,22 +852,31 @@ async def map_data(request: Request, p: P):
             for s in stops:
                 if isinstance(s.get("lat"), (int, float)) and isinstance(s.get("lon"), (int, float)):
                     info.setdefault(_sid(s), s)
-        totals, trunc = await _heavy(request, p, "route = ?", [r], lambda p, r=r: _route_totals(request, r, p))
-        per_route[r], truncated = totals, truncated or trunc
+        totals, chg, trunc = await _heavy(request, p, "route = ?", [r],
+                                          lambda p, r=r, lists=lists: _route_totals(request, r, p, lists))
+        per_route[r], truncated = (totals, chg), truncated or trunc
     merged: dict[str, dict] = {}
-    for r, totals in per_route.items():
-        for sid, (n, tot) in totals.items():
+    for r, (totals, chg) in per_route.items():
+        for sid in set(totals) | set(chg):
             if sid not in info:
                 continue
-            m = merged.setdefault(sid, {"n": 0, "sum": 0, "routes": []})
+            n, tot = totals.get(sid, (0, 0))
+            nc, sc = chg.get(sid, (0, 0))
+            if not n:
+                continue
+            m = merged.setdefault(sid, {"n": 0, "sum": 0, "nc": 0, "sc": 0, "routes": []})
             m["n"] += n
             m["sum"] += tot
-            m["routes"].append({"route": r, "n": n, "mean_delay": tot / n})
+            m["nc"] += nc
+            m["sc"] += sc
+            m["routes"].append({"route": r, "n": n, "mean_delay": tot / n,
+                                "n_change": nc, "mean_change": sc / nc if nc else None})
     stops = []
     for sid, s in info.items():
         m = merged.get(sid)
         stops.append({"stop_id": sid, "code": s.get("code"), "name": s.get("name"), "lat": s["lat"], "lon": s["lon"],
                       "n": m["n"] if m else 0, "mean_delay": m["sum"] / m["n"] if m else None,
+                      "n_change": m["nc"] if m else 0, "mean_change": m["sc"] / m["nc"] if m and m["nc"] else None,
                       "routes": m["routes"] if m else []})
     return _clean({"filters": {**_filters(p), "truncated": truncated}, "minutes": p["minutes"], "routes": routes,
                    "unavailable": unavailable,
