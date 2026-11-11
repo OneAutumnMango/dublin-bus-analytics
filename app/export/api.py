@@ -20,8 +20,9 @@ def _guarded(chunks, gate, token):
 
 
 @router.get("/api/export.json")
-def export_json(request: Request, route: str | None = None, since: int | None = None,
-                until: int | None = None, gzip: bool = Query(False)):
+def export_json(request: Request, route: str | None = None,
+                since: int | None = Query(None, ge=0, le=2**62),
+                until: int | None = Query(None, ge=0, le=2**62), gzip: bool = Query(False)):
     # validate everything before taking the gate; fullmatch so a trailing newline cannot slip past `$`
     if route is not None and not ROUTE_RE.fullmatch(route):
         raise HTTPException(422, "invalid route")

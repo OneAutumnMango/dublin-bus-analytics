@@ -48,7 +48,8 @@ def test_export_gzip(client):
 
 
 @pytest.mark.parametrize("params", [{"route": "bad;route"}, {"route": "x" * 21}, {"route": ""},
-                                    {"since": "abc"}, {"until": "x"}, {"since": 2, "until": 1}])
+                                    {"since": "abc"}, {"until": "x"}, {"since": 2, "until": 1},
+                                    {"since": 2**63}, {"until": -1}, {"since": -1}, {"until": 2**62 + 1}])
 def test_export_invalid_params_422(client, params):
     assert client.get("/api/export.json", params=params).status_code == 422
 
@@ -88,7 +89,8 @@ def test_filename_sanitised(client, route):
 
 def test_validation_failures_do_not_hold_gate(client):
     gate = client.app.state.export_gate
-    for p in ({"route": "a;b"}, {"since": "abc"}, {"since": 2, "until": 1}):
+    for p in ({"route": "a;b"}, {"since": "abc"}, {"since": 2, "until": 1},
+              {"since": 2**63}, {"until": -1}):
         assert client.get("/api/export.json", params=p).status_code == 422
         tok = gate.try_acquire()
         assert tok is not None
@@ -124,3 +126,9 @@ def test_gate_lease_expires_if_never_streamed(client):
     assert g.try_acquire() is not None and g.try_acquire() is None
     t[0] = 3601
     assert g.try_acquire() is not None
+
+
+def test_export_accepts_upper_bound_2_pow_62(client):
+    r = client.get("/api/export.json", params={"until": 2**62})
+    assert r.status_code == 200
+    assert json.loads(r.content)["complete"] is True
