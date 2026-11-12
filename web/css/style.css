@@ -250,6 +250,12 @@ tbody tr:last-child td { border-bottom: 0; }
 .sidebar .name a:hover { color: var(--accent); }
 .sidebar li:has(a[aria-current="page"]) { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
 .sidebar a[aria-current="page"] { border-left: 0; padding-left: var(--s2); color: var(--accent); font-weight: 650; }
+/* "All routes" entry: styled like a route row so text aligns with route names and current/hover match */
+.sidebar .all-routes { margin: 0 0 var(--s2); }
+.sidebar .all-routes a { display: block; padding: 5px var(--s2); border-left: 0; border-radius: var(--radius-sm); text-decoration: none; color: var(--text); font-weight: 600; }
+.sidebar .all-routes a:hover { background: var(--hover); color: var(--accent); }
+.sidebar .all-routes a[aria-current="page"] { padding-left: var(--s2); border-left: 0; background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); color: var(--accent); font-weight: 600; }
+.sidebar .all-routes a:focus-visible { outline: 3px solid var(--focus); outline-offset: -2px; }
 .sidebar .btn { min-height: 24px; padding: 0 var(--s2); font-size: var(--fs-sm); flex: none; }
 .sidebar .btn-danger { opacity: 0; }
 .sidebar li:hover .btn-danger, .sidebar li:focus-within .btn-danger { opacity: 1; }
