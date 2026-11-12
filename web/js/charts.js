@@ -262,9 +262,9 @@ export function renderHeatmap(grid, { title, desc, selected = null, onSelect, do
   for (const c of grid.cells) {
     const isSel = !!selected && selected.wd === c.wd && selected.hour === c.hour;
     const label = `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00, ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}`;
-    const g = el(doc, 'g', { class: `cell${isSel ? ' cell-selected' : ''}`, role: 'button', tabindex: 0, 'aria-label': label, 'aria-pressed': isSel ? 'true' : 'false', 'data-tip-json': tipJson(heatTipData(c)) });
+    const g = el(doc, 'g', { class: `cell${isSel ? ' cell-selected' : ''}`, role: 'button', tabindex: 0, 'aria-label': label, 'aria-pressed': isSel ? 'true' : 'false', 'data-wd': c.wd, 'data-hour': c.hour, 'data-tip-json': tipJson(heatTipData(c)) });
     g.addEventListener('click', () => onSelect?.(c.wd, c.hour));
-    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault?.(); onSelect?.(c.wd, c.hour); } });
+    g.addEventListener('keydown', (e) => { if (e.repeat) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault?.(); onSelect?.(c.wd, c.hour); } });
     const cls = c.empty ? 'hm-empty' : `hm-b${c.bucket < 0 ? 'n' : ''}${Math.abs(c.bucket)}`;
     g.append(el(doc, 'title', {}, `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00 - ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}, n=${fmtCount(c.n)}${c.lowN && !c.empty ? `. ${LOW_N_NOTE}` : ''}`),
       el(doc, 'rect', { class: `${cls}${c.lowN ? ' low-n' : ''}`, x: c.x, y: c.y, width: c.w, height: c.h, rx: 2 }));
@@ -272,6 +272,9 @@ export function renderHeatmap(grid, { title, desc, selected = null, onSelect, do
     if (!c.empty) g.append(el(doc, 'text', { class: `cell-text ${cls}`, x: c.x + c.w / 2, y: c.y + c.h / 2 + 3, 'text-anchor': 'middle' }, fmtNum(c.mean / 60, 1)));
     svg.append(g);
   }
+  // selection outline is a separate overlay drawn last, so DOM (tab) order stays Mon..Sun, 00..23 and neighbours cannot overdraw it
+  const sc = selected && grid.cells.find((c) => c.wd === selected.wd && c.hour === selected.hour);
+  if (sc) svg.append(el(doc, 'rect', { class: 'cell-outline', x: sc.x + 1, y: sc.y + 1, width: sc.w - 2, height: sc.h - 2, rx: 2, fill: 'none', 'pointer-events': 'none' }));
   return svg;
 }
 

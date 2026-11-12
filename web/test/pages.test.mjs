@@ -598,3 +598,23 @@ test('analytics heatmap: no selection unless exactly one weekday and one hour', 
     assert.equal(heatCells(ctx).filter((c) => c.getAttribute('aria-pressed') === 'true').length, 0, JSON.stringify(query));
   }
 });
+
+test('analytics heatmap: selecting a cell refocuses it after re-render, ordinary loads do not steal focus', async () => {
+  const mk = () => installFetch({ 'GET /api/routes/15/heatmap': heat, 'GET /api/routes/15/forecast': fc, 'GET /api/routes/15/accumulation': acc([]) });
+  const mod = await import('../js/pages/analytics.js');
+  mk();
+  const c1 = ctxOf({ route: '15' });
+  await mod.render(c1);
+  assert.equal(heatCells(c1).filter((c) => c.focused).length, 0);
+  heatCells(c1).find((c) => /^Mon 08:00/.test(c.getAttribute('aria-label'))).dispatch('click');
+  mk();
+  const c2 = ctxOf({ route: '15' }, { wd: '0', hf: '8', ht: '8' });
+  await mod.render(c2);
+  const f = heatCells(c2).filter((c) => c.focused);
+  assert.equal(f.length, 1);
+  assert.match(f[0].getAttribute('aria-label'), /^Mon 08:00/);
+  mk();
+  const c3 = ctxOf({ route: '15' }, { wd: '0', hf: '8', ht: '8' });
+  await mod.render(c3);
+  assert.equal(heatCells(c3).filter((c) => c.focused).length, 0, 'focus is only restored once');
+});

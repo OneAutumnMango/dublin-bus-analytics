@@ -297,7 +297,11 @@ test('renderHeatmap: cells are keyboard-operable buttons with selection state', 
   tue9.dispatch('keydown', { key: 'Enter' });
   tue9.dispatch('keydown', { key: ' ' });
   tue9.dispatch('keydown', { key: 'a' });
-  assert.deepEqual(calls, [[1, 9], [1, 9], [1, 9]]);
+  tue9.dispatch('keydown', { key: 'Enter', repeat: true });
+  assert.deepEqual(calls, [[1, 9], [1, 9], [1, 9]], 'key repeat is ignored');
+  const last = hm.children[hm.children.length - 1];
+  assert.equal(last.getAttribute('class'), 'cell-outline', 'selected outline drawn last');
+  assert.equal(cells[0].getAttribute('aria-label').slice(0, 9), 'Mon 00:00', 'DOM order stays Mon 00:00 first');
   const none = C.renderHeatmap(grid, { title: 't', desc: 'd', doc });
   assert.equal(none.all((n) => n.getAttribute?.('aria-pressed') === 'true').length, 0);
 });
