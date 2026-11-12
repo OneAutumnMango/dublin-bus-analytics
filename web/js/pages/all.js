@@ -2,7 +2,7 @@
 import { getSettings } from '../settings.js';
 import { api } from '../api.js';
 import { heatmapGrid, rangeDomain, rangeGeometry, renderHeatmap, renderRangeChart, WEEKDAYS } from '../charts.js';
-import { dataTable, emptyState, figure, h, link, notice, put } from '../dom.js';
+import { dataTable, emptyState, figure, h, link, notice, put, setStatus } from '../dom.js';
 import { buildHash, fmtCount, fmtDelay, fmtNum, fmtPct, fmtPctile, plural } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
@@ -56,7 +56,9 @@ function drawRoutes(d, el, s) {
   const holder = h('div', {});
   const band = `${fmtPctile(f.pct_lo)} to ${fmtPctile(f.pct_hi)} percentile`;
   const cols = [['route', 'Route', false], ['n', 'n', true], ['mean', 'Mean', true], ['median', 'Median', true], ['on_time_pct', 'On time', true], ['reliability', 'Reliability', true]];
-  const draw = () => {
+  const draw = (focusKey) => {
+    const toggleOf = (root) => root.all ? root.all((n) => n.tag === 'button' && n.getAttribute('aria-controls')) : [...root.querySelectorAll('button[aria-controls]')];
+    const wasOpen = toggleOf(holder).some((b) => b.getAttribute('aria-expanded') === 'true');
     const sorted = sortRoutes(routes, sort.key, sort.dir);
     const items = sorted.filter((r) => !nil(r.mean)).map((r) => ({ label: `Route ${r.route}`, short: r.route, href: buildHash('analytics', { route: r.route }, s.linkQuery),
       n: r.n, low_n: r.low_n, mean: r.mean, median: r.median, min: null, max: null, lo: r.p_low, hi: r.p_high }));
@@ -67,7 +69,8 @@ function drawRoutes(d, el, s) {
       num,
       label: h('button', { class: 'sort-btn', type: 'button', on: { click: () => {
         if (sort.key === key) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc'; else { sort.key = key; sort.dir = key === 'route' ? 'asc' : 'desc'; }
-        draw();
+        draw(key);
+        setStatus(`Sorted by ${label.toLowerCase()}, ${sort.dir === 'asc' ? 'low to high' : 'high to low'}`);
       } } }, label),
       get: (r) => {
         if (key === 'route') return link(buildHash('analytics', { route: r.route }, s.linkQuery), r.route);
@@ -80,8 +83,14 @@ function drawRoutes(d, el, s) {
       const th = table.byTag ? table.byTag('th')[i] : [...table.querySelectorAll('th')][i];
       th.setAttribute('aria-sort', sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
     });
-    holder.replaceChildren(figure({ title: 'Routes compared', svg, table, level: 'h3',
-      legend: h('p', { class: 'legend' }, `Diamond: mean · ring: median · bar: ${band} of delay · right of the dashed line is late, left is early. Sorted by ${cols.find((c) => c[0] === sort.key)[1].toLowerCase()} (${sort.dir === 'asc' ? 'low to high' : 'high to low'}).`) }));
+    const fig = figure({ title: 'Routes compared', svg, table, level: 'h3',
+      legend: h('p', { class: 'legend' }, `Diamond: mean · ring: median · bar: ${band} of delay · right of the dashed line is late, left is early. Sorted by ${cols.find((c) => c[0] === sort.key)[1].toLowerCase()} (${sort.dir === 'asc' ? 'low to high' : 'high to low'}).`) });
+    holder.replaceChildren(fig);
+    const tb = toggleOf(fig)[0];
+    if (wasOpen && tb) { // keep the table open across a sort
+      if (tb.click) tb.click(); else tb.dispatch('click');
+    }
+    if (focusKey) { const i = cols.findIndex((c) => c[0] === focusKey); (table.all ? table.all((n) => n.tag === 'button') : [...table.querySelectorAll('button')])[i]?.focus(); }
   };
   draw();
   put(el, holder, h('p', { class: 'hint' }, 'Pooled by arrival, not by route. ', windowText({ ...d, n: routes.reduce((a, r) => a + (r.n || 0), 0) })));

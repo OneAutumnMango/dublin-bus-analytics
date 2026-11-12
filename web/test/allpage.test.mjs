@@ -74,3 +74,17 @@ test('all page: one failing endpoint only breaks its own section', async () => {
   assert.equal(ctx.main.byText('button', /^Median/).length, 1);
   assert.match(ctx.main.textContent, /How accurate are the live predictions/);
 });
+
+test('all page: sorting keeps the table open, refocuses the sort button and announces', async () => {
+  stubs();
+  const ctx = await mount();
+  ctx.main.byText('button', /^Show data table$/)[0].dispatch('click');
+  const press = () => ctx.main.byText('button', /^Mean$/)[0];
+  press().dispatch('click');
+  const toggle = ctx.main.byText('button', /data table$/)[0];
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(toggle.textContent, 'Hide data table');
+  assert.ok(press().focused, 'new Mean button has focus');
+  assert.equal(ctx.main.byText('button', /^Median$/)[0].focused, undefined);
+  assert.match(globalThis.document.getElementById('status').textContent, /Sorted by mean, high to low/);
+});
