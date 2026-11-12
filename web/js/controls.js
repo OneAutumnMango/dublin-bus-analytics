@@ -1,6 +1,7 @@
 // Filter form shared by the route, stop and analytics views.
-import { DEFAULT_CONTROLS, DEFAULT_DAYS, validateControls } from './lib.js';
+import { DEFAULT_CONTROLS, DEFAULT_DAYS, validateControls, hoursToWindow, windowToHours } from './lib.js';
 import { h } from './dom.js';
+import { timeRangeSlider, HOUR_PRESETS } from './slider.js';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 let uid = 0;
@@ -21,22 +22,27 @@ export function controlsForm(initial, onApply) {
   };
   const since = h('input', { id: f('since'), type: 'date', value: initial.since });
   const until = h('input', { id: f('until'), type: 'date', value: initial.until });
-  const hour = (name, label, v) => {
-    const sel = h('select', { id: f(name) }, h('option', { value: '' }, 'any'),
-      Array.from({ length: 24 }, (_, i) => h('option', { value: String(i), selected: String(v) === String(i) }, String(i).padStart(2, '0'))));
-    return { sel, node: h('label', { for: f(name) }, label, sel) };
+  // Whole-hour window. An on-hour start==end window would read as 23 hours, so collapse it to that single hour.
+  const collapse = () => {
+    const [a, b] = slider.get();
+    if (a === b && !(a === 0 && b === 1439)) slider.set(a, Math.min(a + 60, 1439));
   };
-  const hf = hour('hf', 'From hour (Dublin time)', initial.hFrom);
-  const ht = hour('ht', 'To hour (Dublin time, inclusive)', initial.hTo);
-  const days = DAYS.map((d, i) => ({ i, box: h('input', { type: 'checkbox', id: f(`wd${i}`), checked: initial.weekdays.includes(i) }) }));
+  const [w0, w1] = hoursToWindow(initial.hFrom, initial.hTo);
+  const slider = timeRangeSlider({ step: 60, presets: HOUR_PRESETS, from: w0, to: w1, onChange: collapse });
+  const days = DAYS.map((d, i) => {
+    const btn = h('button', { type: 'button', class: 'day-btn', 'aria-pressed': String(initial.weekdays.includes(i)),
+      on: { click: () => btn.setAttribute('aria-pressed', String(btn.getAttribute('aria-pressed') !== 'true')) } }, d);
+    return { i, btn };
+  });
   const confirmed = h('input', { type: 'checkbox', id: f('conf'), checked: initial.confirmed });
   const errors = h('div', { class: 'error', role: 'alert', hidden: true });
 
   function read() {
+    collapse();
     const n = (i) => (i.value === '' ? NaN : Number(i.value));
     return { ci: n(parts.ci.input), pLo: n(parts.pLo.input), pHi: n(parts.pHi.input), winLo: n(parts.winLo.input), winHi: n(parts.winHi.input),
-      since: since.value, until: until.value, weekdays: days.filter((d) => d.box.checked).map((d) => d.i),
-      hFrom: hf.sel.value, hTo: ht.sel.value === '' ? '' : Number(ht.sel.value), confirmed: !!confirmed.checked };
+      since: since.value, until: until.value, weekdays: days.filter((d) => d.btn.getAttribute('aria-pressed') === 'true').map((d) => d.i),
+      ...windowToHours(...slider.get()), confirmed: !!confirmed.checked };
   }
   function apply(c) {
     const errs = validateControls({ ...c, hFrom: c.hFrom === '' ? '' : Number(c.hFrom) });
@@ -60,13 +66,17 @@ export function controlsForm(initial, onApply) {
     h('fieldset', {}, h('legend', {}, 'Date range (UTC)'), h('div', { class: 'fields' },
       h('label', { for: f('since') }, 'From (UTC date)', since), h('label', { for: f('until') }, 'To (UTC date)', until)),
     h('span', { class: 'hint' }, `Blank start = last ${DEFAULT_DAYS} days`)),
-    h('fieldset', {}, h('legend', {}, 'Weekdays (none = all)'), h('div', { class: 'fields' },
-      days.map((d) => h('label', { class: 'inline', for: f(`wd${d.i}`) }, d.box, DAYS[d.i])))),
-    h('fieldset', {}, h('legend', {}, 'Hours of day'), h('div', { class: 'fields' }, hf.node, ht.node),
-      h('span', { class: 'hint' }, 'e.g. 22 to 01 wraps midnight')),
+    h('fieldset', { class: 'span-2' }, h('legend', {}, 'Days of week'), h('div', { class: 'day-btns' }, days.map((d) => d.btn)),
+      h('span', { class: 'hint' }, 'None selected = every day')),
+    h('fieldset', { class: 'span-2' }, h('legend', {}, 'Hours of day (Dublin time)'), slider.el,
+      h('span', { class: 'hint' }, 'Whole hours; drag the start past the end to wrap midnight')),
     h('fieldset', {}, h('legend', {}, 'Data quality'), h('label', { class: 'inline', for: f('conf') }, confirmed, 'Only arrivals confirmed by a due-now reading'))),
   errors,
   h('div', { class: 'row' }, h('button', { class: 'btn', type: 'submit' }, 'Apply filters'),
-    h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => apply({ ...DEFAULT_CONTROLS, weekdays: [] }) } }, 'Reset')));
+    h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => {
+      slider.set(0, 1439);
+      days.forEach((d) => d.btn.setAttribute('aria-pressed', 'false'));
+      apply({ ...DEFAULT_CONTROLS, weekdays: [] });
+    } } }, 'Reset')));
   return form;
 }
