@@ -146,7 +146,7 @@ test('remove day: clicking Remove sends the POST and shows the result', async ()
 **Interfaces:** Consumes/Produces: nothing
 **Security flag:** `none`
 
-- [ ] **Step 1:** Update the endpoint descriptions to: remove is async (202 + status endpoint), supports `end`, max 62 days.
-- [ ] **Step 2:** Run `.venv/bin/python -m pytest tests/test_docs.py` → PASS.
+- [x] **Step 1:** Update the endpoint descriptions to: remove is async (202 + status endpoint), supports `end`, max 62 days.
+- [x] **Step 2:** Run `.venv/bin/python -m pytest tests/test_docs.py` → PASS.
 - [ ] **Step 3: Manual check** (not by a subagent): `.venv/bin/python scripts/seed_demo.py` data, run the app, open Routes in the browser, preview a 2-day range, click Remove, confirm spinner, bar and final counts, then re-Preview shows "Nothing recorded".
 - [ ] **Step 4: Commit** `git commit -m "Docs: async day removal and ranges"`
