@@ -979,3 +979,18 @@ async def all_routes(request: Request, p: P):
     p_low, p_high. `filters.truncated_routes` lists routes whose scan hit MAX_ROWS."""
     res, trunc = await _each_tracked(request, p, _route_stats_db)
     return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "routes": [x for _, x in res]})
+
+
+@router.get("/all/heatmap")
+async def all_heatmap(request: Request, p: P):
+    """Heatmap cells pooled by arrival across every tracked route: [{weekday, hour, n, low_n, mean_delay}]."""
+    res, trunc = await _each_tracked(request, p, _heatmap_db)
+    cnt, tot = defaultdict(int), defaultdict(float)
+    for _, h in res:
+        for c in h["cells"]:
+            k = (c["weekday"], c["hour"])
+            cnt[k] += c["n"]
+            tot[k] += c["mean_delay"] * c["n"]
+    cells = [{"weekday": wd, "hour": hr, "n": cnt[(wd, hr)], "low_n": cnt[(wd, hr)] < LOW_N,
+              "mean_delay": tot[(wd, hr)] / cnt[(wd, hr)]} for wd, hr in sorted(cnt)]
+    return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "n": sum(cnt.values()), "cells": cells})

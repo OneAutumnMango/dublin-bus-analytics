@@ -2460,3 +2460,27 @@ def test_all_routes_reports_truncated_routes(env, monkeypatch):
     env.add(route="46A", delay=1)
     j = env.get("/api/all/routes").json()
     assert j["filters"]["truncated_routes"] == ["15"]
+
+
+def test_all_heatmap_one_route_equals_per_route(env):
+    env.app.state.poller.track("15")
+    for i, d in enumerate((60, 120, -30)): env.add(route="15", delay=d, scheduled=T0 + i * 3600)
+    a = env.get("/api/all/heatmap").json()
+    r = env.get("/api/routes/15/heatmap").json()
+    assert a["cells"] == r["cells"] and a["n"] == r["n"]
+
+
+def test_all_heatmap_pools_two_routes_by_arrival(env):
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A")
+    env.add(route="15", delay=60, scheduled=T0); env.add(route="15", delay=120, scheduled=T0 + 1)
+    env.add(route="46A", delay=300, scheduled=T0 + 2)
+    env.add(route="untracked", delay=9999, scheduled=T0)
+    j = env.get("/api/all/heatmap").json()
+    assert j["n"] == 3 and len(j["cells"]) == 1
+    c = j["cells"][0]
+    assert c["n"] == 3 and c["mean_delay"] == pytest.approx(160) and c["low_n"] is True
+
+
+def test_all_heatmap_empty(env):
+    j = env.get("/api/all/heatmap").json()
+    assert j["cells"] == [] and j["n"] == 0
