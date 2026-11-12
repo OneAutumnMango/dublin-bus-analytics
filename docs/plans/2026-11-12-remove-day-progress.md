@@ -114,11 +114,11 @@ test('remove day: clicking Remove sends the POST and shows the result', async ()
 
 **Security flag:** `security`
 
-- [ ] **Step 1: Update/write failing tests:** adapt existing remove tests to 202 + poll helper; range confirm `"2026-11-05..2026-11-06"` accepted, plain `date` confirm for a range → 422; end before date → 422; origin check still 403; second POST while running → 409 with `job_id`; unknown job → 404; lock released after done.
-- [ ] **Step 2:** `.venv/bin/python -m pytest tests/maintenance/test_api.py` → FAIL.
-- [ ] **Step 3:** Rewrite `remove_day`: validate, acquire `_backup._lock` non-blocking (409 if busy, include `jobs.running_id()`), `jobs.start(...)` (on `JobBusy` release lock, 409 with id), return 202. Status route has no DB access.
-- [ ] **Step 4:** Run file → PASS; also `.venv/bin/python -m pytest tests/test_main.py`.
-- [ ] **Step 5: Commit** `git commit -m "API: range preview, async remove job, status endpoint"`
+- [x] **Step 1: Update/write failing tests:** adapt existing remove tests to 202 + poll helper; range confirm `"2026-11-05..2026-11-06"` accepted, plain `date` confirm for a range → 422; end before date → 422; origin check still 403; second POST while running → 409 with `job_id`; unknown job → 404; lock released after done.
+- [x] **Step 2:** `.venv/bin/python -m pytest tests/maintenance/test_api.py` → FAIL.
+- [x] **Step 3:** Rewrite `remove_day`: validate, acquire `_backup._lock` non-blocking (409 if busy, include `jobs.running_id()`), `jobs.start(...)` (on `JobBusy` release lock, 409 with id), return 202. Status route has no DB access.
+- [x] **Step 4:** Run file → PASS; also `.venv/bin/python -m pytest tests/test_main.py`.
+- [x] **Step 5: Commit** `git commit -m "API: range preview, async remove job, status endpoint"`
 
 ### Task 5: UI — range, spinner, polling
 
