@@ -51,14 +51,16 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 
 ### 5. Remove a day of data (manual)
 
-- Take a backup, then `curl "http://127.0.0.1:8081/api/data/day?date=<today>"`: counts are non-zero for a day with data, `window` spans local midnight to next midnight, `months` lists the month files.
+- Take a backup, then `curl "http://127.0.0.1:8081/api/data/day?date=<today>"`: counts are non-zero for a day with data, `window` spans local midnight to next midnight, `months` lists the month files. With `&end=<next day>` the response has a per-day `days` list (2 entries) and totals over both days.
 - Same call with `route=<id>`: counts are no larger than the all-routes counts.
-- `POST /api/data/day/remove?date=<day>&confirm=<other day>` gives 422 and deletes nothing.
-- With the correct `confirm`, the response counts equal the preview; the preview afterwards is all zero and other days are unchanged in the UI.
+- `POST /api/data/day/remove?date=<day>&confirm=<other day>` gives 422 and deletes nothing. For a range, `date=<d1>&end=<d2>&confirm=<d1>` (without `..<d2>`) also gives 422.
+- With the correct `confirm` the POST returns `202 {"job_id": ...}` immediately. Poll `GET /api/data/day/remove/<job_id>`: `state` is `running` with `stage`, `day_index`/`day_count` and growing `done` counts, then `done` with `done` equal to the preview; the preview afterwards is all zero and other days are unchanged in the UI. An unknown job id gives 404.
+- Range step: with a 2-day range (`date=<d1>&end=<d2>&confirm=<d1>..<d2>`), `day_count` is 2, `current_day` moves from the first to the second day, and `done` equals the range preview totals when finished. A range over 62 days gives 422.
+- Start a second removal while one is running: `409` with the running `job_id`. During a backup the `409` has `job_id: null`.
 - On a day overlapping a gzipped month, `skipped_months` names the `.db.gz` file and its checksum is unchanged.
 - While the tracker is running, the collector keeps recording during a large removal (no `database is locked` in its log).
-- Web UI, Routes page > Backup card > "Remove a day of data": the date defaults to today (Dublin). Press Preview on a test day: the counts match the curl preview and a "Remove these rows" button appears. Change the date or route: the button and text disappear. Preview again, remove: the "Removed ..." counts match, and a second Preview says "Nothing recorded for that day."
+- Web UI, Routes page > Backup card > "Remove a day of data": From defaults to today (Dublin); To is optional. Press Preview on a test day (or a 2-day range): the counts match the curl preview and a "Remove these rows" button appears. Change a date or the route: the button and text disappear. Preview again, remove: the Remove button shows a spinner, a progress bar and running counts update, the final "Removed ..." counts match the preview, and a second Preview says "Nothing recorded".
 - Removing a day that is still being recorded (today): preview afterwards may be non-zero while the collector runs (in-flight buses finalise with incomplete forecasts); this is expected, rerun once the day is complete.
-- A `409` or `503` response names no raw error text; after a `409` with `done`, rerunning the same removal completes it.
+- A `409`, `503` or job `error` names no raw error text; after an `error` with `done` counts, rerunning the same removal completes it. After restarting the app, polling an old job id gives 404.
 - Cross-origin check: `curl -X POST -H "Origin: http://evil.example" ".../api/data/day/remove?date=<day>&confirm=<day>"` returns 403 (non-browser clients can still omit Origin; no authentication exists).
 - Preview today's date in the web UI: the counts are followed by the "This day is still being recorded" warning (also after removal). A past date shows no such warning.

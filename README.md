@@ -171,30 +171,34 @@ In the UI, the Backup card on the Routes page has a route select, a "compressed"
 
 ### Remove a day of data
 
-Deletes everything recorded for one Europe/Dublin calendar day (for example data from an older version). There is no undo: take a backup first (`POST /api/backup`).
+Deletes everything recorded for one Europe/Dublin calendar day, or an inclusive range of days (for example data from an older version). There is no undo: take a backup first (`POST /api/backup`).
 
 ```bash
 curl "http://127.0.0.1:8081/api/data/day?date=2026-11-11"                       # preview: counts only
-curl -X POST "http://127.0.0.1:8081/api/data/day/remove?date=2026-11-11&confirm=2026-11-11"
+curl "http://127.0.0.1:8081/api/data/day?date=2026-11-10&end=2026-11-11"        # preview a range
+curl -X POST "http://127.0.0.1:8081/api/data/day/remove?date=2026-11-11&confirm=2026-11-11"   # 202 {"job_id": "..."}
+curl "http://127.0.0.1:8081/api/data/day/remove/<job_id>"                       # poll the job
 ```
 
-Add `route=15` to limit it to one route. `confirm` must equal `date`. The preview returns `arrivals`, `forecasts`, `samples`, `gaps`, the month files that would be edited (`months`) and gzipped months that overlap the day and cannot be edited (`skipped_months`); the remove response has the same shape with what was actually deleted.
+Add `route=15` to limit it to one route. `end` is optional and makes the range `date` to `end` inclusive (at most 62 days). `confirm` must equal `date` for one day, or `date..end` for a range (otherwise `422`). The preview (`GET /api/data/day`, which also accepts `end`) returns `arrivals`, `forecasts`, `samples`, `gaps` (totals over the range), a per-day `days` list, the month files that would be edited (`months`) and gzipped months that overlap the range and cannot be edited (`skipped_months`).
 
-In the web UI this is the "Remove a day of data" section of the Backup card on the Routes page: pick a date and route, press Preview, then "Remove these rows" (shown only for the previewed date and route). For today or a later date it also warns that the day is still being recorded, so in-flight buses may leave incomplete forecast rows and the day may not end up completely empty.
+Removal is asynchronous: `POST /api/data/day/remove` starts a background job and returns `202 {"job_id": ...}` at once. Poll `GET /api/data/day/remove/{job_id}`: it returns `state` (`running`, `done` or `error`), `stage`, `day_index` / `day_count` / `current_day`, the `done` and `total` counts (same keys as the preview), `skipped_months` and `error` (a message when `state` is `error`). The status endpoint never touches the database. If a removal is already running, or a backup holds the lock, the POST returns `409` with `job_id` (the running job's id, or `null` when a backup holds the lock). Job status is kept in memory only and is lost on restart (the status call then returns `404`); rerunning the same removal finishes it.
+
+In the web UI this is the "Remove a day of data" section of the Backup card on the Routes page: pick From and To dates (To is optional) and a route, press Preview, then "Remove these rows" (shown only for the previewed dates and route). While it runs, the Remove button shows a spinner and a progress bar with running counts is displayed; the final counts are shown when it finishes. For a range including today or a later date it also warns that the day is still being recorded, so in-flight buses may leave incomplete forecast rows and the day may not end up completely empty.
 
 - Deleted: arrivals of that `service_date`, their forecasts, raw samples in the day's local window (23 or 25 hours on DST days) and gaps starting in it. `routes_tracked` and `meta_kv` are kept; nothing is vacuumed.
 - With `route`, only samples belonging to that route's arrivals of the day go; samples without an arrival (buses dropped before arriving) and gaps cannot be attributed to a route and stay.
 - A gzipped (closed) month is immutable and is skipped and reported; extract it by hand if you must clean it.
-- Rows are removed in chunks of 2000, each its own short transaction, so the collector keeps writing. If a file stays locked the call returns `409` saying what was done; repeat it to finish. Only one remove, backup or compaction runs at a time (`409` when busy).
+- Rows are removed in chunks of 2000, each its own short transaction, so the collector keeps writing. If a file stays locked the job ends in state `error` with the counts `done` so far; repeat the removal to finish. Only one remove, backup or compaction runs at a time (`409` when busy).
 - Today and tomorrow are accepted, but the collector keeps live state in memory: after deleting today's samples, buses still in flight get incomplete forecast rows when they finalise, and a bus held at "due now" can re-create an arrival row. Prefer completed days, or run it right after deploying a new version; a preview taken while the collector runs is not guaranteed to be all zero afterwards.
 - Windows differ by table: arrivals are matched by `service_date`, samples by recording time. In route mode, samples of a day-D arrival recorded before local midnight stay behind (they cannot be attributed), and a trip id that crosses midnight can lose the previous day's early-morning samples. In all-routes mode, after-midnight samples of late D-1 buses are deleted too (their arrival rows and forecasts survive; only the raw trip detail is truncated).
-- A `409` partial result can mean samples were deleted while arrivals remain; rerun to finish. A non-lock database error gives `503` with the same `done` counts.
+- A partial result (job `error` with `done` counts) can mean samples were deleted while arrivals remain; rerun to finish.
 - Security: the same-origin check relies on the `Origin` header (browsers send it on cross-origin POSTs; non-browser clients and DNS rebinding are not covered) and `confirm` is not CSRF protection. The app has no authentication and must stay off the public internet.
 - The collector remembers finalised arrivals in memory for about 6 h so they are not re-inserted, but a bus held at "due now" may still finalise after the removal and recreate a row for that day: run the removal again if so.
 
 ## Repo layout
 
-- `app/` FastAPI app, grouped by responsibility: `core/` (config, models, db), `collect/` (server client, poller, tracker, forecast), `analysis/` (stats), `api/` (JSON routes, static UI), `backup/` (backup, scheduler, backup router), `maintenance/` (remove a day of data); entrypoint `app.main:app`
+- `app/` FastAPI app, grouped by responsibility: `core/` (config, models, db), `collect/` (server client, poller, tracker, forecast), `analysis/` (stats), `api/` (JSON routes, static UI), `backup/` (backup, scheduler, backup router), `maintenance/` (remove a day or range of days of data, as a background job with status polling); entrypoint `app.main:app`
 - `web/` static UI and its Node tests (`web/test/`)
 - `scripts/` `seed_demo.py` (demo data and fake server), `smoke.sh` (full-stack check)
 - `tests/` pytest suite mirroring the `app/` layout (`tests/support/` holds the fake server)
