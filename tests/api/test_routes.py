@@ -2481,6 +2481,30 @@ def test_all_heatmap_pools_two_routes_by_arrival(env):
     assert c["n"] == 3 and c["mean_delay"] == pytest.approx(160) and c["low_n"] is True
 
 
+def test_all_heatmap_reports_truncated_routes(env, monkeypatch):
+    monkeypatch.setattr("app.api.routes.MAX_ROWS", 2)
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A")
+    for i in range(4): env.add(route="15", delay=i, scheduled=T0 + i)
+    env.add(route="46A", delay=1)
+    j = env.get("/api/all/heatmap").json()
+    assert j["filters"]["truncated_routes"] == ["15"]
+    assert j["n"] == 3   # 2 newest of route 15 + 1 of 46A (5 without the cap)
+
+
+def test_all_heatmap_weekday_filter(env):
+    tz = ZoneInfo("Europe/Dublin")
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A")
+    mon = int(datetime(2026, 1, 5, 9, 30, tzinfo=tz).timestamp())  # Monday
+    wed = int(datetime(2026, 1, 7, 9, 30, tzinfo=tz).timestamp())  # Wednesday
+    env.add(route="15", delay=60, scheduled=mon); env.add(route="46A", delay=120, scheduled=mon + 1)
+    env.add(route="15", delay=600, scheduled=wed)
+    j = env.get("/api/all/heatmap", weekdays="0").json()
+    assert [(c["weekday"], c["hour"], c["n"]) for c in j["cells"]] == [(0, 9, 2)] and j["n"] == 2
+    assert j["cells"][0]["mean_delay"] == pytest.approx(90)
+    j = env.get("/api/all/heatmap", weekdays="2").json()
+    assert [(c["weekday"], c["n"]) for c in j["cells"]] == [(2, 1)] and j["n"] == 1
+
+
 def test_all_heatmap_empty(env):
     j = env.get("/api/all/heatmap").json()
     assert j["cells"] == [] and j["n"] == 0
@@ -2525,7 +2549,22 @@ def test_all_forecast_pools_two_routes_and_clamps(env):
     env.fc(env.add(route="untracked", delay=0), 10, 5)
     h = {x["horizon_min"]: x for x in env.get("/api/all/forecast").json()["horizons"]}[10]
     assert h["n"] == 3 and h["mean_error"] == pytest.approx((100 - 300 + 100000) / 3)
-    assert h["p_high"] <= 3600
+    assert h["mae"] == pytest.approx((100 + 300 + 100000) / 3)   # exact, not clamped
+    import numpy as np
+    clamped = [100, -300, 3600]                                  # the outlier enters the histogram clamped
+    assert h["p_high"] == pytest.approx(np.percentile(clamped, 95)) and h["p_high"] < 3600  # 3250 (interpolated)
+    assert h["p_low"] == pytest.approx(np.percentile(clamped, 5))
+
+
+def test_all_forecast_reports_truncated_routes(env, monkeypatch):
+    monkeypatch.setattr("app.api.routes.MAX_ROWS", 2)
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A")
+    for i in range(4): env.fc(env.add(route="15", delay=0, scheduled=T0 + i), 10, 60)
+    env.fc(env.add(route="46A", delay=0), 10, 60)
+    j = env.get("/api/all/forecast").json()
+    assert j["filters"]["truncated_routes"] == ["15"]
+    h = {x["horizon_min"]: x for x in j["horizons"]}[10]
+    assert h["n"] == 3   # route 15 keeps its newest MAX_ROWS=2 arrivals, 46A its 1 (5 rows without the cap)
 
 
 def test_all_forecast_no_tracked(env):

@@ -88,3 +88,19 @@ test('all page: sorting keeps the table open, refocuses the sort button and anno
   assert.equal(ctx.main.byText('button', /^Median$/)[0].focused, undefined);
   assert.match(globalThis.document.getElementById('status').textContent, /Sorted by mean, high to low/);
 });
+
+test('all page: every route without data shows the empty state and no chart', async () => {
+  stubs({ 'GET /api/all/routes': { filters: filters(), routes: [R('15', null), R('46A', null)] } });
+  const ctx = await mount();
+  const cmp = ctx.main.byTag('section')[0];
+  assert.match(cmp.textContent, /No data for this selection/);
+  assert.equal(cmp.byTag('svg').length, 0);
+});
+
+test('all page: a route without data is left out of the chart but kept in the table', async () => {
+  stubs({ 'GET /api/all/routes': { filters: filters(), routes: [R('15', 60), R('empty', null)] } });
+  const ctx = await mount();
+  const cmp = ctx.main.byTag('section')[0];
+  assert.equal(cmp.all((n) => n.tag === 'g' && /(^| )row( |$)/.test(n.getAttribute('class') || '')).length, 1);
+  assert.deepEqual(rowsOf(ctx), ['15', 'empty']);
+});
