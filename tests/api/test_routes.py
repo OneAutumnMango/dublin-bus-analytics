@@ -2432,3 +2432,31 @@ def test_map_change_shared_terminus_between_directions(env):
     by = _chg(env.get("/api/map").json())
     assert [by[s]["mean_change"] for s in ("s1", "s2")] == [60, 60]
     assert by["s3"]["n_change"] == 2 and by["s3"]["mean_change"] == 15  # A: 0 (out-last), B: 30 (back-first)
+
+
+def test_all_routes_stats_per_route(env):
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A"); env.app.state.poller.track("empty")
+    for d in (60, 120, 600): env.add(route="15", delay=d)
+    env.add(route="46A", delay=-60)
+    env.add(route="untracked", delay=9999)
+    j = env.get("/api/all/routes").json()
+    by = {r["route"]: r for r in j["routes"]}
+    assert set(by) == {"15", "46A", "empty"}
+    assert by["15"]["n"] == 3 and by["15"]["median"] == 120 and by["15"]["mean"] == 260
+    assert by["46A"]["n"] == 1 and by["46A"]["low_n"] is True
+    assert by["empty"]["n"] == 0 and by["empty"]["mean"] is None and by["empty"]["median"] is None
+    assert j["filters"]["realtime_only"] is True
+
+
+def test_all_routes_no_tracked(env):
+    j = env.get("/api/all/routes").json()
+    assert j["routes"] == []
+
+
+def test_all_routes_reports_truncated_routes(env, monkeypatch):
+    monkeypatch.setattr("app.api.routes.MAX_ROWS", 2)
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A")
+    for i in range(4): env.add(route="15", delay=i, scheduled=T0 + i)
+    env.add(route="46A", delay=1)
+    j = env.get("/api/all/routes").json()
+    assert j["filters"]["truncated_routes"] == ["15"]

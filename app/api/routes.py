@@ -945,3 +945,37 @@ async def map_shapes(request: Request):
                 per[d] = pts
         out[r] = per
     return {"shapes": out}
+
+
+# ---- all routes ----
+
+async def _each_tracked(request, p, worker, delay=True):
+    """Run worker(request, route, p) (sync, in a thread under _heavy) for every tracked route, each with its own
+    MAX_ROWS cap. Returns ([(route, result)...], routes whose scan was truncated)."""
+    routes = sorted(await run_in_threadpool(request.app.state.poller.tracked))
+    out, truncated = [], []
+    for r in routes:
+        res, trunc = await _heavy(request, p, "route = ?", [r],
+                                  lambda p2, r=r: (worker(request, r, p2), p2["truncated"]), delay)
+        out.append((r, res))
+        if trunc:
+            truncated.append(r)
+    return out, truncated
+
+
+_ROUTE_FIELDS = ("n", "low_n", "mean", "median", "on_time_pct", "reliability", "p_low", "p_high")
+
+
+def _route_stats_db(request, r, p):
+    delays = array("q")
+    _scan_arrivals(request, p, "route = ?", [r], "delay", lambda rows: delays.extend(d for d, _ in rows))
+    s = _summ(delays, p)
+    return {"route": r, **{k: s[k] for k in _ROUTE_FIELDS}}
+
+
+@router.get("/all/routes")
+async def all_routes(request: Request, p: P):
+    """Per-route delay stats for every tracked route: route, n, low_n, mean, median, on_time_pct, reliability,
+    p_low, p_high. `filters.truncated_routes` lists routes whose scan hit MAX_ROWS."""
+    res, trunc = await _each_tracked(request, p, _route_stats_db)
+    return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "routes": [x for _, x in res]})
