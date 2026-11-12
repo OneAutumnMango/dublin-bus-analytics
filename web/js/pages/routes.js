@@ -56,7 +56,13 @@ export async function render(ctx) {
   const liveNote = (date) => (date >= todayDublin() ? 'This day is still being recorded. Buses in flight right now may end up with incomplete forecast data and the day may not be completely empty afterwards. Removing a finished day is safest.' : '');
   const skipNote = (r) => (r.skipped_months?.length ? `Archived (gzipped) months cannot be edited and will be skipped: ${r.skipped_months.join(', ')}. Samples there stay.` : '');
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  function reset() { token++; rmSlot.replaceChildren(); dayStatus.replaceChildren(); previewBtn.disabled = false; }
+  let following = false; // true while a removal job is being polled
+  function reset() {
+    const was = following;
+    following = false;
+    token++; rmSlot.replaceChildren(); dayStatus.replaceChildren(); previewBtn.disabled = false;
+    if (was) say('A removal is still running in the background; press Remove again after Preview to follow it.');
+  }
   async function preview() {
     const date = dateIn.value, end = endIn.value, route = daySel.value;
     if (!date) { say('Choose a date first.'); return; }
@@ -87,17 +93,25 @@ export async function render(ctx) {
   }
   // Polls a removal job until it finishes, fails, is lost, or this view is superseded.
   async function follow(jobId, my, last, finish) {
+    let fails = 0;
+    following = true;
+    const stop = () => { following = false; finish(); };
     for (;;) {
       let r;
-      try { r = await api.removeJob(jobId, { signal }); } catch (e) {
+      try { r = await api.removeJob(jobId, { signal }); fails = 0; } catch (e) {
         if (isAbort(e) || signal.aborted || my !== token) return;
-        if (e instanceof ApiError && e.status === 404) { finish(); say('Status lost; run Preview to check. Running the removal again finishes it.'); return; }
-        finish(); say(`${e.message}. Run Preview to check what is left.`); return;
+        if (e instanceof ApiError && e.status === 404) { stop(); say('Status lost; run Preview to check. Running the removal again finishes it.'); return; }
+        if (e instanceof ApiError && (e.kind === 'network' || e.kind === 'timeout') && ++fails <= 3) {
+          await sleep(pollMs);
+          if (signal.aborted || my !== token) return;
+          continue;
+        }
+        stop(); say(`${e.message}. The removal may still be running on the server; press Remove again to re-attach to it, or run Preview to check what is left.`); return;
       }
       if (signal.aborted || my !== token) return;
-      if (r.state === 'done') { rmSlot.replaceChildren(); finish(); say(`Removed ${counts(r.done || {})}.`, skipNote(r), liveNote(last)); return; }
+      if (r.state === 'done') { rmSlot.replaceChildren(); stop(); say(`Removed ${counts(r.done || {})}.`, skipNote(r), liveNote(last)); return; }
       if (r.state === 'error') {
-        finish();
+        stop();
         say(r.error || 'The removal failed.', sum(r.done) ? `Part of the day was removed: ${counts({ arrivals: 0, forecasts: 0, samples: 0, gaps: 0, ...r.done })}; try again.` : '');
         return;
       }
@@ -116,19 +130,24 @@ export async function render(ctx) {
       rmBtn.setAttribute('class', v ? 'btn btn-danger solid busy' : 'btn btn-danger solid');
       if (v) { rmBtn.setAttribute('aria-busy', 'true'); rmBtn.textContent = 'Removing…'; } else { rmBtn.removeAttribute('aria-busy'); rmBtn.textContent = label; }
     };
-    const finish = () => { if (!signal.aborted) busy(false); };
+    const finish = () => { following = false; if (!signal.aborted) busy(false); };
     busy(true);
     say('Starting…');
-    let jobId = null;
     try {
-      jobId = (await api.removeDay({ date, end, route }, { signal })).job_id;
+      let jobId = null;
+      try {
+        jobId = (await api.removeDay({ date, end, route }, { signal })).job_id;
+      } catch (e) {
+        if (isAbort(e) || signal.aborted || my !== token) return;
+        if (e instanceof ApiError && e.status === 409 && e.body?.job_id) jobId = e.body.job_id;
+        else { finish(); say(e instanceof ApiError ? e.message : `Unexpected error: ${e.message}`); return; }
+      }
+      if (signal.aborted || my !== token) return;
+      await follow(jobId, my, end || date, finish);
     } catch (e) {
       if (isAbort(e) || signal.aborted || my !== token) return;
-      if (e instanceof ApiError && e.status === 409 && e.body?.job_id) jobId = e.body.job_id;
-      else { finish(); say(e instanceof ApiError ? e.message : `Unexpected error: ${e.message}`); return; }
+      try { finish(); say(`Unexpected error: ${e?.message ?? e}`); } catch { /* nothing more to do */ }
     }
-    if (signal.aborted || my !== token) return;
-    await follow(jobId, my, end || date, finish);
   }
 
   put(main, h('h1', {}, 'Routes'),

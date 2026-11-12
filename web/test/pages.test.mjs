@@ -686,6 +686,52 @@ test('remove day: polling stops when the page is destroyed or the form changes',
   assert.ok(q.calls.length <= m + 1);
 });
 
+test('remove day: malformed status body ends in an error message, not a stuck busy button', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': 'null' });
+  await p.click(/^Preview$/);
+  const b = p.rm();
+  b.dispatch('click', { currentTarget: b });
+  await settle(30);
+  assert.match(text(p.status()), /Unexpected error/);
+  assert.equal(b.getAttribute('aria-busy'), null);
+  assert.doesNotMatch(b.getAttribute('class'), /busy/);
+  assert.equal(b.disabled, false);
+  assert.equal(pbtn(p).disabled, false);
+});
+
+test('remove day: one network failure while polling is retried and the removal completes', async () => {
+  let n = 0;
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT,
+    'GET /api/data/day/remove/j1': () => { n++; if (n === 1) throw new TypeError('net'); return n < 4 ? JOB() : DONE(); } });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  await settle(40);
+  assert.match(text(p.status()), /Removed 1,234/);
+});
+
+test('remove day: repeated network failures give up with a may-still-be-running message', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': () => { throw new TypeError('net'); } });
+  await p.click(/^Preview$/);
+  const b = p.rm();
+  b.dispatch('click', { currentTarget: b });
+  await settle(50);
+  assert.equal(p.calls.filter((c) => c.key === 'GET /api/data/day/remove/j1').length, 4);
+  assert.match(text(p.status()), /may still be running.*Remove again/);
+  assert.equal(b.disabled, false);
+  assert.equal(pbtn(p).disabled, false);
+});
+
+test('remove day: editing the form mid-removal leaves a background-removal note', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': JOB() });
+  await p.click(/^Preview$/);
+  p.date.dispatch('change');
+  assert.equal(text(p.status()), '');
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  p.date.dispatch('change');
+  assert.match(text(p.status()), /A removal is still running in the background; press Remove again after Preview to follow it\./);
+});
+
 test('heatQuery drops only weekdays and hours', async () => {
   const { heatQuery } = await import('../js/pages/analytics.js');
   assert.deepEqual(heatQuery({ weekdays: [1], hours: [8], ci: '0.95' }), { ci: '0.95' });
