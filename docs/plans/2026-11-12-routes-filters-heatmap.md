@@ -33,11 +33,11 @@
 **Security flag:** `none`
 **Cause:** header rule `.bar { height:100%; display:flex; ... }` (style.css:59, also :325) applies to the chart rects.
 
-- [ ] **Step 1: Failing test** in charts.test.mjs: render `renderAccumulation` with 3 stops having `segment_delta` values; assert every non-hit rect with class containing `acc-bar` exists, no rect has class token `bar`, and `early`/`late` classes are still set (`acc-bar late` for delta>0, `acc-bar early` otherwise). Also read `css/style.css` text and assert it contains no `.chart .bar` selector.
-- [ ] **Step 2:** Run `cd web && node --test test/charts.test.mjs`; Expected FAIL.
-- [ ] **Step 3:** In charts.js change rect class `bar ${late|early}` to `acc-bar ${late|early}`. In style.css rename `.chart .bar` rules (fill, `.early`, `.late`, `:hover`) to `.chart .acc-bar`.
-- [ ] **Step 4:** Run `node --test test/` ; Expected all PASS.
-- [ ] **Step 5:** Commit `Fix accumulation bars inheriting header .bar layout`.
+- [x] **Step 1: Failing test** in charts.test.mjs: render `renderAccumulation` with 3 stops having `segment_delta` values; assert every non-hit rect with class containing `acc-bar` exists, no rect has class token `bar`, and `early`/`late` classes are still set (`acc-bar late` for delta>0, `acc-bar early` otherwise). Also read `css/style.css` text and assert it contains no `.chart .bar` selector.
+- [x] **Step 2:** Run `cd web && node --test test/charts.test.mjs`; Expected FAIL.
+- [x] **Step 3:** In charts.js change rect class `bar ${late|early}` to `acc-bar ${late|early}`. In style.css rename `.chart .bar` rules (fill, `.early`, `.late`, `:hover`) to `.chart .acc-bar`.
+- [x] **Step 4:** Run `node --test test/` ; Expected all PASS.
+- [x] **Step 5:** Commit `Fix accumulation bars inheriting header .bar layout`.
 
 ### Task 2: Hour-window mapping and slider presets
 **Files:** Modify `web/js/lib.js`, `web/js/slider.js`; Test `web/test/lib.test.mjs`, `web/test/slider.test.mjs`
@@ -49,22 +49,22 @@
 Rules: blank,blank -> [0,1439]. hf only -> single hour [h*60, h*60+60]; ht only -> same with ht. Both set, non-wrapping h1<=h2 -> [h1*60, (h2+1)*60] with end 1440 clamped to 1439; wrapping h1>h2 -> a=h1*60, b=(h2+1)*60. Inverse: a=0&&b=1439 -> blanks; hFrom=floor(a/60); hTo = b===1439 ? 23 : ((b/60 - 1) + 24) % 24; a===b (not full) -> single hour hFrom with hTo=hFrom.
 `HOUR_PRESETS` = All day [0,1439], Morning peak [420,600], Daytime [600,960], Evening peak [960,1140], Night [1320,360].
 
-- [ ] **Step 1: Failing tests** in lib.test.mjs: for every hFrom 0..23 and hTo 0..23, `windowToHours(...hoursToWindow(f,t))` returns `{hFrom:f,hTo:t}` except f==0&&t==23 which returns blanks; `hoursToWindow('', '')` is [0,1439]; `hoursToWindow(7,'')` is [420,480] and `windowToHours(420,480)` is `{hFrom:7,hTo:7}`; `hoursToWindow('',9)` is [540,600]; (22,5) -> [1320,360] and back. slider.test.mjs: with `presets: [['X',60,120]]` only one preset button exists and clicking it calls onChange(60,120).
-- [ ] **Step 2:** Run `node --test test/lib.test.mjs test/slider.test.mjs`; Expected FAIL.
-- [ ] **Step 3:** Implement helpers in lib.js and the `presets` option (default PRESETS) plus `HOUR_PRESETS` export in slider.js.
-- [ ] **Step 4:** Run same command; Expected PASS.
-- [ ] **Step 5:** Commit `Add hour-window mapping and slider presets option`.
+- [x] **Step 1: Failing tests** in lib.test.mjs: for every hFrom 0..23 and hTo 0..23, `windowToHours(...hoursToWindow(f,t))` returns `{hFrom:f,hTo:t}` except f==0&&t==23 which returns blanks; `hoursToWindow('', '')` is [0,1439]; `hoursToWindow(7,'')` is [420,480] and `windowToHours(420,480)` is `{hFrom:7,hTo:7}`; `hoursToWindow('',9)` is [540,600]; (22,5) -> [1320,360] and back. slider.test.mjs: with `presets: [['X',60,120]]` only one preset button exists and clicking it calls onChange(60,120).
+- [x] **Step 2:** Run `node --test test/lib.test.mjs test/slider.test.mjs`; Expected FAIL.
+- [x] **Step 3:** Implement helpers in lib.js and the `presets` option (default PRESETS) plus `HOUR_PRESETS` export in slider.js.
+- [x] **Step 4:** Run same command; Expected PASS.
+- [x] **Step 5:** Commit `Add hour-window mapping and slider presets option`.
 
 ### Task 3: Slider and day buttons in the filter form
 **Files:** Modify `web/js/controls.js`, `web/css/style.css`; Test `web/test/pages.test.mjs` (or a new `web/test/controls.test.mjs` using fakedom)
 **Interfaces:** Consumes: `hoursToWindow`, `windowToHours` (Task 2), `timeRangeSlider`, `HOUR_PRESETS`. Produces: `controlsForm(initial, onApply)` unchanged signature; applied controls still `{hFrom, hTo, weekdays, ...}` with `hFrom` number or `''`, `hTo` number or `''`.
 **Security flag:** `none`
 
-- [ ] **Step 1: Failing tests:** build the form with `initial.weekdays=[0,2]`, `hFrom=7`, `hTo=9`; assert 7 day buttons with `aria-pressed` "true" exactly for Mon and Wed; clicking Tue sets it "true"; submitting calls onApply with `weekdays:[0,1,2]`, `hFrom:7,hTo:9`; with default controls submit gives `hFrom:'',hTo:''`; no `<select>` remains in the form; Reset clears pressed states and applies blanks.
-- [ ] **Step 2:** Run `node --test test/`; Expected FAIL.
-- [ ] **Step 3:** In controls.js replace the hour selects with `timeRangeSlider({ step: 60, presets: HOUR_PRESETS, from/to: hoursToWindow(initial.hFrom, initial.hTo) })`; `read()` uses `windowToHours(...slider.get())`. Replace checkboxes with `button[type=button].day-btn` toggling `aria-pressed`, in a `.day-btns` row; fieldset legend "Days of week", hint "None selected = every day". Reset must call `slider.set(0,1439)` and unpress days. CSS: pill buttons with distinct pressed state (filled `--early`-style accent, not colour-only: also bold text).
-- [ ] **Step 4:** Run `node --test test/`; Expected PASS.
-- [ ] **Step 5:** Commit `Use slider and toggle buttons for hour and day filters`.
+- [x] **Step 1: Failing tests:** build the form with `initial.weekdays=[0,2]`, `hFrom=7`, `hTo=9`; assert 7 day buttons with `aria-pressed` "true" exactly for Mon and Wed; clicking Tue sets it "true"; submitting calls onApply with `weekdays:[0,1,2]`, `hFrom:7,hTo:9`; with default controls submit gives `hFrom:'',hTo:''`; no `<select>` remains in the form; Reset clears pressed states and applies blanks.
+- [x] **Step 2:** Run `node --test test/`; Expected FAIL.
+- [x] **Step 3:** In controls.js replace the hour selects with `timeRangeSlider({ step: 60, presets: HOUR_PRESETS, from/to: hoursToWindow(initial.hFrom, initial.hTo) })`; `read()` uses `windowToHours(...slider.get())`. Replace checkboxes with `button[type=button].day-btn` toggling `aria-pressed`, in a `.day-btns` row; fieldset legend "Days of week", hint "None selected = every day". Reset must call `slider.set(0,1439)` and unpress days. Collapse rule: `windowToHours` maps an on-hour start==end window to all 24 hours, so in the slider's onChange (and before read) if `a === b` and the window is not full, call `slider.set(a, Math.min(a + 60, 1439))` so dragging both handles together selects that single hour, not the whole day. Test: onChange(120,120) leaves slider.get() at [120,180] and applying gives `hFrom:2,hTo:2`. CSS: pill buttons with distinct pressed state (filled `--early`-style accent, not colour-only: also bold text).
+- [x] **Step 4:** Run `node --test test/`; Expected PASS.
+- [x] **Step 5:** Commit `Use slider and toggle buttons for hour and day filters`.
 
 ### Task 4: Clickable heatmap independent of day/hour filters
 **Files:** Modify `web/js/pages/analytics.js`, `web/js/charts.js` (renderHeatmap), `web/css/style.css`; Test `web/test/pages.test.mjs`, `web/test/charts.test.mjs`
