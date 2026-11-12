@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installDom, installFetch, settle, FNode } from './fakedom.mjs';
+import { installDom, installFetch, settle, FNode, fail } from './fakedom.mjs';
 
 installDom();
-const { rankRoutes, renderSidebar } = await import('../js/sidebar.js');
+const { rankRoutes, renderSidebar, onTrackedChange } = await import('../js/sidebar.js');
 const R = (...n) => n.map((s, i) => ({ id: `i${i}`, shortName: s, longName: '' }));
 const mount = async () => { const root = new FNode('aside'); await renderSidebar(root, { signal: new AbortController().signal }); return root; };
 const type = (root, v) => { const i = root.byTag('input')[0]; i.value = v; i.dispatch('input'); return i; };
@@ -129,4 +129,59 @@ test('sidebar: All routes aria-current only on #/all', async () => {
   assert.ok(root.byTag('a').filter((a) => a !== all).every((a) => a.getAttribute('aria-current') === null));
   fire('#/analytics/sA');
   assert.equal(all.getAttribute('aria-current'), null);
+});
+
+const trackFlow = async (routes) => {
+  const root = await mount();
+  type(root, 'e'); await settle(250);
+  root.byText('button', /^Track$/)[0].dispatch('click');
+  await settle();
+  return root;
+};
+
+test('sidebar: onTrackedChange fires once per successful track and untrack', async () => {
+  let n = 0;
+  const off = onTrackedChange(() => { n++; });
+  installFetch({ 'GET /api/routes/tracked': { routes: [] }, 'GET /api/routes': R('e1'),
+    'PUT /api/routes/tracked/e1': { routes: ['e1'] }, 'DELETE /api/routes/tracked/e1': { routes: [] } });
+  const root = await trackFlow();
+  assert.equal(n, 1);
+  assert.deepEqual(trackedHrefs(root), ['#/analytics/e1'], 'listener runs after the sidebar was redrawn');
+  root.byText('button', /^Untrack$/)[0].dispatch('click');
+  root.byText('button', /^Confirm$/)[0].dispatch('click');
+  await settle();
+  assert.equal(n, 2);
+  off();
+});
+
+test('sidebar: onTrackedChange is not called when the request fails', async () => {
+  let n = 0;
+  const off = onTrackedChange(() => { n++; });
+  installFetch({ 'GET /api/routes/tracked': { routes: ['e1'] }, 'GET /api/routes': R('e2'),
+    'PUT /api/routes/tracked/e2': () => fail(500, 'boom'),
+    'DELETE /api/routes/tracked/e1': () => fail(500, 'boom') });
+  const root = await trackFlow();
+  root.byText('button', /^Untrack$/)[0].dispatch('click');
+  root.byText('button', /^Confirm$/)[0].dispatch('click');
+  await settle();
+  assert.equal(n, 0);
+  off();
+});
+
+test('sidebar: unsubscribe stops calls; a throwing listener does not break others or the sidebar', async () => {
+  let a = 0, b = 0;
+  const offA = onTrackedChange(() => { a++; });
+  const offBad = onTrackedChange(() => { throw new Error('bad'); });
+  const offB = onTrackedChange(() => { b++; });
+  installFetch({ 'GET /api/routes/tracked': { routes: [] }, 'GET /api/routes': R('e1', 'e2'),
+    'PUT /api/routes/tracked/e1': { routes: ['e1'] }, 'PUT /api/routes/tracked/e2': { routes: ['e1', 'e2'] } });
+  const root = await trackFlow();
+  assert.equal(a, 1); assert.equal(b, 1);
+  assert.deepEqual(trackedHrefs(root), ['#/analytics/e1']);
+  assert.equal(root.byTag('div').some((d) => d.getAttribute('role') === 'alert' && d.textContent), false, 'no error shown');
+  offA();
+  root.byText('button', /^Track$/)[0].dispatch('click');
+  await settle();
+  assert.equal(a, 1); assert.equal(b, 2);
+  offBad(); offB();
 });

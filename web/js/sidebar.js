@@ -7,7 +7,17 @@ import { buildHash, makeLatest, parseHash } from './lib.js';
 const MAX_RESULTS = 50;
 const DEBOUNCE_MS = 200;
 let mark = () => {}; // set by the latest render
+const listeners = [];
 let hooked = false; // the hashchange listener is added once, even if the sidebar is re-rendered (Retry)
+
+// Registers fn to run after every successful track/untrack; returns an unsubscribe function.
+export function onTrackedChange(fn) {
+  listeners.push(fn);
+  return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); };
+}
+function notifyTrackedChange() {
+  for (const fn of [...listeners]) { try { fn(); } catch { /* a faulty listener must not break the sidebar */ } }
+}
 
 // Exact short-name match first, then prefix matches, then the rest; server order within a group.
 export function rankRoutes(list, q) {
@@ -50,6 +60,7 @@ export async function renderSidebar(root, { signal } = {}) {
       setStatus(okText);
       draw();
       input.focus(); // the clicked button was rebuilt; keep keyboard users in the sidebar
+      notifyTrackedChange();
     } catch (e) { fail(e); } finally { busy = false; mutButtons.forEach((x) => { x.disabled = false; }); }
   }
   const track = (name) => act(() => api.track(name, { signal }), `Tracking ${name}`);

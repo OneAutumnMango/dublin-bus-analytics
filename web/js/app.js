@@ -2,7 +2,7 @@
 import { isAbort } from './api.js';
 import { errorBox, h, link, setStatus } from './dom.js';
 import { parseHash } from './lib.js';
-import { renderSidebar } from './sidebar.js';
+import { onTrackedChange, renderSidebar } from './sidebar.js';
 import { installTooltip } from './tooltip.js';
 import * as all from './pages/all.js';
 import * as analytics from './pages/analytics.js';
@@ -71,3 +71,4 @@ settings.applyAppearance();
 onSettings(() => settings.applyAppearance());
 const sidebar = globalThis.document.getElementById('sidebar');
 if (sidebar) renderSidebar(sidebar);
+onTrackedChange(() => { if (parseHash(globalThis.location.hash).name === 'all') show(); }); // the all-routes page depends on the tracked set
