@@ -22,6 +22,7 @@ create a new row for that day; repeat the removal if that matters.
 """
 import re
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from app.api.routes import _DB_LOCK
 DUBLIN = ZoneInfo("Europe/Dublin")
 CHUNK = 2000
 MIN_DATE = date(2020, 1, 1)
+MAX_DAYS = 62
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
@@ -64,6 +66,20 @@ def parse_day(text: str, today: date | None = None) -> date:
     if d > today + timedelta(days=1):
         raise DayError("date is too far in the future")
     return d
+
+
+def parse_range(date: str, end: str | None, today: "date | None" = None) -> "list[date]":
+    """`date` alone -> [d]; with `end` -> every day d..end inclusive (at most MAX_DAYS)."""
+    d = parse_day(date, today)
+    if end is None:
+        return [d]
+    e = parse_day(end, today)
+    if e < d:
+        raise DayError("end is before date")
+    n = (e - d).days + 1
+    if n > MAX_DAYS:
+        raise DayError(f"range is longer than {MAX_DAYS} days")
+    return [d + timedelta(days=i) for i in range(n)]
 
 
 def window(d: date) -> tuple[int, int]:
@@ -110,7 +126,7 @@ def _checkpoint(c: sqlite3.Connection) -> None:
 
 def _fail(part: str, done: dict, e: sqlite3.Error) -> DayBusy:
     busy = isinstance(e, sqlite3.OperationalError) and any(w in str(e).lower() for w in ("locked", "busy"))
-    return DayBusy(part, dict(done), "busy" if busy else "error")
+    return DayBusy(part, {k: v for k, v in done.items() if k != "_progress"}, "busy" if busy else "error")
 
 
 def _zero(d, route, w):
@@ -174,6 +190,7 @@ def _load_keys(c: sqlite3.Connection, keys) -> None:
 
 
 def _samples_one(c: sqlite3.Connection, w, keys, apply: bool, state: dict) -> None:
+    progress = state.get("_progress")
     if not c.execute("select 1 from sqlite_master where name = 'sample'").fetchall():
         return
     cond, args = "ts >= ? and ts < ?", [w[0], w[1]]
@@ -197,6 +214,8 @@ def _samples_one(c: sqlite3.Connection, w, keys, apply: bool, state: dict) -> No
         state["samples"] += len(rows)  # per committed chunk: exact even if a later chunk fails
         last = rows[-1]
         _between_chunks()
+        if progress:
+            progress("samples", state)
         if len(rows) < CHUNK:
             break
 
@@ -225,9 +244,37 @@ def preview(data_dir: Path, d: date, route: str | None) -> dict:
     return out
 
 
-def remove(data_dir: Path, d: date, route: str | None) -> dict:
+def preview_range(data_dir: Path, days: "list[date]", route: str | None) -> dict:
+    """`preview` summed over `days` (date = first, end = last) plus a per-day breakdown."""
+    out = _zero(days[0], route, (window(days[0])[0], window(days[-1])[1]))
+    out["end"] = days[-1].isoformat()
+    out["days"] = []
+    for d in days:
+        p = preview(data_dir, d, route)
+        out["days"].append({k: p[k] for k in ("date", "arrivals", "forecasts", "samples", "gaps")})
+        for k in ("arrivals", "forecasts", "samples", "gaps"):
+            out[k] += p[k]
+        for k in ("months", "skipped_months"):
+            out[k] += [m for m in p[k] if m not in out[k]]
+    out["truncated"] = False
+    return out
+
+
+def remove(data_dir: Path, d: date, route: str | None,
+           progress: Callable[[str, dict], None] | None = None) -> dict:
+    """Remove the day; `progress(stage, out)` runs after every committed chunk (stage: samples,
+    arrivals or gaps) with the running counts."""
     data_dir, w = Path(data_dir), window(d)
     out = _zero(d, route, w)
+    if progress:
+        out["_progress"] = progress
+    try:
+        return _remove(data_dir, d, route, w, out, progress)
+    finally:
+        out.pop("_progress", None)
+
+
+def _remove(data_dir, d, route, w, out, progress) -> dict:
     _scan_months(data_dir, d, route, w, True, out)
     meta = data_dir / "meta.db"
     try:
@@ -247,6 +294,8 @@ def remove(data_dir: Path, d: date, route: str | None) -> dict:
                 out["forecasts"] += nf
                 out["arrivals"] += na
                 _between_chunks()
+                if progress:
+                    progress("arrivals", out)
             if not route:
                 while True:
                     with _DB_LOCK:
@@ -255,6 +304,8 @@ def remove(data_dir: Path, d: date, route: str | None) -> dict:
                         c.commit()
                     out["gaps"] += n
                     _between_chunks()
+                    if progress:
+                        progress("gaps", out)
                     if n < CHUNK:
                         break
             _checkpoint(c)

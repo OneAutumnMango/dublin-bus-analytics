@@ -381,3 +381,48 @@ def test_concurrent_writer_thread_during_multichunk_remove(data, monkeypatch):
     th.join()
     assert not errs and r["arrivals"] == 23 and max(lat) < 5
     assert sqlite3.connect(path).execute("select count(*) from sample where trip_id='new'").fetchone()[0] == 25
+
+
+TODAY = date(2026, 11, 12)
+
+
+def test_parse_range_single_and_multi():
+    assert D.parse_range("2026-11-05", None, TODAY) == [date(2026, 11, 5)]
+    r = D.parse_range("2026-11-05", "2026-11-07", TODAY)
+    assert r == [date(2026, 11, 5), date(2026, 11, 6), date(2026, 11, 7)]
+    assert D.MAX_DAYS == 62
+
+
+def test_parse_range_limits_and_errors():
+    assert len(D.parse_range("2026-09-01", "2026-11-01", TODAY)) == 62
+    for a, b in [("2026-11-05", "2026-11-04"), ("2026-09-01", "2026-11-02"),
+                 ("2026-11-05", "nope"), ("2026-11-05", "2026-13-40"), ("bad", None),
+                 ("2026-11-05", "2026-12-30")]:
+        with pytest.raises(D.DayError):
+            D.parse_range(a, b, TODAY)
+
+
+def test_preview_range_sums_days(data):
+    d2 = date(2026, 11, 6)
+    p = D.preview_range(data, [DAY, d2], None)
+    p1, p2 = D.preview(data, DAY, None), D.preview(data, d2, None)
+    assert p["date"] == "2026-11-05" and p["end"] == "2026-11-06"
+    for k in ("arrivals", "forecasts", "samples", "gaps"):
+        assert p[k] == p1[k] + p2[k]
+    assert [x["date"] for x in p["days"]] == ["2026-11-05", "2026-11-06"]
+    assert p["days"][0] == {"date": "2026-11-05", "arrivals": 3, "forecasts": 6, "samples": 4, "gaps": 1}
+    assert p["months"] == ["samples-2026-11.db"] and p["skipped_months"] == []
+
+
+def test_remove_progress_callback(data, monkeypatch):
+    monkeypatch.setattr(D, "CHUNK", 1)
+    calls = []
+    D.remove(data, DAY, None, progress=lambda stage, out: calls.append((stage, dict(out))))
+    stages = [s for s, _ in calls]
+    assert stages[0] == "samples" and "arrivals" in stages
+    assert stages.index("arrivals") > max(i for i, s in enumerate(stages) if s == "samples")
+    assert set(stages) <= {"samples", "arrivals", "gaps"}
+    for k in ("samples", "arrivals", "forecasts", "gaps"):
+        vals = [o[k] for _, o in calls]
+        assert vals == sorted(vals)
+    assert calls[-1][1]["samples"] == 4 and calls[-1][1]["arrivals"] == 3
