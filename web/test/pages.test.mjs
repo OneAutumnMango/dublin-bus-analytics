@@ -418,18 +418,23 @@ test('stop page: on-time tile shows the on-time percentage, reliability its own 
 
 // ---- remove a day of data ----
 const PREV = { date: '2026-11-10', route: '', window: { start: 1, end: 2 }, arrivals: 1234, forecasts: 5, samples: 6, gaps: 7, months: ['a.db'], skipped_months: [], truncated: false };
+const Z = { arrivals: 0, forecasts: 0, samples: 0, gaps: 0 };
+const JOB = (over = {}) => ({ job_id: 'j1', state: 'running', stage: 'samples', day_index: 0, day_count: 1, current_day: '2026-11-10', done: Z, total: { arrivals: 1234, forecasts: 5, samples: 6, gaps: 7 }, skipped_months: [], error: null, ...over });
+const DONE = (over = {}) => JOB({ state: 'done', stage: 'done', day_index: 1, current_day: null, done: { arrivals: 1234, forecasts: 5, samples: 6, gaps: 7 }, ...over });
+const ACCEPT = { __status: 202, body: { job_id: 'j1' } };
 const dublinToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Dublin' }).format(new Date());
 async function dayPage(handlers = {}, ctxOver = {}) {
   const calls = installFetch({ ...NOBACKUP, 'GET /api/routes/tracked': { routes: ['15', '15/A'] }, ...handlers });
-  const ctx = Object.assign(ctxOf({}), ctxOver);
+  const ctx = Object.assign(ctxOf({}), { pollMs: 5 }, ctxOver);
   await (await import('../js/pages/routes.js')).render(ctx);
   await settle();
   const m = ctx.main;
   const date = m.byTag('input').find((i) => i.getAttribute('id') === 'day-date');
   const sel = m.byTag('select').find((s) => s.getAttribute('id') === 'day-route');
+  const endIn = m.byTag('input').find((i) => i.getAttribute('id') === 'day-end');
   const click = async (re) => { const b = m.byText('button', re)[0]; b.dispatch('click', { currentTarget: b }); await settle(); };
   const status = () => m.all((n) => n.getAttribute('id') === 'day-status')[0];
-  return { calls, ctx, m, date, sel, click, status, rm: () => m.byText('button', /Remove these rows/)[0] };
+  return { calls, ctx, m, date, endIn, sel, click, status, rm: () => m.byText('button', /Remove these rows/)[0] };
 }
 
 test('remove day: section has labelled date (default today in Dublin) and route select', async () => {
@@ -478,7 +483,7 @@ test('remove day: changing date or route hides the remove button and clears the 
 });
 
 test('remove day: remove posts confirm=previewed date and shows the result', async () => {
-  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': { ...PREV, arrivals: 1234, skipped_months: ['x.db.gz'] } });
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': DONE({ skipped_months: ['x.db.gz'] }) });
   p.date.value = '2026-11-10';
   await p.click(/^Preview$/);
   await p.click(/Remove these rows/);
@@ -495,7 +500,7 @@ test('remove day: page code never calls non-DOM helpers (.all/.byTag/.byText exi
 });
 
 test('remove day: clicking Remove sends the POST and shows the result', async () => {
-  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': PREV });
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': DONE() });
   await p.click(/^Preview$/);
   const b = p.rm();
   b.dispatch('click', { currentTarget: b });
@@ -507,7 +512,7 @@ test('remove day: clicking Remove sends the POST and shows the result', async ()
 test('remove day: both buttons are disabled while the removal runs', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });
-  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': async () => { await gate; return PREV; } });
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': async () => { await gate; return DONE(); } });
   await p.click(/^Preview$/);
   const rmBtn = p.rm();
   rmBtn.dispatch('click', { currentTarget: rmBtn });
@@ -519,8 +524,8 @@ test('remove day: both buttons are disabled while the removal runs', async () =>
   assert.equal(p.m.byText('button', /^Preview$/)[0].disabled, false);
 });
 
-test('remove day: 409 with done shows partial counts; 422 and 403 show the error', async () => {
-  let p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': { __status: 409, body: { detail: 'file locked', done: { arrivals: 10, forecasts: 2, samples: 3, gaps: 0 } } } });
+test('remove day: job error shows message and partial counts; 422 and 403 show the error', async () => {
+  let p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': JOB({ state: 'error', error: 'file locked', done: { arrivals: 10, forecasts: 2, samples: 3, gaps: 0 } }) });
   await p.click(/^Preview$/);
   await p.click(/Remove these rows/);
   assert.match(text(p.status()), /file locked/);
@@ -553,7 +558,7 @@ const LIVE = /This day is still being recorded\. Buses in flight right now may e
 const plusDay = (iso, n) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 
 test('remove day: live-day warning for today and future, not for past; shown with preview and after removal', async () => {
-  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': PREV });
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': DONE() });
   p.date.value = plusDay(dublinToday(), -1);
   await p.click(/^Preview$/);
   assert.doesNotMatch(text(p.status()), LIVE);
@@ -570,6 +575,115 @@ test('remove day: live-day warning for today and future, not for past; shown wit
   p.date.value = plusDay(dublinToday(), -2);
   p.date.dispatch('change');
   assert.doesNotMatch(text(p.status()), LIVE);
+});
+
+const pbtn = (p) => p.m.byText('button', /^Preview$/)[0];
+const prog = (p) => p.m.all((n) => n.getAttribute('id') === 'day-progress')[0];
+
+test('remove day: end field is optional, labelled, and changing it resets the preview', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV });
+  assert.ok(p.endIn);
+  assert.equal(p.endIn.getAttribute('type'), 'date');
+  assert.ok(p.m.byTag('label').some((l) => l.getAttribute('for') === 'day-end'));
+  await p.click(/^Preview$/);
+  assert.doesNotMatch(p.calls.at(-1).url, /end=/);
+  assert.ok(p.rm());
+  p.endIn.value = '2026-11-11'; p.endIn.dispatch('change');
+  assert.equal(p.rm(), undefined);
+});
+
+test('remove day: range preview lists days, button shows day count, POST confirm is date..end', async () => {
+  const days = [{ date: '2026-11-10', arrivals: 1000, forecasts: 2, samples: 3, gaps: 4 }, { date: '2026-11-11', arrivals: 234, forecasts: 3, samples: 3, gaps: 3 }];
+  const p = await dayPage({ 'GET /api/data/day': { ...PREV, end: '2026-11-11', days }, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': JOB({ day_count: 2 }) });
+  p.date.value = '2026-11-10'; p.endIn.value = '2026-11-11';
+  await p.click(/^Preview$/);
+  assert.match(p.calls.at(-1).url, /date=2026-11-10&end=2026-11-11/);
+  assert.match(text(p.status()), /Would remove 1,234 arrivals.* for 2026-11-10 to 2026-11-11/);
+  assert.equal(p.status().byTag('li').length, 2);
+  assert.match(text(p.status().byTag('li')[0]), /2026-11-10.*1,000 arrivals/);
+  assert.match(text(p.rm()), /Remove these rows \(1,234 arrivals, 2 days\)/);
+  await p.click(/Remove these rows/);
+  const c = p.calls.find((x) => x.key === 'POST /api/data/day/remove');
+  assert.equal(c.url, '/api/data/day/remove?date=2026-11-10&end=2026-11-11&confirm=2026-11-10..2026-11-11');
+});
+
+test('remove day: running removal shows busy button, progress and day text; done clears the state', async () => {
+  let finished = false;
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT,
+    'GET /api/data/day/remove/j1': () => (!finished ? JOB({ day_count: 2, current_day: '2026-11-05', done: { arrivals: 100, forecasts: 0, samples: 1200, gaps: 0 }, total: { arrivals: 1000, forecasts: 100, samples: 1200, gaps: 100 } }) : DONE()) });
+  await p.click(/^Preview$/);
+  const b = p.rm();
+  b.dispatch('click', { currentTarget: b });
+  await settle(20);
+  assert.equal(b.getAttribute('aria-busy'), 'true');
+  assert.match(b.getAttribute('class'), /\bbusy\b/);
+  assert.match(text(b), /Removing/);
+  const pr = prog(p);
+  assert.ok(pr, 'progress element');
+  assert.equal(pr.getAttribute('max'), '2400');
+  assert.equal(pr.value, 1300);
+  assert.match(text(p.status()), /day 1 of 2 \(2026-11-05\): 1,200 samples removed/);
+  finished = true;
+  await settle(40);
+  assert.match(text(p.status()), /Removed 1,234 arrivals, 5 forecasts, 6 samples, 7 gaps\./);
+  assert.equal(prog(p), undefined);
+  assert.equal(b.getAttribute('aria-busy'), null);
+  assert.doesNotMatch(b.getAttribute('class'), /busy/);
+  assert.equal(pbtn(p).disabled, false);
+});
+
+test('remove day: job error with nothing done shows only the error', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': JOB({ state: 'error', error: 'boom' }) });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  assert.match(text(p.status()), /boom/);
+  assert.doesNotMatch(text(p.status()), /Part of the day/);
+  assert.ok(p.rm(), 'remove stays available to retry');
+  assert.equal(p.rm().getAttribute('aria-busy'), null);
+});
+
+test('remove day: 409 with job_id attaches and polls; 409 without job_id just shows the detail', async () => {
+  let p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': { __status: 409, body: { detail: 'already running', job_id: 'j1' } }, 'GET /api/data/day/remove/j1': DONE() });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  assert.ok(p.calls.some((c) => c.key === 'GET /api/data/day/remove/j1'));
+  assert.match(text(p.status()), /Removed 1,234/);
+  p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': { __status: 409, body: { detail: 'backup running', job_id: null } } });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  await settle(30);
+  assert.match(text(p.status()), /backup running/);
+  assert.ok(!p.calls.some((c) => c.key.startsWith('GET /api/data/day/remove/')));
+  assert.equal(p.rm().getAttribute('aria-busy'), null);
+});
+
+test('remove day: poll 404 says status lost and stops polling', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': fail(404, 'gone') });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  await settle(30);
+  assert.match(text(p.status()), /Status lost; run Preview to check\. Running the removal again finishes it\./);
+  assert.equal(p.calls.filter((c) => c.key === 'GET /api/data/day/remove/j1').length, 1);
+  assert.equal(pbtn(p).disabled, false);
+});
+
+test('remove day: polling stops when the page is destroyed or the form changes', async () => {
+  const ac = new AbortController();
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': JOB() }, { signal: ac.signal });
+  await p.click(/^Preview$/);
+  await p.click(/Remove these rows/);
+  await settle(20);
+  ac.abort();
+  const n = p.calls.length;
+  await settle(30);
+  assert.equal(p.calls.length, n);
+  const q = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': ACCEPT, 'GET /api/data/day/remove/j1': JOB() });
+  await q.click(/^Preview$/);
+  await q.click(/Remove these rows/);
+  q.date.dispatch('change');
+  const m = q.calls.length;
+  await settle(30);
+  assert.ok(q.calls.length <= m + 1);
 });
 
 test('heatQuery drops only weekdays and hours', async () => {

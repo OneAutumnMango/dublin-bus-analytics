@@ -77,8 +77,9 @@ export function makeApi(fetchFn = globalThis.fetch) {
     stopStats: (s, route, q, o) => get(`/api/stops/${enc(s)}/stats${qs({ route, ...q })}`, o),
     series: (trip, stop, q, o) => get(`/api/trips/${enc(trip)}/series${qs({ stop, ...q })}`, o),
     runBackup: (o) => request('/api/backup', { ...o, method: 'POST', timeout: 120000, fetchFn }),
-    dayPreview: ({ date, route } = {}, o) => get(`/api/data/day${qs({ date, route })}`, o),
-    removeDay: ({ date, route } = {}, o) => request(`/api/data/day/remove${qs({ date, route, confirm: date })}`, { ...o, method: 'POST', timeout: 120000, fetchFn }),
+    dayPreview: ({ date, end, route } = {}, o) => get(`/api/data/day${qs({ date, end, route })}`, o),
+    removeDay: ({ date, end, route } = {}, o) => request(`/api/data/day/remove${qs({ date, end, route, confirm: end ? `${date}..${end}` : date })}`, { ...o, method: 'POST', fetchFn }),
+    removeJob: (jobId, o) => get(`/api/data/day/remove/${enc(jobId)}`, o),
   };
 }
 

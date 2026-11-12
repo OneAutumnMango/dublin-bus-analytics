@@ -41,47 +41,94 @@ export async function render(ctx) {
     for (const name of r.routes || []) { routeSel.append(h('option', { value: name }, name)); daySel.append(h('option', { value: name }, name)); }
   }).catch(() => { /* keep just "All routes" */ });
 
-  // Remove a day of data: preview first, the removal is tied to the exact date + route that was previewed.
+  // Remove a day (or range) of data: preview first, the removal is tied to the exact dates + route that were previewed.
+  // The server removes in the background; we poll the job and show progress.
   const dateIn = h('input', { type: 'date', id: 'day-date', value: todayDublin(), on: { change: () => reset(), input: () => reset() } });
+  const endIn = h('input', { type: 'date', id: 'day-end', on: { change: () => reset(), input: () => reset() } });
   const dayStatus = h('div', { id: 'day-status', role: 'status', class: 'muted' });
   const rmSlot = h('span', {});
   const previewBtn = h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => preview() } }, 'Preview');
+  const pollMs = ctx.pollMs ?? 1000;
   let token = 0; // bumped on every change/preview/remove so late answers are dropped
-  const say = (...lines) => dayStatus.replaceChildren(...lines.filter(Boolean).map((l) => h('p', {}, l)));
+  const say = (...lines) => dayStatus.replaceChildren(...lines.filter(Boolean).map((l) => (typeof l === 'string' ? h('p', {}, l) : l)));
   const counts = (r) => `${fmtCount(r.arrivals)} arrivals, ${fmtCount(r.forecasts)} forecasts, ${fmtCount(r.samples)} samples, ${fmtCount(r.gaps)} gaps`;
+  const sum = (r) => (r ? (r.arrivals || 0) + (r.forecasts || 0) + (r.samples || 0) + (r.gaps || 0) : 0);
   const liveNote = (date) => (date >= todayDublin() ? 'This day is still being recorded. Buses in flight right now may end up with incomplete forecast data and the day may not be completely empty afterwards. Removing a finished day is safest.' : '');
   const skipNote = (r) => (r.skipped_months?.length ? `Archived (gzipped) months cannot be edited and will be skipped: ${r.skipped_months.join(', ')}. Samples there stay.` : '');
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   function reset() { token++; rmSlot.replaceChildren(); dayStatus.replaceChildren(); previewBtn.disabled = false; }
   async function preview() {
-    const date = dateIn.value, route = daySel.value;
+    const date = dateIn.value, end = endIn.value, route = daySel.value;
     if (!date) { say('Choose a date first.'); return; }
+    if (end && end < date) { say('The end date must not be before the start date.'); return; }
     const my = ++token;
     rmSlot.replaceChildren();
     say('Checking…');
     try {
-      const r = await api.dayPreview({ date, route }, { signal });
+      const r = await api.dayPreview({ date, end, route }, { signal });
       if (signal.aborted || my !== token) return;
-      if (!(r.arrivals + r.forecasts + r.samples + r.gaps)) { say('Nothing recorded for that day.', skipNote(r)); return; }
-      say(`Would remove ${counts(r)} for ${date}${route ? ` (route ${route})` : ''}.`, skipNote(r), liveNote(date));
-      rmSlot.replaceChildren(h('button', { class: 'btn btn-danger solid', type: 'button', on: { click: (ev) => remove(date, route, ev.currentTarget) } }, `Remove these rows (${fmtCount(r.arrivals)} arrivals)`));
+      const last = end || date;
+      if (!sum(r)) { say(end ? 'Nothing recorded for those days.' : 'Nothing recorded for that day.', skipNote(r)); return; }
+      const days = r.days || [];
+      const list = days.length > 1 ? h('ul', { class: 'day-list' }, days.map((d) => h('li', {}, `${d.date}: ${counts(d)}`))) : null;
+      const span = end && end !== date ? `${date} to ${end}` : date;
+      say(`Would remove ${counts(r)} for ${span}${route ? ` (route ${route})` : ''}.`, list, skipNote(r), liveNote(last));
+      const label = `Remove these rows (${fmtCount(r.arrivals)} arrivals${days.length > 1 ? `, ${days.length} days` : ''})`;
+      rmSlot.replaceChildren(h('button', { class: 'btn btn-danger solid', type: 'button', 'data-label': label, on: { click: (ev) => remove({ date, end, route }, ev.currentTarget) } }, label));
     } catch (e) { if (!isAbort(e) && !signal.aborted && my === token) say(e.message); }
   }
-  async function remove(date, route, rmBtn) {
-    const my = ++token;
-    const busy = (v) => { previewBtn.disabled = v; if (rmBtn) rmBtn.disabled = v; };
-    busy(true);
-    say('Removing…');
-    try {
-      const r = await api.removeDay({ date, route }, { signal });
+  function showProgress(r) {
+    const done = sum(r.done), total = sum(r.total);
+    const props = { id: 'day-progress', max: total || 1 };
+    if (total) props.value = done;
+    const dayNo = Math.min((r.day_index || 0) + 1, r.day_count || 1);
+    const where = r.day_count ? `day ${dayNo} of ${r.day_count}${r.current_day ? ` (${r.current_day})` : ''}: ` : '';
+    say(h('p', {}, h('progress', props), ` ${where}${fmtCount(r.done?.samples || 0)} samples removed…`));
+  }
+  // Polls a removal job until it finishes, fails, is lost, or this view is superseded.
+  async function follow(jobId, my, last, finish) {
+    for (;;) {
+      let r;
+      try { r = await api.removeJob(jobId, { signal }); } catch (e) {
+        if (isAbort(e) || signal.aborted || my !== token) return;
+        if (e instanceof ApiError && e.status === 404) { finish(); say('Status lost; run Preview to check. Running the removal again finishes it.'); return; }
+        finish(); say(`${e.message}. Run Preview to check what is left.`); return;
+      }
       if (signal.aborted || my !== token) return;
-      rmSlot.replaceChildren();
-      say(`Removed ${counts(r)}.`, skipNote(r), liveNote(date));
+      if (r.state === 'done') { rmSlot.replaceChildren(); finish(); say(`Removed ${counts(r.done || {})}.`, skipNote(r), liveNote(last)); return; }
+      if (r.state === 'error') {
+        finish();
+        say(r.error || 'The removal failed.', sum(r.done) ? `Part of the day was removed: ${counts({ arrivals: 0, forecasts: 0, samples: 0, gaps: 0, ...r.done })}; try again.` : '');
+        return;
+      }
+      showProgress(r);
+      await sleep(pollMs);
+      if (signal.aborted || my !== token) return;
+    }
+  }
+  async function remove({ date, end, route }, rmBtn) {
+    const my = ++token;
+    const label = rmBtn?.getAttribute('data-label') || '';
+    const busy = (v) => {
+      previewBtn.disabled = v;
+      if (!rmBtn) return;
+      rmBtn.disabled = v;
+      rmBtn.setAttribute('class', v ? 'btn btn-danger solid busy' : 'btn btn-danger solid');
+      if (v) { rmBtn.setAttribute('aria-busy', 'true'); rmBtn.textContent = 'Removing…'; } else { rmBtn.removeAttribute('aria-busy'); rmBtn.textContent = label; }
+    };
+    const finish = () => { if (!signal.aborted) busy(false); };
+    busy(true);
+    say('Starting…');
+    let jobId = null;
+    try {
+      jobId = (await api.removeDay({ date, end, route }, { signal })).job_id;
     } catch (e) {
       if (isAbort(e) || signal.aborted || my !== token) return;
-      if (!(e instanceof ApiError)) { say(`Unexpected error: ${e.message}`); return; }
-      const d = e.body?.done;
-      say(e.message, d && `Part of the day was removed: ${counts({ arrivals: 0, forecasts: 0, samples: 0, gaps: 0, ...d })}; try again.`);
-    } finally { if (!signal.aborted) busy(false); }
+      if (e instanceof ApiError && e.status === 409 && e.body?.job_id) jobId = e.body.job_id;
+      else { finish(); say(e instanceof ApiError ? e.message : `Unexpected error: ${e.message}`); return; }
+    }
+    if (signal.aborted || my !== token) return;
+    await follow(jobId, my, end || date, finish);
   }
 
   put(main, h('h1', {}, 'Routes'),
@@ -93,7 +140,7 @@ export async function render(ctx) {
       h('div', { class: 'row' }, h('label', { for: 'export-route' }, 'Route'), routeSel,
         h('label', { for: 'export-gz', class: 'inline' }, gzBox, ' compressed (.gz)'), exportLink),
       h('h3', {}, 'Remove a day of data'),
-      h('p', { class: 'hint' }, 'Permanently deletes the arrivals, forecasts, samples and gaps recorded on one Europe/Dublin day. There is no undo and no automatic backup: run a backup first. Preview shows what would go; nothing is deleted until you press the remove button.'),
-      h('div', { class: 'row' }, h('label', { for: 'day-date' }, 'Date'), dateIn, h('label', { for: 'day-route' }, 'Route'), daySel, previewBtn, rmSlot),
+      h('p', { class: 'hint' }, 'Permanently deletes the arrivals, forecasts, samples and gaps recorded on one Europe/Dublin day, or on a range of days (leave To empty for a single day; up to 62 days). There is no undo and no automatic backup: run a backup first. Preview shows what would go; nothing is deleted until you press the remove button. Removal runs in the background and progress is shown here.'),
+      h('div', { class: 'row' }, h('label', { for: 'day-date' }, 'From'), dateIn, h('label', { for: 'day-end' }, 'To (optional)'), endIn, h('label', { for: 'day-route' }, 'Route'), daySel, previewBtn, rmSlot),
       dayStatus));
 }

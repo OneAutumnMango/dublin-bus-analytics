@@ -118,6 +118,19 @@ test('dayPreview and removeDay build their URLs', async () => {
   ]);
 });
 
+test('range dayPreview/removeDay and removeJob', async () => {
+  const urls = [];
+  const api = A.makeApi(async (url, init) => { urls.push([init.method, url]); return resp(200, {}); });
+  await api.dayPreview({ date: '2026-11-10', end: '2026-11-12' });
+  await api.removeDay({ date: '2026-11-10', end: '2026-11-12', route: '15' });
+  await api.removeJob('a/b');
+  assert.deepEqual(urls, [
+    ['GET', '/api/data/day?date=2026-11-10&end=2026-11-12'],
+    ['POST', '/api/data/day/remove?date=2026-11-10&end=2026-11-12&route=15&confirm=2026-11-10..2026-11-12'],
+    ['GET', '/api/data/day/remove/a%2Fb'],
+  ]);
+});
+
 test('409 errors carry the server detail and parsed body', async () => {
   const api = A.makeApi(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ detail: 'busy', done: { arrivals: 3 } }) }));
   await assert.rejects(api.removeDay({ date: '2026-11-11' }), (e) => e.status === 409 && e.message === 'busy' && e.body.done.arrivals === 3);

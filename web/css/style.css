@@ -89,6 +89,13 @@ figure.card { margin-bottom: var(--s5); }
 .card .btn-danger.solid { background: var(--err); color: var(--err-bg); border-color: var(--err); font-weight: 600; }
 .card .btn-danger.solid:hover { background: var(--err); filter: brightness(1.1); }
 #day-status p { margin: var(--s1) 0 0; }
+#day-status .day-list { margin: var(--s1) 0 0; padding-left: var(--s5); }
+#day-progress { vertical-align: middle; width: 12em; max-width: 100%; height: 0.8em; accent-color: var(--accent); }
+.btn.busy { opacity: 0.55; cursor: progress; }
+.btn.busy::before { content: ""; width: 0.9em; height: 0.9em; margin-right: var(--s2); box-sizing: border-box; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn.busy::before { animation: none; border-right-color: currentColor; } }
 input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--control-border); border-radius: var(--radius-sm); padding: 0 var(--s2);
   min-height: 30px; max-width: 100%; transition: border-color .15s, box-shadow .15s; }
 input:hover, select:hover { border-color: var(--accent); }
