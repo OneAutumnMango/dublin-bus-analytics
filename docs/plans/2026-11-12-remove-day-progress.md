@@ -96,11 +96,11 @@ test('remove day: clicking Remove sends the POST and shows the result', async ()
 
 **Does NOT cover:** cancel, multi-process, persistence across restart.
 
-- [ ] **Step 1: Write failing tests:** start over 2 seeded days, poll `get` until done → counts equal `preview_range` totals, `day_index == 2`; second `start` while running raises `JobBusy` carrying the id; a patched `day.remove` raising `DayBusy` on day 2 → `state=="error"`, day 1 counts present, error names day 2; a patched `day.remove` raising `RuntimeError` → `state=="error"` and `lock` released; `get("nope")` is None; skipped gz month appears in `skipped_months`.
-- [ ] **Step 2:** `.venv/bin/python -m pytest tests/maintenance/test_jobs.py` → FAIL.
-- [ ] **Step 3:** Implement with a module lock protecting a dict of job records; thread loop calls `day.remove(..., progress=cb)` per day and folds each day's counts into `done`; `total` from `preview_range` taken at start inside the thread's first step (before state flips from "starting"; set `state="running"` immediately so `get` is never empty).
-- [ ] **Step 4:** Run file → PASS.
-- [ ] **Step 5: Commit** `git commit -m "maintenance: background removal job with progress"`
+- [x] **Step 1: Write failing tests:** start over 2 seeded days, poll `get` until done → counts equal `preview_range` totals, `day_index == 2`; second `start` while running raises `JobBusy` carrying the id; a patched `day.remove` raising `DayBusy` on day 2 → `state=="error"`, day 1 counts present, error names day 2; a patched `day.remove` raising `RuntimeError` → `state=="error"` and `lock` released; `get("nope")` is None; skipped gz month appears in `skipped_months`.
+- [x] **Step 2:** `.venv/bin/python -m pytest tests/maintenance/test_jobs.py` → FAIL.
+- [x] **Step 3:** Implement with a module lock protecting a dict of job records; thread loop calls `day.remove(..., progress=cb)` per day and folds each day's counts into `done`; `total` from `preview_range` taken at start inside the thread's first step (before state flips from "starting"; set `state="running"` immediately so `get` is never empty).
+- [x] **Step 4:** Run file → PASS.
+- [x] **Step 5: Commit** `git commit -m "maintenance: background removal job with progress"`
 
 ### Task 4: API endpoints
 
