@@ -41,7 +41,7 @@
 
 **Security flag:** `none`
 
-- [ ] **Step 1: Write failing tests** in the `// ---- remove a day of data ----` section:
+- [x] **Step 1: Write failing tests** in the `// ---- remove a day of data ----` section:
 ```js
 test('remove day: page code never calls non-DOM helpers (.all/.byTag/.byText exist only in fakedom)', async () => {
   const src = await (await import('node:fs/promises')).readFile(new URL('../js/pages/routes.js', import.meta.url), 'utf8');
@@ -49,10 +49,10 @@ test('remove day: page code never calls non-DOM helpers (.all/.byTag/.byText exi
 });
 test('remove day: clicking Remove sends the POST and shows the result', async () => { /* use dayPage with PREV + a POST handler; preview, click p.rm(); settle; assert calls include 'POST /api/data/day/remove' and status text matches /Removed/ */ });
 ```
-- [ ] **Step 2:** Run `node --test web/test/pages.test.mjs` → both FAIL (scan finds `rmSlot.all`).
-- [ ] **Step 3:** In `remove(date, route)` capture the button via the click handler: change the preview's button handler to `on: { click: (ev) => remove(date, route, ev.currentTarget) }` and `remove(date, route, rmBtn)`; delete the `rmSlot.all` line. Wrap the body so any non-abort exception calls `say(\`Unexpected error: ${e.message}\`)`.
-- [ ] **Step 4:** Run `node --test web/test/` → PASS.
-- [ ] **Step 5: Commit** `git add web && git commit -m "Fix Remove day button: stop calling non-DOM .all"`
+- [x] **Step 2:** Run `node --test web/test/pages.test.mjs` → both FAIL (scan finds `rmSlot.all`).
+- [x] **Step 3:** In `remove(date, route)` capture the button via the click handler: change the preview's button handler to `on: { click: (ev) => remove(date, route, ev.currentTarget) }` and `remove(date, route, rmBtn)`; delete the `rmSlot.all` line. Wrap the body so any non-abort exception calls `say(\`Unexpected error: ${e.message}\`)`.
+- [x] **Step 4:** Run `node --test web/test/` → PASS.
+- [x] **Step 5: Commit** `git add web && git commit -m "Fix Remove day button: stop calling non-DOM .all"`
 
 ### Task 2: Range parsing, preview_range, progress callback
 
@@ -72,11 +72,11 @@ test('remove day: clicking Remove sends the POST and shows the result', async ()
 
 **Does NOT cover:** non-contiguous days; ranges over 62 days.
 
-- [ ] **Step 1: Write failing tests:** `parse_range("2026-11-05", None) == [date(2026,11,5)]`; 3-day range length 3; `end` before date → DayError; 63 days → DayError; malformed `end` → DayError; `preview_range` over two seeded days sums counts and lists both in `days`; `remove(..., progress=cb)` calls `cb` with stages `samples` then `arrivals` and the dict passed has monotonically growing counts.
-- [ ] **Step 2:** `.venv/bin/python -m pytest tests/maintenance/test_day.py` → FAIL (missing names).
-- [ ] **Step 3:** Implement the signatures above; call `progress` next to each `_between_chunks()` (samples loop lives in `_samples_one`: thread `progress` through `_scan_months` via `state`, e.g. `state["_progress"]`, stripped before return).
-- [ ] **Step 4:** Run test file → PASS.
-- [ ] **Step 5: Commit** `git commit -m "day: range parsing, range preview, progress callback"`
+- [x] **Step 1: Write failing tests:** `parse_range("2026-11-05", None) == [date(2026,11,5)]`; 3-day range length 3; `end` before date → DayError; 63 days → DayError; malformed `end` → DayError; `preview_range` over two seeded days sums counts and lists both in `days`; `remove(..., progress=cb)` calls `cb` with stages `samples` then `arrivals` and the dict passed has monotonically growing counts.
+- [x] **Step 2:** `.venv/bin/python -m pytest tests/maintenance/test_day.py` → FAIL (missing names).
+- [x] **Step 3:** Implement the signatures above; call `progress` next to each `_between_chunks()` (samples loop lives in `_samples_one`: thread `progress` through `_scan_months` via `state`, e.g. `state["_progress"]`, stripped before return).
+- [x] **Step 4:** Run test file → PASS.
+- [x] **Step 5: Commit** `git commit -m "day: range parsing, range preview, progress callback"`
 
 ### Task 3: Job runner
 
