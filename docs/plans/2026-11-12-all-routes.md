@@ -159,7 +159,7 @@ def test_all_heatmap_empty(env):
 
 **Does NOT cover:** exact percentiles beyond +/-3600 s (clamped).
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
 
 ```python
 def test_hist_percentile_matches_numpy():
@@ -196,10 +196,10 @@ def test_all_forecast_no_tracked(env):
     assert [h["horizon_min"] for h in hs] == [30, 20, 10, 5, 2] and all(h["n"] == 0 and h["p_low"] is None for h in hs)
 ```
 
-- [ ] **Step 2: Run** `... -k "hist_percentile or all_forecast"` — Expected: FAIL (ImportError / 404).
-- [ ] **Step 3: Implement.** `_forecast_parts_db` uses the same SQL as `_forecast_db` (copy its select/join/filters verbatim, including `_tz` on `scheduled` at index 2) and fills per-horizon `np.bincount`-style counts per chunk (`np.add.at` or `np.bincount(minlength=...)`), plus running sum and abs-sum computed from unclamped errors. `_hist_percentile`: `rank = q*(n-1)`; `lo, hi = floor, ceil`; find values at those order-statistic ranks from `np.cumsum(counts)` via `np.searchsorted(cum, rank+1)`; interpolate `v_lo + (v_hi - v_lo) * (rank - lo)`; offset back by `FC_CLAMP`. Endpoint merges counts (elementwise add), sums, abs-sums across routes; `n==0` gives null stats; `low_n = n < LOW_N`.
-- [ ] **Step 4: Run** same command. Expected: PASS. Then run the whole file once: `... pytest -q tests/api/test_routes.py` — Expected: all pass (no regressions).
-- [ ] **Step 5: Checkpoint.**
+- [x] **Step 2: Run** `... -k "hist_percentile or all_forecast"` — Expected: FAIL (ImportError / 404).
+- [x] **Step 3: Implement.** `_forecast_parts_db` uses the same SQL as `_forecast_db` (copy its select/join/filters verbatim, including `_tz` on `scheduled` at index 2) and fills per-horizon `np.bincount`-style counts per chunk (`np.add.at` or `np.bincount(minlength=...)`), plus running sum and abs-sum computed from unclamped errors. `_hist_percentile`: `rank = q*(n-1)`; `lo, hi = floor, ceil`; find values at those order-statistic ranks from `np.cumsum(counts)` via `np.searchsorted(cum, rank+1)`; interpolate `v_lo + (v_hi - v_lo) * (rank - lo)`; offset back by `FC_CLAMP`. Endpoint merges counts (elementwise add), sums, abs-sums across routes; `n==0` gives null stats; `low_n = n < LOW_N`.
+- [x] **Step 4: Run** same command. Expected: PASS. Then run the whole file once: `... pytest -q tests/api/test_routes.py` — Expected: all pass (no regressions).
+- [x] **Step 5: Checkpoint.**
 
 ---
 
@@ -313,8 +313,8 @@ def test_all_forecast_no_tracked(env):
 
 **Does NOT cover:** performance on the Pi (measured separately; spec non-goal).
 
-- [ ] **Step 1: Edit** the two docs as described (exact text above).
-- [ ] **Step 2: Run backend suite** one file per process: `for f in tests/api/test_routes.py tests/test_docs.py tests/test_seed_demo.py; do ulimit -v 2500000; OPENBLAS_NUM_THREADS=1 ../.venv/bin/pytest -q $f || break; done` — Expected: all pass (`test_docs.py` may assert README/docs structure; fix wording if it fails).
-- [ ] **Step 3: Run frontend suite** `cd web && npm test` — Expected: all pass.
+- [x] **Step 1: Edit** the two docs as described (exact text above).
+- [x] **Step 2: Run backend suite** one file per process: `for f in tests/api/test_routes.py tests/test_docs.py tests/test_seed_demo.py; do ulimit -v 2500000; OPENBLAS_NUM_THREADS=1 ../.venv/bin/pytest -q $f || break; done` — Expected: all pass (`test_docs.py` may assert README/docs structure; fix wording if it fails).
+- [x] **Step 3: Run frontend suite** `cd web && npm test` — Expected: all pass.
 - [ ] **Step 4: Visual check (by the main session, not a subagent):** start the app with demo data (`scripts/seed_demo` per README), open `#/all` in the built-in browser; confirm chart with mean diamond + median ring, sort headers, heatmap, forecast, light and dark theme, narrow width.
 - [ ] **Step 5: Checkpoint:** report results; ask the user whether to commit/merge.

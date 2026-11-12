@@ -35,6 +35,7 @@ Open http://127.0.0.1:8081. The pages (hash routes):
 - **Stop**: delay summary and histogram for one stop, and its most recent arrivals.
 - **Trip**: how the predictions for one trip at one stop evolved over time.
 - **Analytics**: mean delay by weekday and hour, where time is lost along the route, and how accurate the 30/20/10/5/2-minute forecasts were.
+- **All routes** (`#/all`, button at the top of the tracked list): a per-route comparison of mean and median delay, plus the weekday and hour heatmap and forecast accuracy pooled across every tracked route.
 
 The fake server returns no live arrivals, so only the seeded history appears.
 

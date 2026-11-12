@@ -64,3 +64,7 @@ Compare that local time with the NTA / Transport for Ireland timetable for the s
 - A `409`, `503` or job `error` names no raw error text; after an `error` with `done` counts, rerunning the same removal completes it. After restarting the app, polling an old job id gives 404.
 - Cross-origin check: `curl -X POST -H "Origin: http://evil.example" ".../api/data/day/remove?date=<day>&confirm=<day>"` returns 403 (non-browser clients can still omit Origin; no authentication exists).
 - Preview today's date in the web UI: the counts are followed by the "This day is still being recorded" warning (also after removal). A past date shows no such warning.
+
+### 6. All routes page (manual)
+
+- All routes page (`#/all`): chart legibility with 20+ routes, in light and dark themes; sorting the per-route table by keyboard.
