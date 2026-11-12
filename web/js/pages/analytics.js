@@ -4,10 +4,11 @@ import { forecastTipData } from '../tipdata.js';
 import { api, isAbort } from '../api.js';
 import { accumulationGeometry, heatmapGrid, renderAccumulation, renderHeatmap, renderRangeChart, rangeDomain, rangeGeometry, WEEKDAYS } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, notice, put } from '../dom.js';
-import { buildHash, directionLabels, fmtCount, fmtDelay, fmtNum, plural, stopNameMap, stopCodeMap, stopLabel } from '../lib.js';
+import { buildHash, controlsToQuery, hoursList, directionLabels, fmtCount, fmtDelay, fmtNum, plural, stopNameMap, stopCodeMap, stopLabel } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
+export const heatQuery = ({ weekdays, hours, ...rest }) => rest;
 export const forecastQuery = ({ pct_lo, pct_hi, ...rest }) => rest;
 const BUCKETS = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5];
 
@@ -24,7 +25,7 @@ export async function render(ctx) {
   const [heat, acc, fc] = sections.map((el) => region(el, ctx.signal));
   const q = s.apiQuery, o = (signal) => ({ signal });
   await Promise.all([
-    heat.load((sig) => api.heatmap(route, q, o(sig)), (d, el) => drawHeat(route, d, el), { announce: (d) => `Route ${route} heatmap: loaded ${plural((d.cells || []).length, 'cell')}` }),
+    heat.load((sig) => api.heatmap(route, heatQuery(q), o(sig)), (d, el) => drawHeat(route, d, el, ctx, s), { announce: (d) => `Route ${route} heatmap: loaded ${plural((d.cells || []).length, 'cell')}` }),
     acc.load(async (sig) => {
       const [d, stops] = await Promise.all([api.accumulation(route, q, o(sig)), api.stopsOf(route, o(sig)).catch((e) => { if (isAbort(e)) throw e; return null; })]);
       return { d, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
@@ -40,17 +41,24 @@ function legend(maxAbs) {
     h('span', {}, 'late (orange)'), h('span', { class: 'key' }, `Colour saturates at ±${fmtNum(maxAbs / 60, 1)} min · grey cell: no data · small dot in the corner and italic table row: fewer than 10 samples · each cell shows the mean delay in minutes`));
 }
 
-function drawHeat(route, d, el) {
+function drawHeat(route, d, el, ctx, s) {
+  const c = s.controls, hrs = hoursList(c.hFrom, c.hTo);
+  const selected = c.weekdays.length === 1 && hrs && hrs.length === 1 ? { wd: c.weekdays[0], hour: hrs[0] } : null;
+  const onSelect = (wd, hour) => {
+    const same = selected && selected.wd === wd && selected.hour === hour;
+    const next = same ? { ...c, weekdays: [], hFrom: '', hTo: '' } : { ...c, weekdays: [wd], hFrom: hour, hTo: hour };
+    ctx.go(buildHash('analytics', { route }, controlsToQuery(next)));
+  };
   put(el, h('h2', {}, 'When is the route late? Mean delay by weekday and hour'), ...filterNotices(d));
   const cells = (d.cells || []);
   if (!cells.length) { put(el, emptyState('No data for this selection.')); return; }
   const grid = heatmapGrid(cells, { cap: getSettings().charts.heatCap * 60 });
   const svg = renderHeatmap(grid, { title: `Mean delay by weekday and hour, route ${route}`,
-    desc: `${cells.length} weekday and hour combinations have data (n=${fmtCount(d.n)} arrivals). Colour runs from blue (early) through grey (on time) to orange (late); the cell text is the mean delay in minutes. Colour saturates at ${fmtNum(grid.maxAbs / 60, 1)} min.` });
+    desc: `${cells.length} weekday and hour combinations have data (n=${fmtCount(d.n)} arrivals). Colour runs from blue (early) through grey (on time) to orange (late); the cell text is the mean delay in minutes. Colour saturates at ${fmtNum(grid.maxAbs / 60, 1)} min. Each square is a button: activate it to filter the charts below to that day and hour.`, selected, onSelect });
   const table = dataTable({ caption: 'Mean delay per weekday and hour (Dublin time; negative = early)', rows: cells.filter((c) => c.n > 0), columns: [
     { label: 'Weekday', get: (c) => WEEKDAYS[c.weekday] }, { label: 'Hour', get: (c) => `${String(c.hour).padStart(2, '0')}:00` },
     { label: 'n', num: true, get: (c) => fmtCount(c.n) }, { label: 'Mean delay', num: true, get: (c) => fmtDelay(c.mean_delay) }] });
-  put(el, figure({ title: 'Heatmap', svg, table, legend: legend(grid.maxAbs), level: 'h3' }), h('p', { class: 'hint' }, windowText(d)));
+  put(el, figure({ title: 'Heatmap', svg, table, legend: legend(grid.maxAbs), level: 'h3' }), h('p', { class: 'hint' }, 'Click a square to filter the charts below to that day and hour; this heatmap ignores the day and hour filters. ', windowText(d)));
 }
 
 function drawAcc(route, d, names, codes, dirs, el) {

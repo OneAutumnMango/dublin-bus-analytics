@@ -196,9 +196,9 @@ function el(doc, tag, attrs = {}, text) {
   return e;
 }
 let uid = 0;
-function root(doc, w, h, title, desc, cls) {
+function root(doc, w, h, title, desc, cls, role = 'img') {
   const id = `c${++uid}`;
-  const svg = el(doc, 'svg', { viewBox: `0 0 ${w} ${h}`, class: `chart ${cls}`, role: 'img', 'aria-label': title, 'aria-describedby': `${id}d`, focusable: 'false' });
+  const svg = el(doc, 'svg', { viewBox: `0 0 ${w} ${h}`, class: `chart ${cls}`, role, 'aria-label': title, 'aria-describedby': `${id}d`, focusable: 'false' });
   svg.append(el(doc, 'desc', { id: `${id}d` }, desc)); // no root <title>: browsers show it as a hover tooltip over the whole chart
   return svg;
 }
@@ -255,12 +255,16 @@ export function renderHistogram(geo, { title, desc, markers = [], band = null, d
   return svg;
 }
 
-export function renderHeatmap(grid, { title, desc, doc = globalThis.document } = {}) {
-  const svg = root(doc, grid.width, grid.height, title, desc, 'heatmap');
+export function renderHeatmap(grid, { title, desc, selected = null, onSelect, doc = globalThis.document } = {}) {
+  const svg = root(doc, grid.width, grid.height, title, desc, 'heatmap', onSelect ? 'group' : 'img'); // role=img would hide the interactive cells from assistive tech
   for (let h = 0; h < 24; h += 2) svg.append(el(doc, 'text', { class: 'tick-label', x: grid.left + h * grid.cw + grid.cw / 2, y: grid.top - 8, 'text-anchor': 'middle' }, String(h).padStart(2, '0')));
   WEEKDAYS.forEach((d, i) => svg.append(el(doc, 'text', { class: 'tick-label', x: grid.left - 6, y: grid.top + i * grid.ch + grid.ch / 2 + 4, 'text-anchor': 'end' }, d)));
   for (const c of grid.cells) {
-    const g = el(doc, 'g', { class: 'cell', 'data-tip-json': tipJson(heatTipData(c)) });
+    const isSel = !!selected && selected.wd === c.wd && selected.hour === c.hour;
+    const label = `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00, ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}`;
+    const g = el(doc, 'g', { class: `cell${isSel ? ' cell-selected' : ''}`, role: 'button', tabindex: 0, 'aria-label': label, 'aria-pressed': isSel ? 'true' : 'false', 'data-tip-json': tipJson(heatTipData(c)) });
+    g.addEventListener('click', () => onSelect?.(c.wd, c.hour));
+    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault?.(); onSelect?.(c.wd, c.hour); } });
     const cls = c.empty ? 'hm-empty' : `hm-b${c.bucket < 0 ? 'n' : ''}${Math.abs(c.bucket)}`;
     g.append(el(doc, 'title', {}, `${WEEKDAYS[c.wd]} ${String(c.hour).padStart(2, '0')}:00 - ${c.empty ? 'no data' : `mean ${fmtDelay(c.mean)}`}, n=${fmtCount(c.n)}${c.lowN && !c.empty ? `. ${LOW_N_NOTE}` : ''}`),
       el(doc, 'rect', { class: `${cls}${c.lowN ? ' low-n' : ''}`, x: c.x, y: c.y, width: c.w, height: c.h, rx: 2 }));

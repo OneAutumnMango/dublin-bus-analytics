@@ -276,3 +276,28 @@ test('accumulation bars use acc-bar class, never the header .bar layout class', 
   const css = readFileSync(new URL('../css/style.css', import.meta.url), 'utf8');
   assert.ok(!/\.chart \.bar\b/.test(css));
 });
+
+test('renderHeatmap: cells are keyboard-operable buttons with selection state', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const calls = [];
+  const grid = C.heatmapGrid([{ weekday: 0, hour: 8, n: 12, mean_delay: 300 }, { weekday: 1, hour: 9, n: 12, mean_delay: -60 }]);
+  const hm = C.renderHeatmap(grid, { title: 't', desc: 'd', selected: { wd: 0, hour: 8 }, onSelect: (wd, hour) => calls.push([wd, hour]), doc });
+  const cells = hm.all((n) => n.getAttribute?.('data-tip-json') && /(^| )cell( |$)/.test(n.getAttribute('class')));
+  assert.equal(cells.length, 168);
+  assert.ok(cells.every((c) => c.getAttribute('role') === 'button' && c.getAttribute('tabindex') === '0' && c.getAttribute('aria-label')));
+  const mon8 = cells.find((c) => c.getAttribute('aria-label') === 'Mon 08:00, mean +5.0 min');
+  assert.ok(mon8);
+  assert.equal(cells.filter((c) => c.getAttribute('aria-pressed') === 'true').length, 1);
+  assert.equal(mon8.getAttribute('aria-pressed'), 'true');
+  assert.match(mon8.getAttribute('class'), /cell-selected/);
+  assert.ok(mon8.getAttribute('data-tip-json'));
+  const tue9 = cells.find((c) => /^Tue 09:00/.test(c.getAttribute('aria-label')));
+  tue9.dispatch('click');
+  tue9.dispatch('keydown', { key: 'Enter' });
+  tue9.dispatch('keydown', { key: ' ' });
+  tue9.dispatch('keydown', { key: 'a' });
+  assert.deepEqual(calls, [[1, 9], [1, 9], [1, 9]]);
+  const none = C.renderHeatmap(grid, { title: 't', desc: 'd', doc });
+  assert.equal(none.all((n) => n.getAttribute?.('aria-pressed') === 'true').length, 0);
+});

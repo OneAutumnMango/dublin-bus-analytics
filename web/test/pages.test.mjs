@@ -280,7 +280,8 @@ test('analytics page: heatmap, accumulation groups incl. fallback, forecast', as
   const t = text(ctx.main);
   assert.equal(ctx.main.byTag('h1').length, 1);
   assert.equal(ctx.main.byTag('svg').length, 3);
-  assert.equal(ctx.main.byTag('svg')[0].all((n) => n.getAttribute?.('tabindex') === '0').length, 0, 'no tab stops inside role=img');
+  assert.equal(ctx.main.byTag('svg')[0].getAttribute('role'), 'group', 'interactive heatmap is not role=img');
+  for (const svg of ctx.main.byTag('svg').slice(1)) assert.equal(svg.all((n) => n.getAttribute?.('tabindex') === '0').length, 0, 'no tab stops inside role=img');
   assert.match(t, /&lt;img src=x onerror=alert\(1\)&gt;|<img src=x onerror=alert\(1\)> – Two \(bus 15\) · 40 trips/);
   assert.match(t, /Unmatched trips · 7 trips/);
   assert.match(t, /could not be matched/);
@@ -554,4 +555,46 @@ test('remove day: live-day warning for today and future, not for past; shown wit
   p.date.value = plusDay(dublinToday(), -2);
   p.date.dispatch('change');
   assert.doesNotMatch(text(p.status()), LIVE);
+});
+
+test('heatQuery drops only weekdays and hours', async () => {
+  const { heatQuery } = await import('../js/pages/analytics.js');
+  assert.deepEqual(heatQuery({ weekdays: [1], hours: [8], ci: '0.95' }), { ci: '0.95' });
+});
+
+const heatCells = (ctx) => ctx.main.byTag('svg')[0].all((n) => n.getAttribute?.('role') === 'button');
+const hashQuery = (h) => Object.fromEntries(new URLSearchParams(h.split('?')[1] || ''));
+
+test('analytics heatmap ignores day/hour filters but others keep them; cell click selects, clicking again clears', async () => {
+  const calls = installFetch({ 'GET /api/routes/15/heatmap': heat, 'GET /api/routes/15/forecast': fc,
+    'GET /api/routes/15/accumulation': acc([{ direction: 'out', fallback: false, n: 40, low_n: false, n_delta: 25, stops: stopRows }]) });
+  const q = { wd: '1', hf: '8', ht: '8', since: '2026-01-01', until: '2026-02-01', conf: '0' };
+  const ctx = ctxOf({ route: '15' }, q);
+  await (await import('../js/pages/analytics.js')).render(ctx);
+  const u = (p) => calls.find((c) => c.url.includes(p)).url;
+  assert.ok(!/weekdays|hours/.test(u('/heatmap')), u('/heatmap'));
+  assert.match(u('/heatmap'), /since=/);
+  assert.match(u('/heatmap'), /min_confidence=0/);
+  assert.match(u('/accumulation'), /weekdays=1/);
+  assert.match(u('/forecast'), /hours=8/);
+  const sel = heatCells(ctx).filter((c) => c.getAttribute('aria-pressed') === 'true');
+  assert.equal(sel.length, 1);
+  assert.match(sel[0].getAttribute('aria-label'), /^Tue 08:00/);
+  sel[0].dispatch('click');
+  const cleared = hashQuery(ctx.gos.at(-1));
+  assert.ok(!('wd' in cleared) && !('hf' in cleared) && !('ht' in cleared), JSON.stringify(cleared));
+  assert.equal(cleared.since, '2026-01-01'); assert.equal(cleared.until, '2026-02-01'); assert.equal(cleared.conf, '0');
+  heatCells(ctx).find((c) => /^Mon 08:00/.test(c.getAttribute('aria-label'))).dispatch('click');
+  const picked = hashQuery(ctx.gos.at(-1));
+  assert.equal(picked.wd, '0'); assert.equal(picked.hf, '8'); assert.equal(picked.ht, '8');
+  assert.equal(picked.since, '2026-01-01'); assert.equal(picked.conf, '0');
+});
+
+test('analytics heatmap: no selection unless exactly one weekday and one hour', async () => {
+  for (const query of [{ wd: '1,2', hf: '8', ht: '8' }, { wd: '1', hf: '8', ht: '9' }, { wd: '1' }, {}]) {
+    installFetch({ 'GET /api/routes/15/heatmap': heat, 'GET /api/routes/15/forecast': fc, 'GET /api/routes/15/accumulation': acc([]) });
+    const ctx = ctxOf({ route: '15' }, query);
+    await (await import('../js/pages/analytics.js')).render(ctx);
+    assert.equal(heatCells(ctx).filter((c) => c.getAttribute('aria-pressed') === 'true').length, 0, JSON.stringify(query));
+  }
 });

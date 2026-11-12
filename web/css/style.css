@@ -182,7 +182,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart .mean.early { color: var(--early); } .chart .mean.late { color: var(--late); }
 .chart .acc-dot { fill: var(--surface); stroke: var(--early); stroke-width: 2; }
 .chart .cell:focus-visible rect { outline: none; stroke: var(--focus); stroke-width: 3; }
-.chart .cell { outline: none; }
+.chart .cell { outline: none; cursor: pointer; }
+.chart .cell-selected rect { stroke: var(--text); stroke-width: 3; }
+.chart .cell:focus-visible rect { stroke-dasharray: 4 2; }
 .chart .cell-text { font-size: 9px; pointer-events: none; }
 .chart .heatmap rect, .chart rect[class*="hm-b"] { rx: 2; }
 .chart circle.low-n-dot { fill: var(--fg-cell); }
