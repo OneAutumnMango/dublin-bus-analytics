@@ -220,7 +220,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .sidebar h2:first-child { margin-top: 0; }
 .sidebar form { margin: 0 var(--s2); }
 .sidebar form label { font-size: 0; gap: 0; } /* label text stays for screen readers; the placeholder carries the hint visually */
-.sidebar input[type="search"] { width: 100%; min-height: 34px; padding-left: 30px; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238190a4' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 10px center; }
+.sidebar input[type="search"] { font-size: var(--fs); width: 100%; min-height: 34px; padding-left: 30px; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238190a4' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 10px center; }
 .sidebar .route-list { display: grid; gap: 1px; }
 .sidebar .route-list li { flex-wrap: nowrap; justify-content: space-between; min-height: 32px; margin: 0; padding: 2px var(--s2); border-radius: var(--radius-sm); }
 .sidebar .route-list .grow { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--s2); overflow: hidden; white-space: nowrap; color: var(--text); font-size: var(--fs); }

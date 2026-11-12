@@ -119,6 +119,8 @@ export async function renderSidebar(root, { signal } = {}) {
     const hit = q && list?.find((r) => nameOf(r).toLowerCase() === q);
     if (hit && !tracked.includes(nameOf(hit))) track(nameOf(hit));
     else if (hit) setStatus(`Route ${nameOf(hit)} is already tracked`);
+    input.value = ''; // Enter consumes the query
+    resultsBox.replaceChildren();
   } } }, h('label', { for: 'route-q' }, 'Route number', input));
 
   root.replaceChildren(h('h2', {}, 'Find a route'), form, alertBox, resultsBox, h('h2', {}, 'Tracked routes'), trackedBox);
