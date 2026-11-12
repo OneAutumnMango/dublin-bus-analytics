@@ -489,6 +489,21 @@ test('remove day: remove posts confirm=previewed date and shows the result', asy
   assert.equal(p.rm(), undefined);
 });
 
+test('remove day: page code never calls non-DOM helpers (.all/.byTag/.byText exist only in fakedom)', async () => {
+  const src = await (await import('node:fs/promises')).readFile(new URL('../js/pages/routes.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /\.(all|byTag|byText)\(/);
+});
+
+test('remove day: clicking Remove sends the POST and shows the result', async () => {
+  const p = await dayPage({ 'GET /api/data/day': PREV, 'POST /api/data/day/remove': PREV });
+  await p.click(/^Preview$/);
+  const b = p.rm();
+  b.dispatch('click', { currentTarget: b });
+  await settle();
+  assert.ok(p.calls.some((x) => x.key === 'POST /api/data/day/remove'));
+  assert.match(text(p.status()), /Removed/);
+});
+
 test('remove day: both buttons are disabled while the removal runs', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });

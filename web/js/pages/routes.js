@@ -1,5 +1,5 @@
 // Routes (home) page: welcome text and backups. Route search and tracking live in the persistent sidebar.
-import { api, backupAvailable, backupDownloadUrl, exportUrl, isAbort } from '../api.js';
+import { ApiError, api, backupAvailable, backupDownloadUrl, exportUrl, isAbort } from '../api.js';
 import { h, link, put } from '../dom.js';
 import { fmtCount } from '../lib.js';
 
@@ -63,12 +63,11 @@ export async function render(ctx) {
       if (signal.aborted || my !== token) return;
       if (!(r.arrivals + r.forecasts + r.samples + r.gaps)) { say('Nothing recorded for that day.', skipNote(r)); return; }
       say(`Would remove ${counts(r)} for ${date}${route ? ` (route ${route})` : ''}.`, skipNote(r), liveNote(date));
-      rmSlot.replaceChildren(h('button', { class: 'btn btn-danger solid', type: 'button', on: { click: () => remove(date, route) } }, `Remove these rows (${fmtCount(r.arrivals)} arrivals)`));
+      rmSlot.replaceChildren(h('button', { class: 'btn btn-danger solid', type: 'button', on: { click: (ev) => remove(date, route, ev.currentTarget) } }, `Remove these rows (${fmtCount(r.arrivals)} arrivals)`));
     } catch (e) { if (!isAbort(e) && !signal.aborted && my === token) say(e.message); }
   }
-  async function remove(date, route) {
+  async function remove(date, route, rmBtn) {
     const my = ++token;
-    const rmBtn = rmSlot.all((n) => n.tag === 'button')[0];
     const busy = (v) => { previewBtn.disabled = v; if (rmBtn) rmBtn.disabled = v; };
     busy(true);
     say('Removing…');
@@ -79,6 +78,7 @@ export async function render(ctx) {
       say(`Removed ${counts(r)}.`, skipNote(r), liveNote(date));
     } catch (e) {
       if (isAbort(e) || signal.aborted || my !== token) return;
+      if (!(e instanceof ApiError)) { say(`Unexpected error: ${e.message}`); return; }
       const d = e.body?.done;
       say(e.message, d && `Part of the day was removed: ${counts({ arrivals: 0, forecasts: 0, samples: 0, gaps: 0, ...d })}; try again.`);
     } finally { if (!signal.aborted) busy(false); }
