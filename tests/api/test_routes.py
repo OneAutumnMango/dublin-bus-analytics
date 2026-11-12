@@ -2484,3 +2484,50 @@ def test_all_heatmap_pools_two_routes_by_arrival(env):
 def test_all_heatmap_empty(env):
     j = env.get("/api/all/heatmap").json()
     assert j["cells"] == [] and j["n"] == 0
+
+
+def test_hist_percentile_matches_numpy():
+    from app.api.routes import _hist_percentile, FC_CLAMP
+    import numpy as np
+    errs = [-300, -5, 0, 0, 7, 60, 61, 900, 3000]
+    counts = np.zeros(2 * FC_CLAMP + 1, dtype=np.int64)
+    for e in errs: counts[e + FC_CLAMP] += 1
+    for q in (5, 25, 50, 95, 100, 0):
+        assert _hist_percentile(counts, len(errs), q / 100) == pytest.approx(np.percentile(errs, q))
+
+
+@pytest.mark.parametrize("errs", [[42], [7, 7, 7, 7], [-3600, 3600], [-3600, 0, 0, 3600, 3600], [1, 2]])
+def test_hist_percentile_edge_cases(errs):
+    from app.api.routes import _hist_percentile, FC_CLAMP
+    import numpy as np
+    counts = np.zeros(2 * FC_CLAMP + 1, dtype=np.int64)
+    for e in errs: counts[e + FC_CLAMP] += 1
+    for q in (0, 0.05, 0.33, 0.5, 0.95, 1):
+        assert _hist_percentile(counts, len(errs), q) == pytest.approx(np.percentile(errs, q * 100))
+
+
+def test_all_forecast_one_route_equals_per_route(env):
+    env.app.state.poller.track("15")
+    ids = [env.add(route="15", delay=0, scheduled=T0 + i) for i in range(5)]
+    for aid, e in zip(ids, (60, -120, 5, 300, -7)): env.fc(aid, 10, e)
+    a = {h["horizon_min"]: h for h in env.get("/api/all/forecast").json()["horizons"]}
+    r = {h["horizon_min"]: h for h in env.get("/api/routes/15/forecast").json()["horizons"]}
+    for k in r:
+        for f in ("n", "mean_error", "mae", "p_low", "p_high", "low_n"):
+            assert a[k][f] == pytest.approx(r[k][f]) if r[k][f] is not None else a[k][f] is None
+
+
+def test_all_forecast_pools_two_routes_and_clamps(env):
+    env.app.state.poller.track("15"); env.app.state.poller.track("46A")
+    env.fc(env.add(route="15", delay=0), 10, 100)
+    env.fc(env.add(route="46A", delay=0), 10, -300)
+    env.fc(env.add(route="46A", delay=0), 10, 100000)   # beyond clamp
+    env.fc(env.add(route="untracked", delay=0), 10, 5)
+    h = {x["horizon_min"]: x for x in env.get("/api/all/forecast").json()["horizons"]}[10]
+    assert h["n"] == 3 and h["mean_error"] == pytest.approx((100 - 300 + 100000) / 3)
+    assert h["p_high"] <= 3600
+
+
+def test_all_forecast_no_tracked(env):
+    hs = env.get("/api/all/forecast").json()["horizons"]
+    assert [h["horizon_min"] for h in hs] == [30, 20, 10, 5, 2] and all(h["n"] == 0 and h["p_low"] is None for h in hs)

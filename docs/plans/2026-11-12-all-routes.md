@@ -292,11 +292,11 @@ def test_all_forecast_no_tracked(env):
 
 **Does NOT cover:** the link is not an Untrack target and is not counted among tracked routes.
 
-- [ ] **Step 1: Write failing tests** in `sidebar.test.mjs`: (a) the sidebar contains one link with text `All routes` and href `#/all`; (b) with hash `#/all` it has `aria-current='page'` and no route link does; with `#/analytics/sA` it has none; (c) it exists when no routes are tracked. Update the existing test `sidebar: tracked links are url-encoded` which asserts `root.byTag('a').map(href)`: filter out the All-routes link (or expect `'#/all'` first) so it keeps asserting the tracked links only.
-- [ ] **Step 2: Run** `cd web && node --test test/sidebar.test.mjs` — Expected: FAIL.
-- [ ] **Step 3: Implement** in `sidebar.js`: create the link once in `renderSidebar` (outside `draw()` so confirm/untrack redraws do not rebuild it), include it in `root.replaceChildren(... h('h2', {}, 'Tracked routes'), allLink, trackedBox)`, and extend `markActive` to set/remove `aria-current` on it using `parseHash(...).name === 'all'`.
-- [ ] **Step 4: Run** `node --test test/sidebar.test.mjs` — Expected: PASS. Then the whole suite: `cd web && npm test` (or `node --test test/`) — Expected: all pass.
-- [ ] **Step 5: Checkpoint.**
+- [x] **Step 1: Write failing tests** in `sidebar.test.mjs`: (a) the sidebar contains one link with text `All routes` and href `#/all`; (b) with hash `#/all` it has `aria-current='page'` and no route link does; with `#/analytics/sA` it has none; (c) it exists when no routes are tracked. Update the existing test `sidebar: tracked links are url-encoded` which asserts `root.byTag('a').map(href)`: filter out the All-routes link (or expect `'#/all'` first) so it keeps asserting the tracked links only.
+- [x] **Step 2: Run** `cd web && node --test test/sidebar.test.mjs` — Expected: FAIL.
+- [x] **Step 3: Implement** in `sidebar.js`: create the link once in `renderSidebar` (outside `draw()` so confirm/untrack redraws do not rebuild it), include it in `root.replaceChildren(... h('h2', {}, 'Tracked routes'), allLink, trackedBox)`, and extend `markActive` to set/remove `aria-current` on it using `parseHash(...).name === 'all'`.
+- [x] **Step 4: Run** `node --test test/sidebar.test.mjs` — Expected: PASS. Then the whole suite: `cd web && npm test` (or `node --test test/`) — Expected: all pass.
+- [x] **Step 5: Checkpoint.**
 
 ---
 

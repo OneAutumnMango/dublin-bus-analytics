@@ -994,3 +994,66 @@ async def all_heatmap(request: Request, p: P):
     cells = [{"weekday": wd, "hour": hr, "n": cnt[(wd, hr)], "low_n": cnt[(wd, hr)] < LOW_N,
               "mean_delay": tot[(wd, hr)] / cnt[(wd, hr)]} for wd, hr in sorted(cnt)]
     return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "n": sum(cnt.values()), "cells": cells})
+
+
+FC_CLAMP = 3600  # forecast errors are histogrammed per second within +/- this; sums stay exact
+
+
+def _forecast_parts_db(request, r, p):
+    """{horizon: (n, sum, abs_sum, counts)}; counts has length 2*FC_CLAMP+1, indexed by clamp(error)+FC_CLAMP."""
+    cond, cargs = _cond(p, "a.")
+    marks = ",".join("?" * len(HORIZONS))
+    size = 2 * FC_CLAMP + 1
+    acc = {h: [0, 0, 0, np.zeros(size, dtype=np.int64)] for h in HORIZONS}
+
+    def fn(rows):
+        by = defaultdict(list)
+        for h, e, _ in _tz(rows, 2, p):
+            by[h].append(e)
+        for h, es in by.items():
+            a = np.asarray(es, dtype=np.int64)
+            s = acc[h]
+            s[0] += len(a)
+            s[1] += int(a.sum())
+            s[2] += int(np.abs(a).sum())
+            s[3] += np.bincount(np.clip(a, -FC_CLAMP, FC_CLAMP) + FC_CLAMP, minlength=size)
+
+    _scan(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
+          "join forecast f on f.arrival_id = a.id "
+          f"where a.route = ? and {cond} and f.error_s is not null "
+          f"and f.horizon_min in ({marks})", [r] + cargs + list(HORIZONS), fn)
+    return {h: (s[0], s[1], s[2], s[3]) for h, s in acc.items()}
+
+
+def _hist_percentile(counts, n, q):
+    """Percentile q (0..1) from a histogram of n values, linear interpolation like np.percentile."""
+    rank = q * (n - 1)
+    lo = math.floor(rank)
+    hi = math.ceil(rank)
+    cum = np.cumsum(counts)
+    v_lo = int(np.searchsorted(cum, lo + 1)) - FC_CLAMP
+    v_hi = int(np.searchsorted(cum, hi + 1)) - FC_CLAMP
+    return float(v_lo + (v_hi - v_lo) * (rank - lo))
+
+
+@router.get("/all/forecast")
+async def all_forecast(request: Request, p: P):
+    """Forecast error pooled by arrival across every tracked route; same horizon rows as the per-route endpoint.
+    Percentiles are exact within +/-FC_CLAMP seconds (errors beyond are clamped); mean and mae are exact."""
+    res, trunc = await _each_tracked(request, p, _forecast_parts_db, delay=False)
+    hs = []
+    for h in HORIZONS:
+        n, tot, abs_tot = 0, 0, 0
+        counts = np.zeros(2 * FC_CLAMP + 1, dtype=np.int64)
+        for _, parts in res:
+            pn, ps, pa, pc = parts[h]
+            n += pn
+            tot += ps
+            abs_tot += pa
+            counts += pc
+        v = dict.fromkeys(("mean_error", "mae", "p_low", "p_high"))
+        if n:
+            v = {"mean_error": tot / n, "mae": abs_tot / n,
+                 "p_low": _hist_percentile(counts, n, 0.05), "p_high": _hist_percentile(counts, n, 0.95)}
+        hs.append({"horizon_min": h, "n": n, **v, "low_n": n < LOW_N})
+    return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "horizons": hs})
