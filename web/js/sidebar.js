@@ -33,8 +33,10 @@ export async function renderSidebar(root, { signal } = {}) {
   const fail = (e) => { if (!isAbort(e)) { alertBox.replaceChildren(errorBox(e)); setStatus(e.message); } };
   const current = () => parseHash(globalThis.location?.hash).params.route;
   let links = [];
+  const allLink = link(buildHash('all'), 'All routes', { 'data-all': '' });
   const markActive = mark = () => {
     const cur = current();
+    if (parseHash(globalThis.location?.hash).name === 'all') allLink.setAttribute('aria-current', 'page'); else allLink.removeAttribute('aria-current');
     for (const a of links) { if (a.getAttribute('data-route') === cur) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   };
 
@@ -124,7 +126,8 @@ export async function renderSidebar(root, { signal } = {}) {
     if (hit && input.value === sent) { input.value = ''; resultsBox.replaceChildren(); }
   } } }, h('label', { for: 'route-q' }, 'Route number', input));
 
-  root.replaceChildren(h('h2', {}, 'Find a route'), form, alertBox, resultsBox, h('h2', {}, 'Tracked routes'), trackedBox);
+  root.replaceChildren(h('h2', {}, 'Find a route'), form, alertBox, resultsBox, h('h2', {}, 'Tracked routes'), h('p', { class: 'all-routes' }, allLink), trackedBox);
+  markActive();
   if (!hooked) { hooked = true; globalThis.addEventListener?.('hashchange', () => mark()); }
   trackedBox.replaceChildren(h('div', { class: 'skeleton', 'aria-hidden': 'true' }, h('span'), h('span')));
   try {

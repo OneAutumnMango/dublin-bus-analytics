@@ -7,6 +7,7 @@ const { rankRoutes, renderSidebar } = await import('../js/sidebar.js');
 const R = (...n) => n.map((s, i) => ({ id: `i${i}`, shortName: s, longName: '' }));
 const mount = async () => { const root = new FNode('aside'); await renderSidebar(root, { signal: new AbortController().signal }); return root; };
 const type = (root, v) => { const i = root.byTag('input')[0]; i.value = v; i.dispatch('input'); return i; };
+const trackedHrefs = (root) => root.byTag('a').map((a) => a.getAttribute('href')).filter((x) => x !== '#/all');
 const names = (l) => l.map((r) => r.shortName);
 
 test('rankRoutes: exact, prefixes, rest; stable; case-insensitive', () => {
@@ -20,7 +21,7 @@ test('sidebar: tracked links are url-encoded, untrack works', async () => {
   installFetch({ 'GET /api/routes/tracked': () => ({ routes: [...tracked] }),
     'DELETE /api/routes/tracked/sA%2FB': () => { tracked = ['sA']; return { routes: tracked }; } });
   const root = await mount();
-  assert.deepEqual(root.byTag('a').map((a) => a.getAttribute('href')), ['#/analytics/sA', '#/analytics/sA%2FB']);
+  assert.deepEqual(trackedHrefs(root), ['#/analytics/sA', '#/analytics/sA%2FB']);
   root.byText('button', /^Untrack$/)[1].dispatch('click');
   await settle();
   assert.equal(tracked.length, 2, 'first click only asks for confirmation');
@@ -30,7 +31,7 @@ test('sidebar: tracked links are url-encoded, untrack works', async () => {
   root.byText('button', /^Untrack$/)[1].dispatch('click');
   root.byText('button', /^Confirm$/)[0].dispatch('click');
   await settle();
-  assert.deepEqual(root.byTag('a').map((a) => a.getAttribute('href')), ['#/analytics/sA']);
+  assert.deepEqual(trackedHrefs(root), ['#/analytics/sA']);
 });
 
 test('sidebar: typing searches after debounce without submit; ranked; literal text', async () => {
@@ -93,7 +94,7 @@ test('sidebar: double click Track sends one PUT and disables buttons meanwhile',
   assert.equal(b2.disabled, true);
   await settle(60);
   assert.equal(puts, 1);
-  assert.ok(root.byTag('a').length === 1);
+  assert.equal(trackedHrefs(root).length, 1);
 });
 
 test('sidebar: aria-current follows the hash', async () => {
@@ -101,11 +102,31 @@ test('sidebar: aria-current follows the hash', async () => {
   const root = await mount();
   globalThis.location.hash = '#/analytics/sA';
   for (const fn of globalThis.__listeners.hashchange) fn();
-  const [a, b] = root.byTag('a');
+  const [a, b] = root.byTag('a').filter((x) => x.getAttribute('href') !== '#/all');
   assert.equal(a.getAttribute('aria-current'), 'page');
   assert.equal(b.getAttribute('aria-current'), null);
   globalThis.location.hash = '#/analytics/sB';
   for (const fn of globalThis.__listeners.hashchange) fn();
   assert.equal(a.getAttribute('aria-current'), null);
   assert.equal(b.getAttribute('aria-current'), 'page');
+});
+
+test('sidebar: All routes link exists once, even with no tracked routes', async () => {
+  installFetch({ 'GET /api/routes/tracked': { routes: [] } });
+  const root = await mount();
+  const all = root.byText('a', /^All routes$/);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].getAttribute('href'), '#/all');
+});
+
+test('sidebar: All routes aria-current only on #/all', async () => {
+  installFetch({ 'GET /api/routes/tracked': { routes: ['sA'] } });
+  const root = await mount();
+  const fire = (h) => { globalThis.location.hash = h; for (const fn of globalThis.__listeners.hashchange) fn(); };
+  const all = root.byText('a', /^All routes$/)[0];
+  fire('#/all');
+  assert.equal(all.getAttribute('aria-current'), 'page');
+  assert.ok(root.byTag('a').filter((a) => a !== all).every((a) => a.getAttribute('aria-current') === null));
+  fire('#/analytics/sA');
+  assert.equal(all.getAttribute('aria-current'), null);
 });

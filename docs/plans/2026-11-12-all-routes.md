@@ -113,7 +113,7 @@ def test_all_routes_reports_truncated_routes(env, monkeypatch):
 
 **Does NOT cover:** weekday/hour filters are honoured by the endpoint (as in per-route) but the UI strips them.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
 
 ```python
 def test_all_heatmap_one_route_equals_per_route(env):
@@ -138,10 +138,10 @@ def test_all_heatmap_empty(env):
     assert j["cells"] == [] and j["n"] == 0
 ```
 
-- [ ] **Step 2: Run** `... -k all_heatmap` — Expected: FAIL (404).
-- [ ] **Step 3: Implement** `@router.get("/all/heatmap")`: `_each_tracked(request, p, _heatmap_db)`; accumulate `cnt[(wd,hr)] += cell["n"]`, `tot[...] += cell["mean_delay"] * cell["n"]`; build cells like `_heatmap_db` does (`low_n = n < LOW_N`).
-- [ ] **Step 4: Run** same. Expected: PASS.
-- [ ] **Step 5: Checkpoint.**
+- [x] **Step 2: Run** `... -k all_heatmap` — Expected: FAIL (404).
+- [x] **Step 3: Implement** `@router.get("/all/heatmap")`: `_each_tracked(request, p, _heatmap_db)`; accumulate `cnt[(wd,hr)] += cell["n"]`, `tot[...] += cell["mean_delay"] * cell["n"]`; build cells like `_heatmap_db` does (`low_n = n < LOW_N`).
+- [x] **Step 4: Run** same. Expected: PASS.
+- [x] **Step 5: Checkpoint.**
 
 ---
 
@@ -260,22 +260,22 @@ def test_all_forecast_no_tracked(env):
 
 **Does NOT cover:** heatmap cell selection (cells are not clickable on this page); stop-level data.
 
-- [ ] **Step 1: Write failing tests** in `web/test/allpage.test.mjs` (follow the fakedom pattern of `sidebar.test.mjs` / `pages.test.mjs`):
+- [x] **Step 1: Write failing tests** in `web/test/allpage.test.mjs` (follow the fakedom pattern of `sidebar.test.mjs` / `pages.test.mjs`):
   - `sortRoutes`: median desc puts `null` last; median asc puts `null` last; `route` numeric order gives `['9','15','46A']`; input array is not mutated.
   - render with stubbed fetch for the three endpoints and routes `15`, `46A`, `empty` (n=0): page contains `h1` text `All tracked routes`; the hint text `Pooled by arrival, not by route.`; table rows default-sorted by median descending with `empty` last and its cell text `no data`; the chart's route link hrefs equal `buildHash('analytics', { route }, linkQuery)` (check with a route named `sA/B` -> `#/analytics/sA%2FB`); the median-header button click toggles `aria-sort` to `ascending` and reorders rows.
   - render with `{routes: []}` -> an element with text matching `/No routes tracked/`.
   - heatmap request omits `weekdays`/`hours` params, forecast request omits `pct_lo`/`pct_hi`.
   - `filters.truncated_routes: ['15']` produces a notice naming `15`.
   - one failing endpoint (500) shows an error box with Retry inside that section only; the other two sections still render.
-- [ ] **Step 2: Run** `cd web && node --test test/allpage.test.mjs` — Expected: FAIL (module missing).
-- [ ] **Step 3: Implement** `all.js` following `analytics.js`'s structure:
+- [x] **Step 2: Run** `cd web && node --test test/allpage.test.mjs` — Expected: FAIL (module missing).
+- [x] **Step 3: Implement** `all.js` following `analytics.js`'s structure:
   - `render(ctx)`: `s = setup(ctx)`; `ctx.title('All routes')`; `put(ctx.main, crumbs(link('#/', '← All routes list')), h('h1', {}, 'All tracked routes'), h('p', {class:'subtitle'}, '… Pooled by arrival, not by route.'), ...filterBar(ctx, 'all', {}, s), ...three sections)`; three `region()`s loaded with `Promise.all`; heatmap/forecast use `heatQuery`/`forecastQuery` of `s.apiQuery`; announce strings like the per-route page.
   - Comparison section: sort state `{key:'median', dir:'desc'}` in closure; `draw()` rebuilds a `figure` (chart + table). Chart items for routes with non-null mean: `{label: 'Route '+r, short: r, href: buildHash('analytics',{route:r}, s.linkQuery), n, low_n, mean, median, min:null, max:null, lo:p_low, hi:p_high}`, in the current sort order, `renderRangeChart` with `axisLabel: 'minutes vs schedule'`. Table columns: Route (link), n, Mean, Median, On time (`fmtPct`), Reliability; header cells are `<button>` with `aria-sort` on the active one; n < 10 rows get the existing low-n row class used by `dataTable` for `low_n`. Legend line: "Diamond: mean · ring: median · bar: 5th to 95th percentile…" with percentile labels from existing controls formatting. Empty state when no routes tracked or no route has data.
   - Heatmap section: `heatmapGrid(cells, {cap: getSettings().charts.heatCap * 60})`, `renderHeatmap` without `onSelect`, `dataTable` fallback, `legend(grid.maxAbs)` from analytics.js; heading `When are buses late? Mean delay by weekday and hour, all routes`.
   - Forecast section: `drawForecast('', d, el)`.
   - Truncation notice: if `data.filters.truncated_routes?.length`, `notice(...)` naming those routes and the 500,000 per-route cap, shown above each section that returned it.
-- [ ] **Step 4: Run** `node --test test/allpage.test.mjs test/pages.test.mjs` — Expected: PASS (pages tests confirm analytics.js export change broke nothing).
-- [ ] **Step 5: Checkpoint.**
+- [x] **Step 4: Run** `node --test test/allpage.test.mjs test/pages.test.mjs` — Expected: PASS (pages tests confirm analytics.js export change broke nothing).
+- [x] **Step 5: Checkpoint.**
 
 ---
 
