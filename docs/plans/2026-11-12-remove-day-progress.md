@@ -132,11 +132,11 @@ test('remove day: clicking Remove sends the POST and shows the result', async ()
 
 **Security flag:** `none`
 
-- [ ] **Step 1: Write failing tests:** api: removeDay builds the confirm for single and range; removeJob GETs the path. Pages: (a) end field exists with a label; (b) clicking Remove → button has `aria-busy`, class `busy`, label matches /Removing/; a progress element appears with value from a polled `running` status (`done`/`total` sums) and text "day 1 of 2"; (c) polled `done` → summary "Removed …", button state cleared; (d) polled `error` → message plus "Part of the day was removed"; (e) POST 409 with `job_id` → attaches and polls; (f) poll 404 → text contains "Status lost". Use a short poll interval injectable via `ctx.pollMs` (default 1000).
-- [ ] **Step 2:** `node --test web/test/` → FAIL.
-- [ ] **Step 3:** Implement. Poll loop checks `signal.aborted` and the `token`; stops on done/error/404. Spinner CSS: `.btn.busy::before` a 0.9em border-spinner with `@keyframes spin`; under `@media (prefers-reduced-motion: reduce)` no animation (static ring). `<progress>` styled with existing tokens. Per-day list from preview rendered as a short `<ul>` (hidden when single day).
-- [ ] **Step 4:** `node --test web/test/` → PASS.
-- [ ] **Step 5: Commit** `git commit -m "Routes UI: day range, button spinner, live removal progress"`
+- [x] **Step 1: Write failing tests:** api: removeDay builds the confirm for single and range; removeJob GETs the path. Pages: (a) end field exists with a label; (b) clicking Remove → button has `aria-busy`, class `busy`, label matches /Removing/; a progress element appears with value from a polled `running` status (`done`/`total` sums) and text "day 1 of 2"; (c) polled `done` → summary "Removed …", button state cleared; (d) polled `error` → message plus "Part of the day was removed"; (e) POST 409 with `job_id` → attaches and polls; (f) poll 404 → text contains "Status lost". Use a short poll interval injectable via `ctx.pollMs` (default 1000).
+- [x] **Step 2:** `node --test web/test/` → FAIL.
+- [x] **Step 3:** Implement. Poll loop checks `signal.aborted` and the `token`; stops on done/error/404. Spinner CSS: `.btn.busy::before` a 0.9em border-spinner with `@keyframes spin`; under `@media (prefers-reduced-motion: reduce)` no animation (static ring). `<progress>` styled with existing tokens. Per-day list from preview rendered as a short `<ul>` (hidden when single day).
+- [x] **Step 4:** `node --test web/test/` → PASS.
+- [x] **Step 5: Commit** `git commit -m "Routes UI: day range, button spinner, live removal progress"`
 
 ### Task 6: Docs and manual check
 
