@@ -58,7 +58,7 @@
 
 **Does NOT cover:** untracked routes with stored data; stop-level data.
 
-- [ ] **Step 1: Write failing tests** in `tests/api/test_routes.py`:
+- [x] **Step 1: Write failing tests** in `tests/api/test_routes.py`:
 
 ```python
 def test_all_routes_stats_per_route(env):
@@ -87,15 +87,15 @@ def test_all_routes_reports_truncated_routes(env, monkeypatch):
     assert j["filters"]["truncated_routes"] == ["15"]
 ```
 
-- [ ] **Step 2: Run** `cd /home/david/dbus/dublin-bus-analytics && ulimit -v 2500000; OPENBLAS_NUM_THREADS=1 ../.venv/bin/pytest -q tests/api/test_routes.py -k all_routes` — Expected: FAIL (404 on `/api/all/routes`).
+- [x] **Step 2: Run** `cd /home/david/dbus/dublin-bus-analytics && ulimit -v 2500000; OPENBLAS_NUM_THREADS=1 ../.venv/bin/pytest -q tests/api/test_routes.py -k all_routes` — Expected: FAIL (404 on `/api/all/routes`).
 
-- [ ] **Step 3: Implement** `_each_tracked` and the endpoint in `app/api/routes.py`.
+- [x] **Step 3: Implement** `_each_tracked` and the endpoint in `app/api/routes.py`.
   - `_each_tracked`: `routes = sorted(await run_in_threadpool(request.app.state.poller.tracked))`; for each route `res, trunc = await _heavy(request, p, "route = ?", [r], lambda p2: (worker(request, r, p2), p2["truncated"]), delay)` (bind `r` as a default arg); collect routes where `trunc` is true.
   - `_route_stats_db(request, r, p)`: `_scan_arrivals(..., "delay", fn)` appending into one `array("q")`, then `{"route": r, **_summ(delays, p)}` trimmed to the response fields (`n, low_n, mean, median, on_time_pct, reliability, p_low, p_high`).
   - Endpoint `@router.get("/all/routes")`: `{"filters": {**_filters(p), "truncated_routes": trunc}, "routes": [...]}` passed through `_clean`. Place the three `/all/*` handlers together in a new `# ---- all routes ----` section.
 
-- [ ] **Step 4: Run** the same command. Expected: PASS.
-- [ ] **Step 5: Checkpoint** (no commit): report changed files.
+- [x] **Step 4: Run** the same command. Expected: PASS.
+- [x] **Step 5: Checkpoint** (no commit): report changed files.
 
 ---
 
@@ -237,11 +237,11 @@ def test_all_forecast_no_tracked(env):
 
 **Does NOT cover:** the median marker has no whisker/band of its own.
 
-- [ ] **Step 1: Write failing tests** in `charts.test.mjs`: (a) `rangeDomain([{mean:0, median:600, ...}])` upper bound >= 600 s; (b) `rangeGeometry` row has `xMedian` between `x0` and `x1` and `null` when median is null/absent; (c) `rangeTip({label:'R',mean:60,median:30,n:12})` contains `mean +1.0 min, median +0.5 min` using the same formatting `fmtDelay` yields (assert with `fmtDelay` imported rather than a literal); (d) render with the fake DOM produces one `circle` with class `median` per non-empty row that has a median, zero otherwise; (e) existing snapshots/tests unchanged.
-- [ ] **Step 2: Run** `cd web && node --test test/charts.test.mjs` — Expected: FAIL.
-- [ ] **Step 3: Implement** in `charts.js` (items doc comment updated to list `median`). Add a CSS rule next to the existing `.mean` styles in `web/css/style.css`: `.range-chart .median { fill: none; stroke: currentColor; stroke-width: 2 }` plus a legend sentence is added by the page (Task 6), not here.
-- [ ] **Step 4: Run** same plus `node --test test/svgns.test.mjs test/contrast.test.mjs`. Expected: PASS.
-- [ ] **Step 5: Checkpoint.**
+- [x] **Step 1: Write failing tests** in `charts.test.mjs`: (a) `rangeDomain([{mean:0, median:600, ...}])` upper bound >= 600 s; (b) `rangeGeometry` row has `xMedian` between `x0` and `x1` and `null` when median is null/absent; (c) `rangeTip({label:'R',mean:60,median:30,n:12})` contains `mean +1.0 min, median +0.5 min` using the same formatting `fmtDelay` yields (assert with `fmtDelay` imported rather than a literal); (d) render with the fake DOM produces one `circle` with class `median` per non-empty row that has a median, zero otherwise; (e) existing snapshots/tests unchanged.
+- [x] **Step 2: Run** `cd web && node --test test/charts.test.mjs` — Expected: FAIL.
+- [x] **Step 3: Implement** in `charts.js` (items doc comment updated to list `median`). Add a CSS rule next to the existing `.mean` styles in `web/css/style.css`: `.range-chart .median { fill: none; stroke: currentColor; stroke-width: 2 }` plus a legend sentence is added by the page (Task 6), not here.
+- [x] **Step 4: Run** same plus `node --test test/svgns.test.mjs test/contrast.test.mjs`. Expected: PASS.
+- [x] **Step 5: Checkpoint.**
 
 ---
 

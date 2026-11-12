@@ -36,7 +36,7 @@ export async function render(ctx) {
   ]);
 }
 
-function legend(maxAbs) {
+export function legend(maxAbs) {
   return h('div', { class: 'legend', 'aria-label': 'Colour legend' }, h('span', {}, 'early (blue)'),
     h('span', { class: 'swatches' }, BUCKETS.map((b) => h('span', { class: `swatch hm-b${b < 0 ? 'n' : ''}${Math.abs(b)}` }, b === 0 ? '0' : b < 0 ? '−' : '+'))),
     h('span', {}, 'late (orange)'), h('span', { class: 'key' }, `Colour saturates at ±${fmtNum(maxAbs / 60, 1)} min · grey cell: no data · small dot in the corner and italic table row: fewer than 10 samples · each cell shows the mean delay in minutes`));
@@ -92,7 +92,7 @@ function drawAcc(route, d, names, codes, dirs, el) {
   }
 }
 
-function drawForecast(route, d, el) {
+export function drawForecast(route, d, el) {
   put(el, h('h2', {}, 'How accurate are the live predictions?'), ...filterNotices(d));
   const hs = d.horizons || [];
   if (!hs.some((x) => x.n > 0)) { put(el, emptyState('No forecast data for this selection yet. Forecast accuracy needs arrivals with stored predictions.')); return; }
