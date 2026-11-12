@@ -242,7 +242,7 @@ export function renderHistogram(geo, { title, desc, markers = [], band = null, d
   }
   if (band && band.x1 > band.x0) svg.append(el(doc, 'rect', { class: 'ci-band', x: band.x0, y: geo.top, width: band.x1 - band.x0, height: geo.plotH }));
   for (const b of geo.bars) {
-    const r = el(doc, 'rect', { class: `bar${b.lo !== null && b.lo < 0 ? ' early' : b.lo !== null && b.lo >= 0 ? ' late' : ''}`, x: b.x, y: b.y, width: b.w, height: b.h });
+    const r = el(doc, 'rect', { class: `hist-bar${b.lo !== null && b.lo < 0 ? ' early' : b.lo !== null && b.lo >= 0 ? ' late' : ''}`, x: b.x, y: b.y, width: b.w, height: b.h });
     r.append(el(doc, 'title', {}, `${b.label}: ${fmtCount(b.count)} arrivals`));
     const hg = el(doc, 'g', { 'data-tip-json': tipJson(histTipData(b, geo.total)) });
     hg.append(r, el(doc, 'rect', { class: 'hit', x: b.x, y: geo.top, width: b.w + 1, height: geo.plotH })); // full-height column
@@ -295,7 +295,7 @@ export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) =>
     const p = geo.pts[i], b = geo.bars[i];
     const lab = stopLabel(s), tip = tipJson(accTipData(s, lab, p.pos));
     if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
-    if (b.delta !== null) { const r = el(doc, 'rect', { class: `bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
+    if (b.delta !== null) { const r = el(doc, 'rect', { class: `acc-bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
   });
   return svg;
 }

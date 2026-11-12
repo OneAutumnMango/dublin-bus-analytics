@@ -261,3 +261,18 @@ test('accumulation bars and dots stay inside the plot and the x axis has no stop
     for (const p of g.pts) assert.ok(p.x >= g.x0 && p.x <= g.x1);
   }
 });
+
+test('accumulation bars use acc-bar class, never the header .bar layout class', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const { readFileSync } = await import('node:fs');
+  const stops = [0, 1, 2].map((i) => ({ stop_id: `s${i}`, position: i, mean_delay: 60 * i, segment_delta: i === 1 ? -30 : 30, n: 20, n_delta: 20 }));
+  const svg = C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc });
+  const cls = (n) => (n.getAttribute?.('class') || '').split(/\s+/);
+  const rects = svg.all((n) => n.tag === 'rect' && cls(n).includes('acc-bar'));
+  assert.ok(rects.length >= 2);
+  assert.equal(svg.all((n) => n.tag === 'rect' && cls(n).includes('bar')).length, 0);
+  assert.ok(rects.some((n) => cls(n).includes('late')) && rects.some((n) => cls(n).includes('early')));
+  const css = readFileSync(new URL('../css/style.css', import.meta.url), 'utf8');
+  assert.ok(!/\.chart \.bar\b/.test(css));
+});
