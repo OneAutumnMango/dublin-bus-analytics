@@ -67,3 +67,10 @@ test('controls: both handles on the same hour select that single hour, not the w
   assert.equal(applied[0].hFrom, 2);
   assert.equal(applied[0].hTo, 2);
 });
+
+test('controls: untouched legacy 23-hour link (hf=7, ht=6) submits unchanged', () => {
+  const { submit, applied } = build({ hFrom: 7, hTo: 6 });
+  submit();
+  assert.equal(applied[0].hFrom, 7);
+  assert.equal(applied[0].hTo, 6);
+});

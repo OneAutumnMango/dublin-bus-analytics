@@ -25,7 +25,7 @@ export function controlsForm(initial, onApply) {
   // Whole-hour window. An on-hour start==end window would read as 23 hours, so collapse it to that single hour.
   const collapse = () => {
     const [a, b] = slider.get();
-    if (a === b && !(a === 0 && b === 1439)) slider.set(a, Math.min(a + 60, 1439));
+    if (a === b) slider.set(a, Math.min(a + 60, 1439));
   };
   const [w0, w1] = hoursToWindow(initial.hFrom, initial.hTo);
   const slider = timeRangeSlider({ step: 60, presets: HOUR_PRESETS, from: w0, to: w1, onChange: collapse });
@@ -38,7 +38,6 @@ export function controlsForm(initial, onApply) {
   const errors = h('div', { class: 'error', role: 'alert', hidden: true });
 
   function read() {
-    collapse();
     const n = (i) => (i.value === '' ? NaN : Number(i.value));
     return { ci: n(parts.ci.input), pLo: n(parts.pLo.input), pHi: n(parts.pHi.input), winLo: n(parts.winLo.input), winHi: n(parts.winHi.input),
       since: since.value, until: until.value, weekdays: days.filter((d) => d.btn.getAttribute('aria-pressed') === 'true').map((d) => d.i),
