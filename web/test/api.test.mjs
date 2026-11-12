@@ -135,3 +135,17 @@ test('409 errors carry the server detail and parsed body', async () => {
   const api = A.makeApi(async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ detail: 'busy', done: { arrivals: 3 } }) }));
   await assert.rejects(api.removeDay({ date: '2026-11-11' }), (e) => e.status === 409 && e.message === 'busy' && e.body.done.arrivals === 3);
 });
+
+test('all-routes helpers request the pooled endpoints', async () => {
+  const urls = [];
+  const f = async (url, init) => { urls.push([init.method, url]); return resp(200, {}); };
+  const api = A.makeApi(f);
+  await api.allRoutes({ since: 5 });
+  await api.allHeatmap({ since: 5 });
+  await api.allForecast({ since: 5 });
+  assert.deepEqual(urls, [
+    ['GET', '/api/all/routes?since=5'],
+    ['GET', '/api/all/heatmap?since=5'],
+    ['GET', '/api/all/forecast?since=5'],
+  ]);
+});

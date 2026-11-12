@@ -73,6 +73,12 @@ test('heatmap, accumulation, forecast', opts, async () => {
   has(f.horizons[0], ['n', 'low_n', 'mean_error', 'mae', 'p_low', 'p_high'], 'horizon');
 });
 
+test('all-routes endpoints', opts, async () => {
+  has(await get(`/api/all/routes${q}`), ['routes', 'filters'], 'all routes');
+  has(await get(`/api/all/heatmap${q}`), ['cells', 'n', 'filters'], 'all heatmap');
+  has(await get(`/api/all/forecast${q}`), ['horizons', 'filters'], 'all forecast');
+});
+
 test('invalid parameters give 422 with a detail string', opts, async () => {
   const r = await fetch(`${BASE}/api/routes/${enc(ROUTE)}/summary?ci=5`);
   assert.equal(r.status, 422);
