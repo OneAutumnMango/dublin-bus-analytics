@@ -305,3 +305,24 @@ test('renderHeatmap: cells are keyboard-operable buttons with selection state', 
   const none = C.renderHeatmap(grid, { title: 't', desc: 'd', doc });
   assert.equal(none.all((n) => n.getAttribute?.('aria-pressed') === 'true').length, 0);
 });
+
+test('median marker: domain, geometry, tip, render', async () => {
+  const { fmtDelay } = await import('../js/lib.js');
+  const d = C.rangeDomain([{ label: 'a', mean: 0, median: 600, n: 20 }]);
+  assert.ok(d[1] >= 600);
+  const g = C.rangeGeometry([{ ...item('a', 60, 0, 120, 0, 100), median: 30 }, item('b', 60, 0, 120, 0, 100), { ...item('c', 60, 0, 120, 0, 100), median: null }]);
+  const [a, b, c] = g.rows;
+  assert.ok(a.xMedian >= g.x0 && a.xMedian <= g.x1);
+  assert.equal(b.xMedian, null);
+  assert.equal(c.xMedian, null);
+  const tip = C.rangeTip({ label: 'R', mean: 60, median: 30, n: 12 });
+  assert.ok(tip.includes(`mean ${fmtDelay(60)}, median ${fmtDelay(30)}`), tip);
+  assert.ok(!C.rangeTip({ label: 'R', mean: 60, n: 12 }).includes('median'));
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const items = [{ ...item('a', 60, 0, 120, 0, 100), median: 30 }, item('b', 60, 0, 120, 0, 100), { ...item('e', null, null, null, null, null, 0), median: 5 }];
+  const svg = C.renderRangeChart(C.rangeGeometry(items), { title: 't', desc: 'd', doc });
+  const circles = svg.all((n) => n.tag === 'circle' && n.getAttribute('class') === 'median');
+  assert.equal(circles.length, 1);
+  assert.equal(circles[0].getAttribute('r'), '4');
+});

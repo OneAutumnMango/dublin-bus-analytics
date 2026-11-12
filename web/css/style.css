@@ -171,6 +171,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart .band { fill: var(--band); stroke: var(--band-line); stroke-width: 0.5; rx: 6; }
 .chart .mean { stroke: var(--surface); stroke-width: 1.5; fill: var(--text); }
 .chart .mean.early { fill: var(--early); } .chart .mean.late { fill: var(--late); }
+.range-chart .median { fill: none; stroke: currentColor; stroke-width: 2 }
 .chart .range-chart .row, .chart .row { transition: opacity .15s; }
 .chart:hover .row { opacity: .55; } .chart:hover .row:hover { opacity: 1; }
 .chart .row.low-n .row-label, .chart .row.low-n .n-label { fill: var(--muted); font-style: italic; }

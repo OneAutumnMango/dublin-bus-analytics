@@ -216,11 +216,11 @@ def test_all_forecast_no_tracked(env):
 
 **Does NOT cover:** nothing.
 
-- [ ] **Step 1: Write failing tests.** In `lib.test.mjs` add `['all', {}, {}]` to the existing hash round-trip table (line ~178) and assert `parseHash('#/all')` equals `{ name: 'all', params: {}, query: {} }` and `parseHash('#/all/x').name === 'notfound'`. In `api.test.mjs` add a test that each of the three methods requests the right path with `?since=5`. In `contract.test.mjs` add, next to the heatmap/forecast contract test, a test calling the three live endpoints with `${q}` and `has(...)` for keys: routes `['routes','filters']`, heatmap `['cells','n','filters']`, forecast `['horizons','filters']`.
-- [ ] **Step 2: Run** `cd web && node --test test/lib.test.mjs test/api.test.mjs` (see `web/package.json` for the project's test script; use it if different) — Expected: FAIL.
-- [ ] **Step 3: Implement** the one-line `ROUTES` entry and the three api methods mirroring `heatmap`/`forecast`.
-- [ ] **Step 4: Run** same. Expected: PASS (contract test runs only when its env/server is available, per its existing opts).
-- [ ] **Step 5: Checkpoint.**
+- [x] **Step 1: Write failing tests.** In `lib.test.mjs` add `['all', {}, {}]` to the existing hash round-trip table (line ~178) and assert `parseHash('#/all')` equals `{ name: 'all', params: {}, query: {} }` and `parseHash('#/all/x').name === 'notfound'`. In `api.test.mjs` add a test that each of the three methods requests the right path with `?since=5`. In `contract.test.mjs` add, next to the heatmap/forecast contract test, a test calling the three live endpoints with `${q}` and `has(...)` for keys: routes `['routes','filters']`, heatmap `['cells','n','filters']`, forecast `['horizons','filters']`.
+- [x] **Step 2: Run** `cd web && node --test test/lib.test.mjs test/api.test.mjs` (see `web/package.json` for the project's test script; use it if different) — Expected: FAIL.
+- [x] **Step 3: Implement** the one-line `ROUTES` entry and the three api methods mirroring `heatmap`/`forecast`.
+- [x] **Step 4: Run** same. Expected: PASS (contract test runs only when its env/server is available, per its existing opts).
+- [x] **Step 5: Checkpoint.**
 
 ---
 

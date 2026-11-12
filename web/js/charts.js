@@ -10,10 +10,10 @@ const r2 = (x) => (isNum(x) ? Math.round(x * 100) / 100 : x);
 const toMin = (s) => (isNum(s) ? s / 60 : null);
 
 // ---------- range chart: mean marker, min/max whiskers, percentile band, zero line ----------
-// items: [{label, href, n, low_n, mean, min, max, lo, hi}] (seconds; any of the numbers may be null)
+// items: [{label, href, n, low_n, mean, median?, min, max, lo, hi}] (seconds; any of the numbers may be null; median is optional)
 export function rangeDomain(items) {
   const vals = [];
-  for (const it of items) vals.push(it.mean, it.min, it.max, it.lo, it.hi);
+  for (const it of items) vals.push(it.mean, it.median, it.min, it.max, it.lo, it.hi);
   const e = extent(vals);
   return niceDomain(...(e ? e.map(toMin) : [null, null]), 6, true).map((m) => m * 60);
 }
@@ -25,7 +25,7 @@ export function rangeGeometry(items, domain = rangeDomain(items), o = {}) {
   const X = (v) => (isNum(v) ? r2(Math.min(x1, Math.max(x0, sx(v)))) : null);
   const rows = items.map((it, i) => {
     const y = top + i * rowH;
-    const g = { ...it, y, cy: y + rowH / 2, xMean: X(it.mean), xMin: X(it.min), xMax: X(it.max), xLo: X(it.lo), xHi: X(it.hi) };
+    const g = { ...it, y, cy: y + rowH / 2, xMean: X(it.mean), xMedian: X(it.median), xMin: X(it.min), xMax: X(it.max), xLo: X(it.lo), xHi: X(it.hi) };
     g.empty = g.xMean === null;
     g.lowN = !!it.low_n;
     return g;
@@ -175,6 +175,7 @@ export function stepGeometry(steps, markers = [], o = {}) {
 export function rangeTip(r) {
   if (r.empty) return `${r.label}: no data`;
   const parts = [`mean ${fmtDelay(r.mean)}`];
+  if (isNum(r.median)) parts.push(`median ${fmtDelay(r.median)}`);
   if (isNum(r.min) && isNum(r.max)) parts.push(`min ${fmtDelay(r.min)}`, `max ${fmtDelay(r.max)}`);
   if (isNum(r.lo) && isNum(r.hi)) parts.push(`band ${fmtDelay(r.lo)} to ${fmtDelay(r.hi)}`);
   return `${r.label}: ${parts.join(', ')}, ${plural(r.n, 'sample')}${r.lowN ? `. ${LOW_N_NOTE}` : ''}`;
@@ -225,6 +226,7 @@ export function renderRangeChart(geo, { title, desc, axisLabel = 'minutes vs sch
           el(doc, 'line', { class: 'whisker', x1: r.xMin, x2: r.xMin, y1: r.cy - 5, y2: r.cy + 5 }),
           el(doc, 'line', { class: 'whisker', x1: r.xMax, x2: r.xMax, y1: r.cy - 5, y2: r.cy + 5 }));
       }
+      if (r.xMedian !== null) g.append(el(doc, 'circle', { class: 'median', cx: r.xMedian, cy: r.cy, r: 4 }));
       g.append(el(doc, 'path', { class: `mean ${r.mean < 0 ? 'early' : r.mean > 0 ? 'late' : 'ontime'}`, d: `M${r.xMean} ${r.cy - 5}l5 5l-5 5l-5-5z` }));
     }
     if (r.tip) g.setAttribute('data-tip-json', tipJson(r.tip));
