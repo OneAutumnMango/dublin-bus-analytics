@@ -51,3 +51,13 @@ test('slider can reach 23:59 even though 1439 is not a multiple of the step', ()
   }
   assert.equal(seen.at(-1)[1], 1005);
 });
+
+test('slider: custom presets replace the defaults', () => {
+  installDom();
+  const seen = [];
+  const s = timeRangeSlider({ presets: [['X', 60, 120]], onChange: (a, b) => seen.push([a, b]) });
+  const btns = s.el.byTag('button');
+  assert.equal(btns.length, 1);
+  btns[0].dispatch('click');
+  assert.deepEqual(seen, [[60, 120]]);
+});

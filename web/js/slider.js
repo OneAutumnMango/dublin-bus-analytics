@@ -15,7 +15,9 @@ export function fillSegments(a, b) {
   return a <= b ? [[p(a), p(b) - p(a)]] : [[p(a), 100 - p(a)], [0, p(b)]];
 }
 
-export function timeRangeSlider({ from = 0, to = MAX, step = 5, onChange = () => {} } = {}) {
+export const HOUR_PRESETS = [['All day', 0, 1439], ['Morning peak', 420, 600], ['Daytime', 600, 960], ['Evening peak', 960, 1140], ['Night', 1320, 360]];
+
+export function timeRangeSlider({ from = 0, to = MAX, step = 5, onChange = () => {}, presets = PRESETS } = {}) {
   let a = snap(from, step), b = snap(to, step);
   const mkInput = (cls, label, v) => h('input', { type: 'range', class: `tr-input ${cls}`, min: '0', max: String(MAX), step: '1', value: String(v), 'aria-label': label });
   const inA = mkInput('tr-start', 'Window start (time of day)', a), inB = mkInput('tr-end', 'Window end (time of day)', b);
@@ -34,7 +36,7 @@ export function timeRangeSlider({ from = 0, to = MAX, step = 5, onChange = () =>
   inA.addEventListener('input', read); inB.addEventListener('input', read);
   const commit = () => { read(); onChange(a, b); };
   inA.addEventListener('change', commit); inB.addEventListener('change', commit);
-  for (const [name, x, y] of PRESETS) presetRow.append(h('button', { type: 'button', class: 'btn btn-quiet tr-preset', on: { click: () => { a = x; b = y; paint(); onChange(a, b); } } }, name));
+  for (const [name, x, y] of presets) presetRow.append(h('button', { type: 'button', class: 'btn btn-quiet tr-preset', on: { click: () => { a = x; b = y; paint(); onChange(a, b); } } }, name));
   track.append(fills, inA, inB);
   const ticks = h('div', { class: 'tr-ticks', 'aria-hidden': 'true' }, ['00:00', '06:00', '12:00', '18:00', '23:59'].map((t) => h('span', {}, t)));
   paint();

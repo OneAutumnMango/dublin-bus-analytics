@@ -438,3 +438,18 @@ export function stopLabel(id, names, codes) {
   const name = names?.get(id), code = codes?.get(id);
   return name && code ? `${name} (${code})` : name || code || id;
 }
+
+// Whole-hour filter <-> slider window (minutes). Blank hours mean the whole day; end 1439 means hour 23 inclusive.
+export function hoursToWindow(hFrom, hTo) {
+  const has = (v) => v !== '' && v != null;
+  if (!has(hFrom) && !has(hTo)) return [0, 1439];
+  const f = has(hFrom) ? Number(hFrom) : Number(hTo), t = has(hTo) ? Number(hTo) : Number(hFrom);
+  if (!has(hFrom) || !has(hTo)) return [f * 60, Math.min(f * 60 + 60, 1439)];
+  return [f * 60, Math.min((t + 1) * 60, f <= t ? 1439 : (t + 1) * 60)];
+}
+export function windowToHours(a, b) {
+  if (a === 0 && b === 1439) return { hFrom: '', hTo: '' };
+  const hFrom = Math.floor(a / 60);
+  if (a === b && b % 60 !== 0) return { hFrom, hTo: hFrom }; // degenerate off-hour window; on-hour a===b is a 23-hour wrap
+  return { hFrom, hTo: b === 1439 ? 23 : ((b / 60 - 1) + 24) % 24 };
+}

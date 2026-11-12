@@ -443,3 +443,16 @@ test('stopCodeMap / stopLabel: public stop number beats the internal id', () => 
   assert.equal(L.stopLabel('unknown', names, codes), 'unknown');
   assert.equal(L.stopCodeMap(null).size, 0);
 });
+
+test('hoursToWindow / windowToHours round-trip every hour pair', () => {
+  for (let f = 0; f < 24; f++) for (let t = 0; t < 24; t++) {
+    const exp = f === 0 && t === 23 ? { hFrom: '', hTo: '' } : { hFrom: f, hTo: t };
+    assert.deepEqual(L.windowToHours(...L.hoursToWindow(f, t)), exp, `${f}-${t}`);
+  }
+  assert.deepEqual(L.hoursToWindow('', ''), [0, 1439]);
+  assert.deepEqual(L.hoursToWindow(7, ''), [420, 480]);
+  assert.deepEqual(L.windowToHours(420, 480), { hFrom: 7, hTo: 7 });
+  assert.deepEqual(L.hoursToWindow('', 9), [540, 600]);
+  assert.deepEqual(L.hoursToWindow(22, 5), [1320, 360]);
+  assert.deepEqual(L.windowToHours(1320, 360), { hFrom: 22, hTo: 5 });
+});
