@@ -1,5 +1,6 @@
 import gzip
 import threading
+import traceback
 import time
 from datetime import date
 
@@ -155,3 +156,59 @@ def test_progress_monotonic(tmp_path, monkeypatch):
     monkeypatch.setattr(D, "remove", spy)
     r = _wait(J.start(tmp_path, [D1, D2], None, _lock()))
     assert seen == sorted(seen) and r["done"]["arrivals"] == 4
+
+
+def test_unexpected_error_is_logged_with_traceback(tmp_path, monkeypatch, caplog):
+    _seed(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(D, "remove", boom)
+    with caplog.at_level("WARNING", logger="app.maintenance.jobs"):
+        r = _wait(J.start(tmp_path, [D1], None, _lock()))
+    recs = [x for x in caplog.records if x.name == "app.maintenance.jobs" and x.levelname == "ERROR"]
+    assert len(recs) == 1
+    assert recs[0].exc_info and "secret detail" in "".join(traceback.format_exception(*recs[0].exc_info))
+    assert "secret detail" not in r["error"]
+
+
+def test_daybusy_logs_warning(tmp_path, monkeypatch, caplog):
+    _seed(tmp_path)
+
+    def busy(*a, **k):
+        raise D.DayBusy("meta.db", {})
+
+    monkeypatch.setattr(D, "remove", busy)
+    with caplog.at_level("WARNING", logger="app.maintenance.jobs"):
+        _wait(J.start(tmp_path, [D1], None, _lock()))
+    recs = [x for x in caplog.records if x.name == "app.maintenance.jobs" and x.levelname == "WARNING"]
+    assert len(recs) == 1
+    assert "meta.db" in recs[0].getMessage() and D1.isoformat() in recs[0].getMessage()
+
+
+def test_daybusy_before_first_day_not_none(tmp_path, monkeypatch):
+    def busy(*a, **k):
+        raise D.DayBusy("meta.db", {})
+
+    monkeypatch.setattr(D, "preview_range", busy)
+    r = _wait(J.start(tmp_path, [D1], None, _lock()))
+    assert r["state"] == "error"
+    assert "None" not in r["error"] and "the first day" in r["error"]
+
+
+def test_release_failure_still_sets_terminal_state(tmp_path, monkeypatch):
+    _seed(tmp_path)
+
+    class BadLock:
+        def acquire(self, *a, **k):
+            return True
+
+        def release(self):
+            raise ValueError("boom")
+
+    r = _wait(J.start(tmp_path, [D1], None, BadLock()))
+    assert r["state"] == "done"
+    monkeypatch.setattr(D, "remove", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    r = _wait(J.start(tmp_path, [D1], None, BadLock()))
+    assert r["state"] == "error"

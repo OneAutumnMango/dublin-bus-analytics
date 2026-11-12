@@ -1,4 +1,5 @@
 """In-process background runner for multi-day removal. One job at a time; records live 600 s."""
+import logging
 import threading
 import time
 import uuid
@@ -90,15 +91,18 @@ def _run(jid, data_dir, days, route, lock) -> None:
     except day.DayBusy as e:
         with _mu:
             cur = _jobs[jid]["current_day"]
+        label = cur or "the first day"
+        logging.getLogger(__name__).warning("day removal job %s stopped: %s %s on %s", jid, e.part, e.kind, label)
         what = "stayed locked" if e.kind == "busy" else "failed"
-        final = {"state": "error", "error": f"Removal of {cur} stopped: {e.part} {what}.",
+        final = {"state": "error", "error": f"Removal of {label} stopped: {e.part} {what}.",
                  "done": {k: base[k] + int(e.done.get(k, 0)) for k in KEYS}}
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("day removal job %s failed", jid)
     finally:
         try:
             lock.release()
-        except RuntimeError:
+        except Exception:
             pass
-        with _mu:  # terminal state last, so a finished job never still holds the lock
-            _jobs[jid].update(final, _end=time.monotonic())
+        finally:
+            with _mu:  # terminal state last, so a finished job never still holds the lock
+                _jobs[jid].update(final, _end=time.monotonic())
