@@ -114,13 +114,14 @@ export async function renderSidebar(root, { signal } = {}) {
   const form = h('form', { role: 'search', on: { submit: async (ev) => {
     ev.preventDefault();
     clearTimeout(timer);
-    const q = input.value.trim().toLowerCase();
-    const list = await search(input.value);
+    const sent = input.value;
+    const q = sent.trim().toLowerCase();
+    const list = await search(sent);
     const hit = q && list?.find((r) => nameOf(r).toLowerCase() === q);
     if (hit && !tracked.includes(nameOf(hit))) track(nameOf(hit));
     else if (hit) setStatus(`Route ${nameOf(hit)} is already tracked`);
-    input.value = ''; // Enter consumes the query
-    resultsBox.replaceChildren();
+    // An exact match consumes the query; otherwise keep the results to pick from, and never wipe text typed meanwhile.
+    if (hit && input.value === sent) { input.value = ''; resultsBox.replaceChildren(); }
   } } }, h('label', { for: 'route-q' }, 'Route number', input));
 
   root.replaceChildren(h('h2', {}, 'Find a route'), form, alertBox, resultsBox, h('h2', {}, 'Tracked routes'), trackedBox);
