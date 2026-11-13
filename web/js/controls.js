@@ -70,16 +70,16 @@ export function controlsForm(initial, onApply) {
     fld('Confidence', 'ci', parts.ci.input, unit('%')),
     h('span', { id: f('ci-hint'), class: 'sr-only' }, 'Confidence level of the interval around the mean delay, e.g. 90, 95 or 99'),
     h('span', { class: 'fld', title: 'Percentile band of arrivals shown in the distribution charts' }, h('label', { for: f('plo') }, 'Percentile band'),
-      parts.pLo.input, unit('–'), parts.pHi.input, unit('%')),
+      parts.pLo.input, unit('to'), parts.pHi.input, unit('%')),
     h('span', { class: 'fld', title: 'An arrival counts as on time between these minutes: negative = early, positive = late' }, h('label', { for: f('wlo') }, 'On-time window'),
-      parts.winLo.input, unit('…'), parts.winHi.input, unit('min')),
-    h('label', { class: 'inline', for: f('conf'), title: 'Only arrivals confirmed by a due-now reading' }, confirmed, 'Confirmed arrivals only'),
-    h('span', { class: 'actions' }, h('button', { class: 'btn', type: 'submit' }, 'Apply'),
-      h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => {
-        slider.set(0, 1439);
-        days.forEach((d) => d.btn.setAttribute('aria-pressed', 'false'));
-        apply({ ...DEFAULT_CONTROLS, weekdays: [] });
-      } } }, 'Reset'))),
-  errors);
+      parts.winLo.input, unit('to'), parts.winHi.input, unit('min')),
+    h('label', { class: 'inline', for: f('conf'), title: 'Only arrivals confirmed by a due-now reading' }, confirmed, 'Confirmed arrivals only')),
+  errors,
+  h('div', { class: 'frow' }, h('span', { class: 'actions' }, h('button', { class: 'btn', type: 'submit' }, 'Apply'),
+    h('button', { class: 'btn btn-quiet', type: 'button', on: { click: () => {
+      slider.set(0, 1439);
+      days.forEach((d) => d.btn.setAttribute('aria-pressed', 'false'));
+      apply({ ...DEFAULT_CONTROLS, weekdays: [] });
+    } } }, 'Reset'))));
   return form;
 }

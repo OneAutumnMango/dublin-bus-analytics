@@ -86,12 +86,15 @@ test('controls: round trip of every field through read/submit', () => {
   assert.deepEqual(applied[0], { ...DEFAULT_CONTROLS, ...init });
 });
 
-test('controls: three rows (period, hours, statistics) with no bordered fieldset sections', () => {
+test('controls: rows are period, hours, statistics, then Apply/Reset on their own row, with no bordered fieldset sections', () => {
   const { form } = build();
   const rows = form.all((n) => (attrs(n, 'class')).split(' ').includes('frow'));
-  assert.equal(rows.length, 3);
-  assert.deepEqual(rows.map((r) => r.byTag('legend').map((l) => l.textContent)[0] || attrs(r, 'aria-label')), ['Period', 'Hours of day', 'Statistics']);
-  const [dates, hours] = rows;
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows.slice(0, 3).map((r) => r.byTag('legend').map((l) => l.textContent)[0] || attrs(r, 'aria-label')), ['Period', 'Hours of day', 'Statistics']);
+  const [dates, hours, stats, actions] = rows;
+  assert.equal(stats.byTag('button').length, 0, 'statistics row holds no buttons');
+  assert.deepEqual(actions.byTag('button').map((b) => b.textContent), ['Apply', 'Reset'], 'Apply and Reset sit on their own row beneath the statistics');
+  assert.deepEqual(stats.all((n) => attrs(n, 'class') === 'unit').map((u) => u.textContent).filter((t) => t === 'to'), ['to', 'to'], 'ranges read \'to\', not a dash or ellipsis');
   assert.equal(dates.byTag('button').length, 0, 'dates row holds no day chips');
   assert.equal(hours.all((n) => attrs(n, 'aria-label') === 'Days of week')[0].byTag('button').length, 7, 'days group lives in the hours row');
   const tr = hours.all((n) => attrs(n, 'class').split(' ').includes('time-range'))[0];
