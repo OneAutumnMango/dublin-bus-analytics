@@ -312,3 +312,17 @@ for (const [name, route, mk] of MODES) {
     for (const i of [1, 2]) assert.ok(hints(sections(ctx)[i]).includes('Uses all arrivals; the percentile band applies to the distribution charts only.'));
   });
 }
+
+for (const [name, route, mk] of MODES) {
+  test(`lab band that trims every arrival says so (${name})`, async () => {
+    const empty = { ...DIST, n: 0, ecdf: [], qq: [], tiles: null, ...(route ? {} : { routes: 3 }) };
+    bandStubs(mk, { ...empty, band: { ...BAND, lo: null, hi: null, n_all: 2, n_kept: 0 } });
+    let sec = sections(await mountMode(route))[0];
+    assert.match(sec.textContent, /percentile band \(5–95\) leaves no arrivals to chart: 2 arrivals in this selection, all outside it\. Widen the band to see them\./);
+    assert.doesNotMatch(sec.textContent, /No data for this selection|null|NaN/);
+    assert.equal(sec.byTag('svg').length, 0);
+    bandStubs(mk, { ...empty, band: null });
+    sec = sections(await mountMode(route))[0];
+    assert.match(sec.textContent, /No data for this selection/);
+  });
+}

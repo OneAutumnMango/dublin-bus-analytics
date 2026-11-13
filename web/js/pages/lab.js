@@ -54,13 +54,16 @@ function ciTile(label, x, enough, fmt, n) {
 
 function drawDist(who, d, el, s, pooled) {
   put(el, head('How are delays distributed?', d));
-  if (!d.n) { put(el, emptyState(NO_DATA)); return; }
+  const b = d.band, bandPct = (v) => fmtNum(v * 100, 1).replace(/\.0$/, '');
+  if (!d.n) {
+    put(el, b && b.n_all > 0 ? emptyState(`The percentile band (${bandPct(b.pct_lo)}–${bandPct(b.pct_hi)}) leaves no arrivals to chart: ${plural(b.n_all, 'arrival')} in this selection, all outside it. Widen the band to see them.`) : emptyState(NO_DATA));
+    return;
+  }
   if (pooled) put(el, h('p', { class: 'hint' }, `${plural(d.routes, 'route')} pooled; every arrival counts once, so busy routes weigh more.`));
-  const b = d.band;
   if (b && b.n_all > b.n_kept) {
     const [lo, hi] = [b.lo, b.hi].map((v) => (isNum(v) ? describeDelay(v) : null));
     const span = lo && hi ? (lo === hi ? `at ${lo}` : `between ${lo} and ${hi}`) : 'inside the band';
-    put(el, h('p', { class: 'hint' }, `Showing arrivals ${span} (percentile band ${fmtNum(b.pct_lo * 100, 1).replace(/\.0$/, '')}–${fmtNum(b.pct_hi * 100, 1).replace(/\.0$/, '')}); ${fmtCount(b.n_all - b.n_kept)} of ${fmtCount(b.n_all)} arrivals left out.`));
+    put(el, h('p', { class: 'hint' }, `Showing arrivals ${span} (percentile band ${bandPct(b.pct_lo)}–${bandPct(b.pct_hi)}); ${fmtCount(b.n_all - b.n_kept)} of ${fmtCount(b.n_all)} arrivals left out.`));
   }
   const pts = d.ecdf.map((p) => ({ x: p.x / 60, p: p.p }));
   const geo = ecdfGeometry(pts, CHART);
