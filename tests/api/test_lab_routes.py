@@ -413,3 +413,18 @@ def test_all_endpoints_filters_echoed(env):
         full = env.get(ALL + ep).json()
         b = env.get(ALL + ep, weekdays="0,1,2").json()
         assert 0 < b["n"] < full["n"] and b["filters"]["weekdays"] == [0, 1, 2]
+
+
+def test_all_persistence_truncated_routes(env, monkeypatch):
+    _seed_two_routes(env, days=3, per=2)  # 36 rows per route
+    assert env.get(ALL + "persistence").json()["filters"]["truncated_routes"] == []
+    monkeypatch.setattr("app.api.routes.MAX_ROWS", 30)
+    assert env.get(ALL + "persistence").json()["filters"]["truncated_routes"] == ["15", "16"]
+
+
+def test_all_pooled_scan_truncation_echoed(env, monkeypatch):
+    _seed_all(env, days=2, per=2)  # 12 rows
+    monkeypatch.setattr("app.api.routes.MAX_ROWS", 5)
+    for ep in ("distribution", "variance"):
+        b = env.get(ALL + ep).json()
+        assert b["filters"]["truncated"] is True and b["filters"]["since"] and 0 < b["n"] < 12  # ties on `since` may keep a few extra

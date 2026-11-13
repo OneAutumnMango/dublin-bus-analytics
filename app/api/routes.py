@@ -792,7 +792,7 @@ def _persistence_db(request, r, p, lists):
     return _persistence_result({"route": r}, list(sums.values()), nt, p)
 
 
-def _persistence_result(head, days, nt, p):
+def _persistence_result(head, days, nt, p, filt=None):
 
     def stat(ds) -> dict:
         v = np.sum(ds, axis=0) if ds else np.zeros(35, dtype=np.int64)
@@ -807,7 +807,7 @@ def _persistence_result(head, days, nt, p):
         lo, hi = cis[k] or (None, None)
         return {"ci_low": lo, "ci_high": hi}
 
-    return _clean({**head, "filters": _filters(p), "order_source": "server", "n_trips": nt,
+    return _clean({**head, "filters": filt or _filters(p), "order_source": "server", "n_trips": nt,
                    "days": len(days), "low_n": nt < LOW_N, "enough_days": len(days) >= lab.MIN_DAYS,
                    "lags": [{"lag": g, "r": vals[f"lag{g}"], "n": ac[g]["n"], "low_n": ac[g]["n"] < LOW_N,
                              **ci(f"lag{g}")} for g in _LAGS],
@@ -828,7 +828,7 @@ async def all_lab_persistence(request: Request, p: P):
         except _NoOrder:
             pass
     # routes without a stop order never reach the scan (worker returns None; only the cheap probe runs)
-    res, _ = await _each_tracked(request, p, lambda rq, r, p2: _day_sums(rq, r, p2, lists[r]) if r in lists else None)
+    res, trunc = await _each_tracked(request, p, lambda rq, r, p2: _day_sums(rq, r, p2, lists[r]) if r in lists else None)
     used, total, nt = [], {}, 0
     for r, x in res:
         if x is None or not x[0]:
@@ -838,10 +838,11 @@ async def all_lab_persistence(request: Request, p: P):
         for sd, v in x[0].items():
             total[sd] = total[sd] + v if sd in total else v
     head = {"routes": len(routes), "routes_used": used, "routes_skipped": [r for r in routes if r not in used]}
+    filt = {**_filters(p), "truncated_routes": trunc}
     if not used:
-        return {**head, "filters": _filters(p), "order_source": "none", "n_trips": 0, "days": 0,
+        return {**head, "filters": filt, "order_source": "none", "n_trips": 0, "days": 0,
                 "low_n": True, "enough_days": False, "lags": [], "recovery": None}
-    return _persistence_result(head, list(total.values()), nt, p)
+    return _persistence_result(head, list(total.values()), nt, p, filt)
 
 
 @router.get("/routes/{r}/forecast")
