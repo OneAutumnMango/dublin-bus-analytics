@@ -90,7 +90,7 @@ test('controls: three rows (period, hours, statistics) with no bordered fieldset
   const { form } = build();
   const rows = form.all((n) => (attrs(n, 'class')).split(' ').includes('frow'));
   assert.equal(rows.length, 3);
-  assert.deepEqual(rows.map((r) => r.byTag('legend').map((l) => l.textContent)[0] || attrs(r, 'aria-label')), ['Period', 'Hours', 'Statistics']);
+  assert.deepEqual(rows.map((r) => r.byTag('legend').map((l) => l.textContent)[0] || attrs(r, 'aria-label')), ['Period', 'Hours of day', 'Statistics']);
   const [dates, hours] = rows;
   assert.equal(dates.byTag('button').length, 0, 'dates row holds no day chips');
   assert.equal(hours.all((n) => attrs(n, 'aria-label') === 'Days of week')[0].byTag('button').length, 7, 'days group lives in the hours row');
