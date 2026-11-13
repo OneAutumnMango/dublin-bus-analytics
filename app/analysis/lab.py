@@ -50,3 +50,29 @@ def shape_stats(delays) -> dict:
         skew=float((z**3).mean()) if z is not None and n >= 3 else None,
         kurtosis=float((z**4).mean() - 3) if z is not None and n >= 4 else None,
     )
+
+
+def day_bootstrap(days, stat_fn, level: float = 0.95, B: int = BOOT_B,
+                  seed: int = BOOT_SEED, min_days: int = MIN_DAYS):
+    """Percentile CIs from resampling whole days with replacement.
+
+    stat_fn(list_of_days) -> {key: float | None}. A key maps to None when there are
+    fewer than min_days days or under half the resamples produced a value.
+    """
+    if not 0 < level < 1:
+        raise ValueError("level must be in (0, 1)")
+    keys = list(stat_fn(days))
+    n = len(days)
+    if n < min_days:
+        return {k: None for k in keys}
+    rng = np.random.default_rng(seed)
+    draws = [stat_fn([days[i] for i in rng.integers(0, n, n)]) for _ in range(B)]
+    out = {}
+    for k in keys:
+        vals = [d[k] for d in draws if d.get(k) is not None]
+        if len(vals) * 2 < B:
+            out[k] = None
+        else:
+            lo, hi = np.percentile(vals, [(1 - level) / 2 * 100, (1 + level) / 2 * 100])
+            out[k] = (float(lo), float(hi))
+    return out
