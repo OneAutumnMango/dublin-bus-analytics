@@ -25,42 +25,44 @@ export function ecdfGeometry(points, o = {}) {
     yTicks: [0, 0.25, 0.5, 0.75, 1].map((p) => ({ y: r2(sy(p)), label: `${p * 100}%` })) };
 }
 
-// points: [{z standard-normal quantile, y minutes}]. shortcut: reference line is clamped to the plot, not clipped, fine for a visual guide.
+// points: [{z standard-normal quantile, y minutes}]. The y domain is widened to hold both reference-line endpoints so the slope stays exact.
 export function qqGeometry(points, o = {}) {
   const f = frame(o, 420, 320);
   const pts = (points || []).filter((q) => q && isNum(q.z) && isNum(q.y)).sort((a, b) => a.z - b.z);
-  const ze = extent(pts.map((q) => q.z)), ye = extent(pts.map((q) => q.y));
-  const zd = niceDomain(ze && ze[0], ze && ze[1], 5), yd = niceDomain(ye && ye[0], ye && ye[1], 5);
-  const sx = linearScale(zd, [f.x0, f.x1]), sy = linearScale(yd, [f.y0, f.y1]);
-  const cl = (y) => r2(Math.min(f.y0, Math.max(f.y1, y)));
-  let line = null;
+  const ze = extent(pts.map((q) => q.z));
+  let ref = null; // line in data units
   if (pts.length >= 4) {
     const a = pts[Math.floor(pts.length * 0.25)], b = pts[Math.floor(pts.length * 0.75)];
-    if (b.z > a.z) {
-      const k = (b.y - a.y) / (b.z - a.z), zl = pts[0].z, zr = pts[pts.length - 1].z;
-      line = { x1: r2(sx(zl)), y1: cl(sy(a.y + k * (zl - a.z))), x2: r2(sx(zr)), y2: cl(sy(a.y + k * (zr - a.z))) };
-    }
+    if (b.z > a.z) { const k = (b.y - a.y) / (b.z - a.z), zl = pts[0].z, zr = pts[pts.length - 1].z; ref = [zl, a.y + k * (zl - a.z), zr, a.y + k * (zr - a.z)]; }
   }
-  return { ...f, dots: pts.map((q) => ({ cx: r2(sx(q.z)), cy: r2(sy(q.y)) })), line,
-    xTicks: niceTicks(zd[0], zd[1], 5).map((m) => ({ x: r2(sx(m)), label: lab(m) })),
-    yTicks: niceTicks(yd[0], yd[1], 5).map((m) => ({ y: r2(sy(m)), label: lab(m) })) };
+  const ye = extent([...pts.map((q) => q.y), ...(ref ? [ref[1], ref[3]] : [])]);
+  const zDomain = niceDomain(ze && ze[0], ze && ze[1], 5), yDomain = niceDomain(ye && ye[0], ye && ye[1], 5);
+  const sx = linearScale(zDomain, [f.x0, f.x1]), sy = linearScale(yDomain, [f.y0, f.y1]);
+  return { ...f, zDomain, yDomain, dots: pts.map((q) => ({ cx: r2(sx(q.z)), cy: r2(sy(q.y)) })),
+    line: ref && { x1: sx(ref[0]), y1: sy(ref[1]), x2: sx(ref[2]), y2: sy(ref[3]) }, // unrounded: rounding would bend the slope
+    xTicks: niceTicks(zDomain[0], zDomain[1], 5).map((m) => ({ x: r2(sx(m)), label: lab(m) })),
+    yTicks: niceTicks(yDomain[0], yDomain[1], 5).map((m) => ({ y: r2(sy(m)), label: lab(m) })) };
 }
 
-// items: [{label, value 0..1, ci_low, ci_high}]. A null value draws no bar; a null CI draws no whisker.
+// items: [{label, value in [min, max], ci_low, ci_high}]. Bars grow from value 0 (up if positive, down if negative); values are clamped to [min, max].
+// A null value keeps its slot as {missing: true, h: 0}; a null CI draws no whisker.
 export function barGeometry(items, o = {}) {
+  const { min = 0, max = 1 } = o;
   const f = frame(o, 720, 260);
   const n = (items || []).length, slot = n ? (f.x1 - f.x0) / n : 0, w = Math.min(slot * 0.6, 80);
-  const sy = linearScale([0, 1], [f.y0, f.y1]);
-  const cl = (v) => Math.min(1, Math.max(0, v));
-  const bars = [];
-  (items || []).forEach((it, i) => {
-    if (!it || !isNum(it.value)) return;
-    const y = sy(cl(it.value)), hasCi = isNum(it.ci_low) && isNum(it.ci_high);
-    bars.push({ label: it.label, x: r2(f.x0 + slot * i + (slot - w) / 2), y: r2(y), w: r2(w), h: r2(f.y0 - y),
-      ciY1: hasCi ? r2(sy(cl(it.ci_high))) : null, ciY2: hasCi ? r2(sy(cl(it.ci_low))) : null });
+  const sy = linearScale([min, max], [f.y0, f.y1]);
+  const Y = (v) => sy(Math.min(max, Math.max(min, v))), zeroY = Y(0);
+  const bars = (items || []).map((it, i) => {
+    const x = r2(f.x0 + slot * i + (slot - w) / 2), label = it && it.label;
+    if (!it || !isNum(it.value)) return { label, x, y: r2(zeroY), w: r2(w), h: 0, ciY1: null, ciY2: null, missing: true };
+    const y = Y(it.value), hasCi = isNum(it.ci_low) && isNum(it.ci_high);
+    return { label, x, y: r2(Math.min(y, zeroY)), w: r2(w), h: r2(Math.abs(zeroY - y)),
+      ciY1: hasCi ? r2(Y(it.ci_high)) : null, ciY2: hasCi ? r2(Y(it.ci_low)) : null };
   });
-  return { ...f, bars, yTicks: [0, 0.25, 0.5, 0.75, 1].map((p) => ({ y: r2(sy(p)), label: `${p * 100}%` })) };
+  const yTicks = niceTicks(min, max, 4).map((m) => ({ y: r2(sy(m)), label: max - min <= 2 && max <= 1 && min >= -1 ? `${r12(m * 100)}%` : lab(m) }));
+  return { ...f, bars, zeroY: r2(zeroY), yTicks };
 }
+const r12 = (x) => Number(x.toPrecision(12));
 
 // ---------- renderers ----------
 const NS = 'http://www.w3.org/2000/svg';
@@ -107,7 +109,8 @@ export function renderBars(geo, { title, desc, axisLabel = '', doc = globalThis.
   yAxis(doc, svg, geo);
   for (const b of geo.bars) {
     const g = el(doc, 'g', { class: 'bar-group' });
-    g.append(el(doc, 'rect', { class: 'lab-bar', x: b.x, y: b.y, width: b.w, height: b.h }));
+    if (b.missing) g.append(el(doc, 'text', { class: 'tick-label n-label', x: r2(b.x + b.w / 2), y: geo.zeroY - 4, 'text-anchor': 'middle' }, 'n/a'));
+    else g.append(el(doc, 'rect', { class: 'lab-bar', x: b.x, y: b.y, width: b.w, height: b.h }));
     if (b.ciY1 !== null) {
       const cx = r2(b.x + b.w / 2);
       g.append(el(doc, 'line', { class: 'whisker', x1: cx, x2: cx, y1: b.ciY1, y2: b.ciY2 }),
