@@ -641,7 +641,7 @@ def _tile_stats(days) -> dict:
     n = len(x)
     if n == 0:
         return dict.fromkeys(_TILES)
-    med, p95 = np.percentile(x, [50, 95])
+    med, p95 = np.median(x), np.percentile(x, 95)
     sd = x.std()
     z = (x - x.mean()) / sd if sd > 0 else None
     return {"median": float(med), "p95": float(p95), "buffer": float(p95 - med),

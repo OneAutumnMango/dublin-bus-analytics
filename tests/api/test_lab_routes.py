@@ -68,3 +68,32 @@ def test_distribution_is_deterministic(env):
 
 def test_distribution_bad_param_422(env):
     assert env.get(URL, ci="abc").status_code == 422
+
+
+def test_distribution_tiles_match_shape_stats(env):
+    import pytest
+    from app.analysis import lab
+    delays = seed(env, 6, per=15, delay=lambda d, i: i * i + d)
+    t = env.get(URL).json()["tiles"]
+    want = lab.shape_stats(delays)
+    for k in ("median", "p95", "buffer", "skew", "kurtosis"):
+        assert want[k] is not None
+        assert t[k]["value"] == pytest.approx(want[k], rel=1e-9)
+
+
+def test_distribution_small_n_thresholds(env):
+    seed(env, 1, per=2)
+    t = env.get(URL).json()["tiles"]
+    assert t["skew"]["value"] is None and t["kurtosis"]["value"] is None
+
+
+def test_distribution_n3_skew_only(env):
+    seed(env, 1, per=3, delay=lambda d, i: i * i)
+    t = env.get(URL).json()["tiles"]
+    assert t["skew"]["value"] is not None and t["kurtosis"]["value"] is None
+
+
+def test_distribution_n4_constant_no_shape(env):
+    seed(env, 1, per=4, delay=lambda d, i: 30)
+    t = env.get(URL).json()["tiles"]
+    assert t["skew"]["value"] is None and t["kurtosis"]["value"] is None
