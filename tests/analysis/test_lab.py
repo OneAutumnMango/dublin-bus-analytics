@@ -98,3 +98,33 @@ def test_bootstrap_none_values_dropped():
 def test_bootstrap_bad_level_raises():
     with pytest.raises(ValueError):
         day_bootstrap([np.zeros(3)] * 10, _mean_stat, level=1.0)
+
+
+def _flaky(bad_value, bad_every):
+    """stat_fn: real-days call is finite; resample k returns bad_value when bad_every(k)."""
+    calls = {"n": 0}
+
+    def fn(d):
+        calls["n"] += 1
+        k = calls["n"] - 1  # 0 is the real data
+        return {"mean": bad_value if k > 0 and bad_every(k) else 1.0 + k % 3}
+
+    return fn
+
+
+_DAYS = [np.full(5, float(i)) for i in range(10)]
+
+
+def test_bootstrap_all_nan_is_none():
+    assert day_bootstrap(_DAYS, _flaky(float("nan"), lambda k: True)) == {"mean": None}
+
+
+def test_bootstrap_inf_dropped_gives_finite_ci():
+    ci = day_bootstrap(_DAYS, _flaky(float("inf"), lambda k: k % 10 == 0))
+    json.dumps(ci, allow_nan=False)
+    assert ci["mean"] is not None
+
+
+def test_bootstrap_nan_for_over_half_is_none():
+    # k = 1..200; NaN for k <= 101 leaves 99 valid (< 100 = half of 200)
+    assert day_bootstrap(_DAYS, _flaky(float("nan"), lambda k: k <= 101)) == {"mean": None}

@@ -69,7 +69,7 @@ def day_bootstrap(days, stat_fn, level: float = 0.95, B: int = BOOT_B,
     draws = [stat_fn([days[i] for i in rng.integers(0, n, n)]) for _ in range(B)]
     out = {}
     for k in keys:
-        vals = [d[k] for d in draws if d.get(k) is not None]
+        vals = [d[k] for d in draws if d.get(k) is not None and np.isfinite(d[k])]
         if len(vals) * 2 < B:
             out[k] = None
         else:
