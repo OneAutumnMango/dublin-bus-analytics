@@ -7,7 +7,7 @@ const { rankRoutes, renderSidebar, onTrackedChange } = await import('../js/sideb
 const R = (...n) => n.map((s, i) => ({ id: `i${i}`, shortName: s, longName: '' }));
 const mount = async () => { const root = new FNode('aside'); await renderSidebar(root, { signal: new AbortController().signal }); return root; };
 const type = (root, v) => { const i = root.byTag('input')[0]; i.value = v; i.dispatch('input'); return i; };
-const trackedHrefs = (root) => root.byTag('a').map((a) => a.getAttribute('href')).filter((x) => x !== '#/all' && !x.startsWith('#/lab/'));
+const trackedHrefs = (root) => root.byTag('a').map((a) => a.getAttribute('href')).filter((x) => x !== '#/all' && x !== '#/lab' && !x.startsWith('#/lab/'));
 const names = (l) => l.map((r) => r.shortName);
 
 test('rankRoutes: exact, prefixes, rest; stable; case-insensitive', () => {
@@ -113,7 +113,7 @@ test('sidebar: aria-current follows the hash', async () => {
   const root = await mount();
   globalThis.location.hash = '#/analytics/sA';
   for (const fn of globalThis.__listeners.hashchange) fn();
-  const [a, b] = root.byTag('a').filter((x) => x.getAttribute('href') !== '#/all' && !x.getAttribute('href').startsWith('#/lab/'));
+  const [a, b] = root.byTag('a').filter((x) => x.getAttribute('href') !== '#/all' && x.getAttribute('href') !== '#/lab' && !x.getAttribute('href').startsWith('#/lab/'));
   assert.equal(a.getAttribute('aria-current'), 'page');
   assert.equal(b.getAttribute('aria-current'), null);
   globalThis.location.hash = '#/analytics/sB';
@@ -195,4 +195,18 @@ test('sidebar: unsubscribe stops calls; a throwing listener does not break other
   await settle();
   assert.equal(a, 1); assert.equal(b, 2);
   offBad(); offB();
+});
+
+test('sidebar: Stats lab (all routes) link sits right under All routes and tracks the hash', async () => {
+  installFetch({ 'GET /api/routes/tracked': () => ({ routes: ['15'] }) });
+  globalThis.location = { hash: '#/lab' };
+  const root = await mount();
+  const hrefs = root.byTag('a').map((a) => a.getAttribute('href'));
+  assert.equal(hrefs[hrefs.indexOf('#/all') + 1], '#/lab');
+  const a = root.byText('a', /^Stats lab \(all routes\)$/)[0];
+  assert.equal(a.getAttribute('aria-current'), 'page');
+  assert.equal(root.byText('a', /^All routes$/)[0].getAttribute('aria-current'), null);
+  globalThis.location = { hash: '#/lab/15' };
+  const root2 = await mount();
+  assert.equal(root2.byText('a', /^Stats lab \(all routes\)$/)[0].getAttribute('aria-current'), null);
 });

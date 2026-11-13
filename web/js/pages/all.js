@@ -32,7 +32,7 @@ export async function render(ctx) {
   ctx.title('All routes');
   const sections = ['cmp', 'heat', 'fc'].map(() => h('section', { class: 'analytics-section' }));
   put(ctx.main,
-    crumbs(link('#/', '← All routes list')),
+    crumbs(link('#/', '← All routes list'), link(buildHash('lab'), 'Stats lab for all routes')),
     h('h1', {}, 'All tracked routes'),
     h('p', { class: 'subtitle' }, 'Delay = actual minus scheduled: negative = early, positive = late. Every tracked route is compared, then pooled. Pooled by arrival, not by route.'),
     ...filterBar(ctx, 'all', {}, s), ...sections);

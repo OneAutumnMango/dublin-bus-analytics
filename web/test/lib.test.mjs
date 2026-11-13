@@ -177,6 +177,7 @@ test('hash routes round trip', () => {
     ['trip', { trip: 't#1?x', stop: '8220DB000002' }, { seq: '1700000000' }],
     ['analytics', { route: 'x y' }, {}],
     ['lab', { route: 'x y' }, {}],
+    ['lab', {}, {}],
     ['all', {}, {}],
   ];
   for (const [name, params, query] of cases) {
@@ -196,6 +197,11 @@ test('parseHash defaults and bad input', () => {
   assert.equal(L.parseHash('#/nope').name, 'notfound');
   assert.deepEqual(L.parseHash('#/all'), { name: 'all', params: {}, query: {} });
   assert.equal(L.parseHash('#/all/x').name, 'notfound');
+  assert.deepEqual(L.parseHash('#/lab'), { name: 'lab', params: {}, query: {} });
+  assert.equal(L.buildHash('lab'), '#/lab');
+  assert.deepEqual(L.parseHash('#/lab/15'), { name: 'lab', params: { route: '15' }, query: {} });
+  assert.equal(L.parseHash('#/lab/').name, 'notfound');
+  assert.equal(L.parseHash('#/lab/1/2').name, 'notfound');
   assert.equal(L.parseHash('#/route').name, 'notfound');
   assert.equal(L.parseHash('#/route/a/b').name, 'notfound');
   assert.equal(L.parseHash('#/stop/onlyone').name, 'notfound');

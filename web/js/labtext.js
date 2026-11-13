@@ -68,7 +68,16 @@ export const EXPLAIN = {
   },
 };
 
-const FACTOR = { hour: 'hour of day', weekday: 'day of week', stop: 'stop', date: 'calendar date' };
+// the all-routes page has a fifth bar, so its popover says so and explains it
+EXPLAIN.varianceAll = {
+  ...EXPLAIN.variance,
+  paragraphs: [
+    ...EXPLAIN.variance.paragraphs.map((p) => p.replace('weekday, stop, or calendar date', 'weekday, stop, calendar date, or route').replace('The four bars', 'The five bars')),
+    'The route bar shows how much of the delay variation which route a bus is on explains. Every arrival counts once, so busy routes weigh more than quiet ones.',
+  ],
+};
+
+const FACTOR = { hour: 'hour of day', weekday: 'day of week', stop: 'stop', date: 'calendar date', route: 'route' };
 
 // Cautions appended to a reading: few observations, and no intervals yet.
 const caveats = (d) => [d.low_n ? ' Based on few observations; treat as rough.' : '', d.enough_days === false ? ' Confidence intervals are not shown yet (not enough days).' : ''].join('');

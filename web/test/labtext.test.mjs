@@ -6,7 +6,7 @@ const T = (v) => ({ value: v, ci_low: null, ci_high: null });
 const bad = /null|undefined|NaN/;
 
 test('every EXPLAIN entry has title and paragraphs', () => {
-  const keys = ['ecdf', 'qq', 'shape', 'buffer', 'persistence', 'recovery', 'variance', 'ci'];
+  const keys = ['ecdf', 'qq', 'shape', 'buffer', 'persistence', 'recovery', 'variance', 'varianceAll', 'ci'];
   assert.deepEqual(Object.keys(EXPLAIN).sort(), [...keys].sort());
   for (const k of keys) {
     assert.ok(EXPLAIN[k].title);
@@ -124,4 +124,17 @@ test('EXPLAIN covers negative correlation, negative slope and negative omega squ
   assert.match(all('persistence'), /negative correlation.*late stop tends to be followed by an earlier-than-usual one/);
   assert.match(all('recovery'), /negative slope.*starts late tends to finish early.*over-correction/);
   assert.match(all('variance'), /slightly negative.*no effect/);
+});
+
+test('varianceAll adds the route factor; per-route variance text is unchanged', () => {
+  assert.doesNotMatch(EXPLAIN.variance.paragraphs.join(' '), /route/i);
+  assert.equal(EXPLAIN.varianceAll.title, EXPLAIN.variance.title);
+  assert.doesNotMatch(EXPLAIN.varianceAll.paragraphs.join(' '), /four bars/);
+  assert.match(EXPLAIN.varianceAll.paragraphs.join(' '), /five bars/);
+  assert.match(EXPLAIN.varianceAll.paragraphs.join(' '), /busy routes weigh more/);
+});
+
+test('readVariance names route when it is the top factor', () => {
+  const f = (factor, omega2) => ({ factor, omega2, levels: 3 });
+  assert.match(readVariance({ n: 100, factors: [f('hour', 0.05), f('route', 0.3)] }), /route explains the most delay variation \(30%\)/);
 });

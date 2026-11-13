@@ -158,3 +158,12 @@ test('lab endpoints request /lab/{distribution|variance|persistence} with the qu
   await api.labPersistence('15/A', { since: 5 });
   assert.deepEqual(urls, ['distribution', 'variance', 'persistence'].map((x) => ['GET', `/api/routes/15%2FA/lab/${x}?since=5`]));
 });
+
+test('all-routes lab endpoints request /all/lab/{distribution|variance|persistence} with the query', async () => {
+  const urls = [];
+  const api = A.makeApi(async (url, init) => { urls.push([init.method, url]); return resp(200, {}); });
+  await api.allLabDistribution({ since: 5 });
+  await api.allLabVariance({ since: 5 });
+  await api.allLabPersistence({ since: 5 });
+  assert.deepEqual(urls, ['distribution', 'variance', 'persistence'].map((x) => ['GET', `/api/all/lab/${x}?since=5`]));
+});

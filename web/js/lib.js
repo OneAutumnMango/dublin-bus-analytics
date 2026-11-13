@@ -216,9 +216,10 @@ export function parseQuery(str) {
 }
 
 const ROUTES = { routes: [], route: ['route'], stop: ['route', 'stop'], trip: ['trip', 'stop'], analytics: ['route'], lab: ['route'], settings: [], map: [], all: [] };
+const OPTIONAL = new Set(['lab']); // the route segment may be omitted: #/lab is the all-routes view
 
 export function buildHash(name, params = {}, query = {}) {
-  const segs = [name === 'routes' ? '' : name, ...(ROUTES[name] || []).map((k) => enc(params[k] ?? ''))];
+  const segs = [name === 'routes' ? '' : name, ...(ROUTES[name] || []).filter((k) => !(OPTIONAL.has(name) && params[k] == null)).map((k) => enc(params[k] ?? ''))];
   const q = buildQuery(query);
   return `#/${name === 'routes' ? '' : segs.join('/')}${q ? `?${q}` : ''}`;
 }
@@ -232,9 +233,10 @@ export function parseHash(hash) {
   if (path === '') return { name: 'routes', params: {}, query };
   const [name, ...rest] = path.split('/');
   const keys = ROUTES[name];
-  if (!keys || name === 'routes' || rest.length !== keys.length || rest.some((x) => x === '')) return notfound;
+  const want = keys && OPTIONAL.has(name) && !rest.length ? 0 : keys?.length;
+  if (!keys || name === 'routes' || rest.length !== want || rest.some((x) => x === '')) return notfound;
   try {
-    return { name, params: Object.fromEntries(keys.map((k, i) => [k, decodeURIComponent(rest[i])])), query };
+    return { name, params: Object.fromEntries(keys.slice(0, want).map((k, i) => [k, decodeURIComponent(rest[i])])), query };
   } catch {
     return notfound;
   }

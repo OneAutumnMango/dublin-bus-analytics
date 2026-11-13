@@ -104,3 +104,9 @@ test('all page: a route without data is left out of the chart but kept in the ta
   assert.equal(cmp.all((n) => n.tag === 'g' && /(^| )row( |$)/.test(n.getAttribute('class') || '')).length, 1);
   assert.deepEqual(rowsOf(ctx), ['15', 'empty']);
 });
+
+test('all page links to the all-routes Stats lab', async () => {
+  stubs();
+  const ctx = await mount();
+  assert.ok(ctx.main.byTag('a').some((a) => a.getAttribute('href') === '#/lab'));
+});

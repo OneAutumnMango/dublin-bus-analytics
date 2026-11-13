@@ -218,3 +218,44 @@ test('lab: hover targets are on the ECDF and Q-Q charts', async () => {
   assert.equal(d.all((n) => n.getAttribute('class') === 'hover-area').length, 1);
   assert.equal(d.all((n) => n.getAttribute('class') === 'qq-hit').length, DIST.qq.length);
 });
+
+// ---- all-routes mode (#/lab, no route) ----
+const allUrl = (k) => `GET /api/all/lab/${k}`;
+const ALL_VAR = { ...VAR, routes: 12, factors: ['hour', 'weekday', 'stop', 'date', 'route'].map((factor, i) => ({ factor, omega2: 0.05 * (i + 1), ci_low: 0.01, ci_high: 0.5, levels: 5 })) };
+const allStubs = (over = {}) => installFetch({ [allUrl('distribution')]: { ...DIST, routes: 12 }, [allUrl('persistence')]: { ...PERS, routes: 12, routes_used: ['15', '46A'], routes_skipped: [] }, [allUrl('variance')]: ALL_VAR, ...over });
+const mountAll = async () => { const ctx = { ...ctxOf(), params: {} }; await render(ctx); await settle(); return ctx; };
+
+test('all-routes lab: heading, pooled note, five variance bars, crumb back to #/all', async () => {
+  allStubs();
+  const ctx = await mountAll();
+  assert.equal(ctx.main.byTag('h1')[0].textContent, 'Stats lab for all routes');
+  assert.match(ctx.main.textContent, /12 routes pooled; every arrival counts once, so busy routes weigh more/);
+  assert.equal(sections(ctx).length, 3);
+  const bars = sections(ctx)[2];
+  assert.equal(bars.all((n) => n.getAttribute('class') === 'lab-bar').length, 5);
+  assert.match(bars.textContent, /Route/);
+  assert.match(bars.textContent, /route explains the most delay variation/);
+  assert.ok(ctx.main.byTag('a').some((a) => a.getAttribute('href') === '#/all'));
+  const pop = popOf(ctx, infoBtns(sections(ctx)[2])[0]);
+  assert.match(pop.textContent, /busy routes weigh more/);
+});
+
+test('all-routes lab: skipped routes line, empty state, independent sections', async () => {
+  allStubs({ [allUrl('persistence')]: { ...PERS, routes: 12, routes_used: ['15'], routes_skipped: ['a', 'b'] }, [allUrl('variance')]: fail(500, 'boom') });
+  let ctx = await mountAll();
+  assert.match(sections(ctx)[1].textContent, /2 routes left out: stop order unavailable/);
+  assert.ok(sections(ctx)[0].byTag('svg').length >= 1);
+  assert.match(sections(ctx)[2].textContent, /Something went wrong/);
+  allStubs({ [allUrl('distribution')]: { ...DIST, n: 0, routes: 0, ecdf: [], qq: [] }, [allUrl('persistence')]: { ...PERS, n_trips: 0, routes: 0, routes_used: [], routes_skipped: [], lags: [], recovery: null }, [allUrl('variance')]: { ...ALL_VAR, n: 0, routes: 0, factors: [] } });
+  ctx = await mountAll();
+  for (const sec of sections(ctx)) assert.equal(sec.all((n) => n.getAttribute('class') === 'empty').length, 1);
+  assert.doesNotMatch(ctx.main.textContent, /routes pooled/);
+});
+
+test('per-route page keeps the per-route heading and variance text', async () => {
+  stubs();
+  const ctx = await mount();
+  assert.equal(ctx.main.byTag('h1')[0].textContent, 'Stats lab for route 15');
+  assert.doesNotMatch(ctx.main.textContent, /routes pooled/);
+  assert.doesNotMatch(popOf(ctx, infoBtns(sections(ctx)[2])[0]).textContent, /busy routes weigh more/);
+});
