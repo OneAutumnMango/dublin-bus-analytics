@@ -63,7 +63,7 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `BACKUP_TIME` | `03:00` | `HH:MM`, Europe/Dublin local time |
 | `BACKUP_KEEP` | `7` | Backups to keep (positive integer) |
 | `BACKUP_DIR` | `<DATA_DIR>/backups` | Backup directory (a relative path is relative to the working directory) |
-| `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | One copy of each finished month (`samples-YYYY-MM.db.gz`), never overwritten or pruned; set to an empty string to turn the archive copy off |
+| `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | One copy of each finished month (`samples-YYYY-MM.db.gz`), never overwritten or pruned; set to an empty string to turn the archive copy off. The nightly tar excludes finished `.gz` months, so a finished month lives only here, in `DATA_DIR` and in the one tar made before it was compacted; with the archive off, that tar rotates out after `BACKUP_KEEP` nights and the month exists only in `DATA_DIR` |
 | `ALLOWED_HOSTS` | unset | Comma list of accepted `Host` names (wildcards like `*.example.com` work). Unset or blank: any Host is accepted. When set, only those plus `localhost`, `127.0.0.1` and `[::1]` are accepted; anything else gets `400 Invalid host header`. A bad wildcard such as `a*.com` stops the app at startup |
 | `WEB_DIR` | `web/` next to `app/` | Directory of the static UI (read by `app/api/static.py`) |
 
@@ -131,13 +131,13 @@ The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this servi
 cd ../dublin-bus-server && docker compose --profile analytics up -d --build
 ```
 
-Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
+Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR`, `ANALYTICS_ALLOWED_HOSTS`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
 
 ## Data and backups
 
 Under `DATA_DIR`: `meta.db` (tracked routes, stops, trips, arrivals; kept forever), `samples-YYYY-MM.db` (raw prediction samples, one file per month, stored only when a prediction changes), and `backups/`. A month's file is gzipped (`.db.gz`, still readable) once it has been closed for 2 days.
 
-A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, keeps the newest `BACKUP_KEEP` (7), then gzips closed months. Every finished `samples-YYYY-MM.db.gz` is copied once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned, so old months are not in the tars. If none is under 24 h old at startup, one runs straight away.
+A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, keeps the newest `BACKUP_KEEP` (7), then gzips closed months. Every finished `samples-YYYY-MM.db.gz` is copied once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned, so old months are not in the tars. A finished month therefore lives only in the archive folder, in `DATA_DIR`, and in the one tar made before it was compacted. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`), or if archiving keeps failing (check the log for "archiving"), that tar rotates out after `BACKUP_KEEP` nights and the month then exists only in `DATA_DIR`: keep your own copy of the `.gz` files. If none is under 24 h old at startup, one runs straight away.
 
 Manual: the Backup card on the Routes page, or
 
@@ -153,11 +153,11 @@ Restore:
 3. A local `samples-YYYY-MM.db.gz` takes precedence over an extracted plain `samples-YYYY-MM.db`: delete the `.gz` for every month you want restored from the backup.
 4. Check the tar contents with `tar -tf`, extract the latest tar with `tar -xf analytics-<stamp>.tar -C "$DATA_DIR"`, copy the `.gz` files from the archive folder next to the databases, and start the app.
 
-Copies kept off the host (including the archive folder) are your responsibility.
+Copies kept off the host (including the archive folder) are your responsibility. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
 
 ### Tunnels and LAN access
 
-**The app has no login.** A public tunnel must have a login in front of it (for example Cloudflare Access). `ALLOWED_HOSTS` only protects once it is set, for example `ALLOWED_HOSTS=192.168.1.20,mypi.local,analytics.example.com`. Loopback names are always allowed, so a proxy or tunnel that rewrites the Host header to `localhost` (for example cloudflared with an `httpHostHeader` override) bypasses the allow-list: leave the original Host header intact. The rejected-host response does not name the host; check what Host your proxy sends with `curl -v`. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
+**The app has no login.** A public tunnel must have a login in front of it (for example Cloudflare Access). `ALLOWED_HOSTS` only protects once it is set, for example `ALLOWED_HOSTS=192.168.1.20,mypi.local,analytics.example.com`. Loopback names are always allowed, so a proxy or tunnel that rewrites the Host header to `localhost` (for example cloudflared with an `httpHostHeader` override) bypasses the allow-list: leave the original Host header intact. The rejected-host response does not name the host; check what Host your proxy sends with `curl -v`.
 
 ### JSON export
 
@@ -197,7 +197,7 @@ Removal is asynchronous: `POST /api/data/day/remove` starts a background job and
 
 In the web UI this is the "Remove a day of data" section of the Backup card on the Routes page: pick From and To dates (To is optional) and a route, press Preview, then "Remove these rows" (shown only for the previewed dates and route). While it runs, the Remove button shows a spinner and a progress bar with running counts is displayed; the final counts are shown when it finishes. For a range including today or a later date it also warns that the day is still being recorded, so in-flight buses may leave incomplete forecast rows and the day may not end up completely empty.
 
-- Deleted: arrivals of that `service_date`, their forecasts, raw samples in the day's local window (23 or 25 hours on DST days) and gaps starting in it. `routes_tracked` and `meta_kv` are kept; nothing is vacuumed.
+- Deleted: arrivals of that `service_date`, their forecasts, raw samples in the day's local window (23 or 25 hours on DST days) and gaps starting in it. `routes_tracked` is kept; nothing is vacuumed.
 - With `route`, only samples belonging to that route's arrivals of the day go; samples without an arrival (buses dropped before arriving) and gaps cannot be attributed to a route and stay.
 - A gzipped (closed) month is immutable and is skipped and reported; extract it by hand if you must clean it.
 - Rows are removed in chunks of 2000, each its own short transaction, so the collector keeps writing. If a file stays locked the job ends in state `error` with the counts `done` so far; repeat the removal to finish. Only one remove, backup or compaction runs at a time (`409` when busy).

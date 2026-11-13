@@ -70,7 +70,7 @@ def test_preview_equals_remove(data, route, exp):
     assert _count(data / "samples-2026-11.db", "sample") == 6 - exp[3]
 
 
-def test_all_routes_leaves_other_days_and_kv(data):
+def test_all_routes_leaves_other_days_and_tracked_routes(data):
     D.remove(data, DAY, None)
     m = sqlite3.connect(data / "meta.db")
     assert sorted(r[0] for r in m.execute("select id from arrivals")) == [4, 5]

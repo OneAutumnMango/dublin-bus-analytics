@@ -1061,3 +1061,31 @@ def test_api_rate_limited_with_retry_after(data):
 def test_api_future_dated_newest_does_not_block(client, data):
     _mk(data / "backups", "analytics-20990101T000000Z.tar", body=b"FUTURE")
     assert client.post("/api/backup").status_code == 200
+
+
+def test_archive_months_never_raises_when_tmp_cleanup_fails(data, tmp_path, monkeypatch):
+    gz = _gz_data(data)
+    a = tmp_path / "arch"
+    a.mkdir()
+    real = Path.unlink
+
+    def bad(self, *args, **kw):
+        if self.name.endswith(".tmp"):
+            raise PermissionError("nope")
+        return real(self, *args, **kw)
+
+    monkeypatch.setattr(Path, "unlink", bad)
+    assert backup.archive_months(data, a) == [a / gz.name]
+
+
+def test_snapshot_logs_error_when_archiving_fails(data, tmp_path, monkeypatch, caplog):
+    _gz_data(data)
+
+    def boom(*a, **k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(backup, "archive_months", boom)
+    with caplog.at_level(logging.ERROR):
+        snapshot(data, tmp_path / "bk", archive_dir=tmp_path / "arch")
+    assert any(r.levelno == logging.ERROR and "finished months are not yet in the archive" in r.getMessage()
+               for r in caplog.records)

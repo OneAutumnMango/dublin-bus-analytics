@@ -166,7 +166,7 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
                 _clean_stale(archive_dir, ("samples-????-??.db.gz.tmp",))
                 archive_months(data_dir, archive_dir)
             except Exception:
-                log.exception("archiving closed months to %s failed", archive_dir)
+                log.exception("archiving closed months to %s failed; finished months are not yet in the archive", archive_dir)
         return final
 
 
@@ -190,9 +190,15 @@ def archive_months(data_dir: Path, archive_dir: Path) -> list[Path]:
         except Exception:
             log.exception("archiving %s failed", gz.name)
         finally:
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                log.warning("could not remove temp archive file %s", tmp)
     if copied:
-        _fsync_dir(archive_dir)
+        try:
+            _fsync_dir(archive_dir)
+        except OSError:
+            log.warning("could not fsync archive dir %s", archive_dir)
     return copied
 
 
