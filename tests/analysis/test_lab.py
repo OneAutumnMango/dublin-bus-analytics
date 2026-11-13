@@ -3,7 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from app.analysis.lab import day_bootstrap, ecdf_points, qq_points, shape_stats
+from app.analysis.lab import (autocorr_by_lag, day_bootstrap, ecdf_points, omega_squared,
+                              qq_points, recovery_slope, shape_stats)
 
 
 def test_ecdf_downsamples_and_ends_at_one():
@@ -128,3 +129,75 @@ def test_bootstrap_inf_dropped_gives_finite_ci():
 def test_bootstrap_nan_for_over_half_is_none():
     # k = 1..200; NaN for k <= 101 leaves 99 valid (< 100 = half of 200)
     assert day_bootstrap(_DAYS, _flaky(float("nan"), lambda k: k <= 101)) == {"mean": None}
+
+
+def test_autocorr_perfectly_persistent_trips():
+    trips = [[(p, j * 10.0) for p in range(6)] for j in range(30)]
+    ac = autocorr_by_lag(trips)
+    assert ac[1]["n"] == 150
+    for lag in range(1, 6):
+        assert ac[lag]["r"] == pytest.approx(1.0)
+
+
+def test_autocorr_independent_delays_near_zero():
+    rng = np.random.default_rng(2)
+    trips = [[(p, float(v)) for p, v in enumerate(rng.normal(size=6))] for _ in range(2000)]
+    assert abs(autocorr_by_lag(trips)[1]["r"]) < 0.1
+
+
+def test_autocorr_only_exact_position_gaps_pair():
+    rng = np.random.default_rng(3)
+    trips = [[(0, float(rng.normal())), (2, float(rng.normal())), (3, float(rng.normal()))]
+             for _ in range(20)]
+    ac = autocorr_by_lag(trips)
+    assert ac[1]["n"] == ac[2]["n"] == ac[3]["n"] == 20
+    assert ac[4]["n"] == 0 and ac[4]["r"] is None
+    # lag 2 uses only (0,2): check against direct Pearson
+    x = [t[0][1] for t in trips]; y = [t[1][1] for t in trips]
+    assert ac[2]["r"] == pytest.approx(np.corrcoef(x, y)[0, 1])
+    x = [t[0][1] for t in trips]; y = [t[2][1] for t in trips]
+    assert ac[3]["r"] == pytest.approx(np.corrcoef(x, y)[0, 1])
+
+
+def test_autocorr_degenerate():
+    const = [[(p, 5.0) for p in range(4)] for _ in range(10)]
+    assert autocorr_by_lag(const)[1]["r"] is None
+    few = [[(0, 1.0), (1, 2.0)], [(0, 3.0), (1, 1.0)]]
+    assert autocorr_by_lag(few)[1]["r"] is None
+    with pytest.raises(ValueError):
+        autocorr_by_lag(few, max_lag=0)
+
+
+def test_recovery_slope():
+    firsts = [1.0, 5.0, 9.0, 2.0, 7.0]
+    half = [[(0, f), (1, 0.5 * f), (2, 0.5 * f)] for f in firsts]
+    same = [[(0, f), (3, f)] for f in firsts]
+    r = recovery_slope(half)
+    assert r["slope"] == pytest.approx(0.5) and r["n"] == 10
+    assert recovery_slope(same)["slope"] == pytest.approx(1.0)
+    flat = [[(0, 4.0), (1, f)] for f in firsts]
+    assert recovery_slope(flat)["slope"] is None
+    assert recovery_slope([[(0, 1.0)]]) == {"slope": None, "n": 0}
+
+
+def test_omega_separated_groups():
+    rng = np.random.default_rng(4)
+    codes = np.repeat(np.arange(5), 100)
+    y = codes * 10 + rng.normal(size=500)
+    assert omega_squared(codes, y) > 0.95
+
+
+def test_omega_independent_near_zero():
+    rng = np.random.default_rng(5)
+    codes = rng.integers(0, 5, 1000)
+    w = omega_squared(codes, rng.normal(size=1000))
+    assert 0 <= w < 0.02
+
+
+def test_omega_degenerate():
+    y = np.arange(10.0)
+    assert omega_squared(np.zeros(10, dtype=int), y) is None
+    assert omega_squared(np.arange(10), y) is None
+    assert omega_squared(np.arange(10) % 2, np.ones(10)) is None
+    with pytest.raises(ValueError):
+        omega_squared(np.zeros(3, dtype=int), np.zeros(4))

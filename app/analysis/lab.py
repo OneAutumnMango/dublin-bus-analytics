@@ -76,3 +76,62 @@ def day_bootstrap(days, stat_fn, level: float = 0.95, B: int = BOOT_B,
             lo, hi = np.percentile(vals, [(1 - level) / 2 * 100, (1 + level) / 2 * 100])
             out[k] = (float(lo), float(hi))
     return out
+
+
+def _pearson(a: np.ndarray, b: np.ndarray):
+    if len(a) < 3 or a.std() == 0 or b.std() == 0:
+        return None
+    r = float(np.corrcoef(a, b)[0, 1])
+    return r if np.isfinite(r) else None
+
+
+def autocorr_by_lag(trips, max_lag: int = 5) -> dict[int, dict]:
+    """Pearson r of delays `lag` positions apart, pooled over trips. trips: [[(pos, delay)]]."""
+    if max_lag < 1:
+        raise ValueError("max_lag must be >= 1")
+    pairs: dict[int, tuple[list, list]] = {g: ([], []) for g in range(1, max_lag + 1)}
+    for t in trips:
+        for i, (p, d) in enumerate(t):
+            for q, e in t[i + 1:]:
+                if q - p > max_lag:
+                    break
+                pairs[q - p][0].append(d)
+                pairs[q - p][1].append(e)
+    return {g: {"r": _pearson(np.array(a, float), np.array(b, float)), "n": len(a)}
+            for g, (a, b) in pairs.items()}
+
+
+def recovery_slope(trips) -> dict:
+    """Least-squares slope of later delays on the trip's first-position delay."""
+    xs, ys = [], []
+    for t in trips:
+        for _, d in t[1:]:
+            xs.append(t[0][1])
+            ys.append(d)
+    n = len(xs)
+    x, y = np.array(xs, float), np.array(ys, float)
+    if n < 3 or x.std() == 0:
+        return {"slope": None, "n": n}
+    slope = float(((x - x.mean()) * (y - y.mean())).sum() / ((x - x.mean()) ** 2).sum())
+    return {"slope": slope if np.isfinite(slope) else None, "n": n}
+
+
+def omega_squared(codes, y) -> float | None:
+    """Adjusted one-way ANOVA effect size, clamped at 0."""
+    codes, y = np.asarray(codes), np.asarray(y, float)
+    if len(codes) != len(y):
+        raise ValueError("codes and y must have the same length")
+    n = len(y)
+    _, inv = np.unique(codes, return_inverse=True)
+    cnt = np.bincount(inv)
+    k = len(cnt)
+    if k < 2 or n - k < 1:
+        return None
+    sst = float(((y - y.mean()) ** 2).sum())
+    if sst == 0:
+        return None
+    means = np.bincount(inv, weights=y) / cnt
+    ssb = float((cnt * (means - y.mean()) ** 2).sum())
+    msw = (sst - ssb) / (n - k)
+    w = (ssb - (k - 1) * msw) / (sst + msw)
+    return max(0.0, float(w)) if np.isfinite(w) else None
