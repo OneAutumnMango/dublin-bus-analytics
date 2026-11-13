@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installDom } from './fakedom.mjs';
-import { ecdfGeometry, qqGeometry, barGeometry, renderEcdf, renderQq, renderBars } from '../js/labcharts.js';
+import { ecdfGeometry, qqGeometry, barGeometry, renderEcdf, renderQq, renderBars, ecdfAtPercentile, percentileAtY, ecdfReadout, qqReadout, normCdf } from '../js/labcharts.js';
 
 installDom();
 const doc = globalThis.document;
@@ -111,4 +111,72 @@ test('renderers draw the given axis labels, y rotated, and none by default', () 
 test('axis labels are finite on degenerate input and clear the tick labels', () => {
   for (const g of [ecdfGeometry([]), qqGeometry([]), barGeometry([])]) assert.ok(g.x0 >= 60 && g.height - g.y0 >= 50);
   finiteAttrs(renderEcdf(ecdfGeometry([]), { title: 'T', desc: 'D', doc, xLabel: 'x', yLabel: 'y' }));
+});
+
+const P = [{ x: -60, p: 0.1 }, { x: 0, p: 0.5 }, { x: 120, p: 0.9 }];
+
+test('ecdfAtPercentile: interpolates, clamps at the edges, empty and duplicates are safe', () => {
+  const near = (r, x) => { assert.ok(Math.abs(r.x - x) < 1e-9 && r.clamp === null); };
+  near(ecdfAtPercentile(P, 0.3), -30);
+  near(ecdfAtPercentile(P, 0.7), 60);
+  assert.deepEqual(ecdfAtPercentile(P, 0.5), { x: 0, clamp: null });
+  assert.deepEqual(ecdfAtPercentile(P, 0.05), { x: -60, clamp: 'low' });
+  assert.deepEqual(ecdfAtPercentile(P, 0.99), { x: 120, clamp: 'high' });
+  assert.equal(ecdfAtPercentile([], 0.5), null);
+  const dupP = ecdfAtPercentile([{ x: 0, p: 0.5 }, { x: 5, p: 0.5 }, { x: 9, p: 1 }], 0.5);
+  assert.ok(Number.isFinite(dupP.x));
+  assert.deepEqual(ecdfAtPercentile([{ x: 2, p: 0.2 }, { x: 2, p: 0.6 }, { x: 2, p: 1 }], 0.4), { x: 2, clamp: null });
+});
+
+test('percentileAtY: pointer y to percentile, clamped to the plot', () => {
+  const g = ecdfGeometry(P);
+  assert.equal(percentileAtY(g, g.y0), 0);
+  assert.equal(percentileAtY(g, g.y1), 1);
+  assert.ok(Math.abs(percentileAtY(g, (g.y0 + g.y1) / 2) - 0.5) < 1e-9);
+  assert.equal(percentileAtY(g, g.y0 + 500), 0);
+  assert.equal(percentileAtY(g, -500), 1);
+  assert.equal(percentileAtY(g, NaN), 0);
+});
+
+test('readouts: ecdf and q-q wording', () => {
+  assert.equal(ecdfReadout(P, 0.7), '70th percentile: 60.0 min late');
+  assert.equal(ecdfReadout(P, 0.3), '30th percentile: 30.0 min early');
+  assert.equal(ecdfReadout(P, 0.5), '50th percentile: on time');
+  assert.match(ecdfReadout(P, 0.99), /^99th percentile: .*beyond/);
+  assert.equal(ecdfReadout([], 0.5), '');
+  assert.ok(Math.abs(normCdf(0) - 0.5) < 1e-6 && Math.abs(normCdf(1.645) - 0.95) < 1e-3);
+  assert.equal(qqReadout(1.64, 9), 'Normal quantile 1.64 (standard deviations) — observed delay 9.0 min late (95th percentile)');
+  assert.match(qqReadout(0, 0), /on time \(50th percentile\)$/);
+  assert.doesNotMatch(qqReadout(-8, -1), /NaN|undefined/);
+});
+
+test('renderEcdf hover: overlay tracks the pointer, marker on the curve, hides on leave', () => {
+  const g = ecdfGeometry(P);
+  const svg = renderEcdf(g, { title: 'T', desc: 'D', doc });
+  svg.getBoundingClientRect = () => ({ top: 100, left: 0, height: g.height, width: g.width });
+  const area = svg.all((n) => n.getAttribute('class') === 'hover-area')[0];
+  const grp = svg.all((n) => n.getAttribute('class') === 'hover-group')[0];
+  assert.equal(grp.getAttribute('visibility'), 'hidden');
+  area.dispatch('pointermove', { clientX: 50, clientY: 100 + (g.y0 + g.y1) / 2 });
+  assert.equal(grp.getAttribute('visibility'), 'visible');
+  assert.match(area.getAttribute('data-tip'), /^50th percentile: on time$/);
+  const circle = grp.byTag('circle')[0];
+  assert.ok(Math.abs(Number(circle.getAttribute('cx')) - g.sx(0)) < 0.01 && Math.abs(Number(circle.getAttribute('cy')) - (g.y0 + g.y1) / 2) < 0.01);
+  finiteAttrs(svg);
+  area.dispatch('pointermove', { clientX: 50, clientY: 100 + g.y1 });
+  assert.equal(circle.getAttribute('visibility'), 'hidden'); // beyond the data: no marker
+  assert.match(area.getAttribute('data-tip'), /beyond/);
+  area.dispatch('pointerleave');
+  assert.equal(grp.getAttribute('visibility'), 'hidden');
+  assert.equal(renderEcdf(ecdfGeometry([]), { title: 'T', desc: 'D', doc }).all((n) => n.getAttribute('class') === 'hover-area').length, 0);
+});
+
+test('renderQq: every point has a larger invisible hit circle carrying its tooltip text', () => {
+  const pts = [{ z: -1, y: -2 }, { z: 0, y: 0 }, { z: 1.64, y: 9 }, { z: 2, y: 12 }];
+  const svg = renderQq(qqGeometry(pts), { title: 'T', desc: 'D', doc });
+  const hits = svg.all((n) => n.getAttribute('class') === 'qq-hit');
+  assert.equal(hits.length, 4);
+  assert.ok(hits.every((c) => Number(c.getAttribute('r')) >= 8));
+  assert.ok(hits.some((c) => c.getAttribute('data-tip') === 'Normal quantile 1.64 (standard deviations) — observed delay 9.0 min late (95th percentile)'));
+  assert.equal(svg.all((n) => n.getAttribute('class') === 'qq-dot').length, 4);
 });

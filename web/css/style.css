@@ -392,3 +392,13 @@ p.reading { font-weight: 600; }
 .sidebar .route-list li:has(> .row-actions) { flex-wrap: wrap; }
 .sidebar li > .name.grow { min-width: 4em; }
 .sidebar .row-actions { display: flex; align-items: center; gap: var(--s1); flex: none; }
+
+/* equal-height pairs: the figure fills its grid cell; hover and Q-Q hit targets */
+.lab-pair .info-host { display: flex; flex-direction: column; }
+.lab-pair .info-host > figure { flex: 1; }
+.chart .hover-area, .chart .qq-hit { fill: transparent; }
+.chart .hover-area { cursor: crosshair; }
+.chart .hover-line { stroke: var(--muted); stroke-width: 1; }
+.chart .hover-line.drop { stroke-dasharray: 3 3; opacity: .6; }
+.chart .ecdf-mark.hover { fill: var(--text); }
+.chart .qq-pt:hover .qq-dot { opacity: 1; stroke: var(--text); stroke-width: 2; }

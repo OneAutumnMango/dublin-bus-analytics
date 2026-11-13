@@ -1,6 +1,6 @@
 // Stats-lab chart geometry (pure, minutes in) and thin SVG renderers. Colours come from CSS classes, never inline.
 // The page converts seconds to minutes before calling these.
-import { isNum, extent, linearScale, niceTicks, niceDomain, fmtNum } from './lib.js';
+import { isNum, extent, linearScale, niceTicks, niceDomain, fmtNum, describeDelay } from './lib.js';
 import { linePath } from './charts.js';
 
 const r2 = (x) => Math.round(x * 100) / 100;
@@ -19,7 +19,7 @@ export function ecdfGeometry(points, o = {}) {
   const domain = niceDomain(e ? e[0] : null, e ? e[1] : null, 6, true);
   const sx = linearScale(domain, [f.x0, f.x1]), sy = linearScale([0, 1], [f.y0, f.y1]);
   const at = (lvl) => { const q = pts.find((s) => s.p >= lvl); return q ? { x: r2(sx(q.x)), y: r2(sy(q.p)), minute: q.x } : null; };
-  return { ...f, domain, sx, sy, path: linePath(pts.map((q) => ({ x: sx(q.x), y: sy(q.p) }))), p50: at(0.5), p95: at(0.95),
+  return { ...f, points: pts, domain, sx, sy, path: linePath(pts.map((q) => ({ x: sx(q.x), y: sy(q.p) }))), p50: at(0.5), p95: at(0.95),
     zeroX: r2(sx(0)),
     xTicks: niceTicks(domain[0], domain[1], 6).map((m) => ({ x: r2(sx(m)), label: lab(m) })),
     yTicks: [0, 0.25, 0.5, 0.75, 1].map((p) => ({ y: r2(sy(p)), label: `${p * 100}%` })) };
@@ -38,7 +38,7 @@ export function qqGeometry(points, o = {}) {
   const ye = extent([...pts.map((q) => q.y), ...(ref ? [ref[1], ref[3]] : [])]);
   const zDomain = niceDomain(ze && ze[0], ze && ze[1], 5), yDomain = niceDomain(ye && ye[0], ye && ye[1], 5);
   const sx = linearScale(zDomain, [f.x0, f.x1]), sy = linearScale(yDomain, [f.y0, f.y1]);
-  return { ...f, zDomain, yDomain, dots: pts.map((q) => ({ cx: r2(sx(q.z)), cy: r2(sy(q.y)) })),
+  return { ...f, zDomain, yDomain, dots: pts.map((q) => ({ cx: r2(sx(q.z)), cy: r2(sy(q.y)), z: q.z, y: q.y })),
     line: ref && { x1: sx(ref[0]), y1: sy(ref[1]), x2: sx(ref[2]), y2: sy(ref[3]) }, // unrounded: rounding would bend the slope
     xTicks: niceTicks(zDomain[0], zDomain[1], 5).map((m) => ({ x: r2(sx(m)), label: lab(m) })),
     yTicks: niceTicks(yDomain[0], yDomain[1], 5).map((m) => ({ y: r2(sy(m)), label: lab(m) })) };
@@ -63,6 +63,38 @@ export function barGeometry(items, o = {}) {
   return { ...f, bars, zeroY: r2(zeroY), yTicks };
 }
 const r12 = (x) => Number(x.toPrecision(12));
+
+// ---------- hover helpers (pure) ----------
+// points sorted by p: the delay (minutes) where the curve reaches percentile p, interpolated; clamp says p lies outside the data.
+export function ecdfAtPercentile(points, p) {
+  const pts = points || [];
+  if (!pts.length) return null;
+  const i = pts.findIndex((q) => q.p >= p);
+  if (i === 0) return { x: pts[0].x, clamp: pts[0].p === p ? null : 'low' };
+  if (i < 0) return { x: pts[pts.length - 1].x, clamp: 'high' };
+  const a = pts[i - 1], b = pts[i], dp = b.p - a.p;
+  return { x: dp > 0 ? a.x + ((b.x - a.x) * (p - a.p)) / dp : b.x, clamp: null };
+}
+// plot y (svg units) -> percentile 0..1, clamped to the plot area
+export function percentileAtY(geo, y) {
+  const span = geo.y0 - geo.y1;
+  return span > 0 && isNum(y) ? Math.min(1, Math.max(0, (geo.y0 - y) / span)) : 0;
+}
+const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'}`;
+const nth = (pct) => (pct < 1 || pct > 99 ? `${fmtNum(pct, 1)}th` : ordinal(Math.round(pct)));
+export function ecdfReadout(points, p) {
+  const r = ecdfAtPercentile(points, p);
+  if (!r) return '';
+  const head = `${nth(p * 100)} percentile`;
+  return r.clamp ? `${head}: beyond the observed data (${describeDelay(r.x * 60)} at the edge)` : `${head}: ${describeDelay(r.x * 60)}`;
+}
+// standard normal CDF (Abramowitz-Stegun 7.1.26, error < 1.5e-7)
+export function normCdf(z) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2), x = Math.abs(z) / Math.SQRT2;
+  const erf = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return z >= 0 ? (1 + erf) / 2 : (1 - erf) / 2;
+}
+export const qqReadout = (z, yMin) => `Normal quantile ${fmtNum(z, 2)} (standard deviations) — observed delay ${describeDelay(yMin * 60)} (${nth(normCdf(z) * 100)} percentile)`;
 
 // ---------- renderers ----------
 const NS = 'http://www.w3.org/2000/svg';
@@ -98,7 +130,32 @@ export function renderEcdf(geo, { title, desc, band = null, xLabel, yLabel, doc 
   for (const [m, k] of [[geo.p50, 'p50'], [geo.p95, 'p95']]) {
     if (m) svg.append(el(doc, 'circle', { class: `ecdf-mark ${k}`, cx: m.x, cy: m.y, r: 4 }), el(doc, 'text', { class: 'marker-label', x: m.x + 6, y: m.y + 14 }, k.toUpperCase()));
   }
+  if (geo.points.length) ecdfHover(doc, svg, geo);
   return svg;
+}
+
+// Pointer enhancement: a horizontal line follows the pointer; its tooltip text goes in data-tip (the shared tooltip shows it).
+function ecdfHover(doc, svg, geo) {
+  const hline = el(doc, 'line', { class: 'hover-line', x1: geo.x0, x2: geo.x1 });
+  const vline = el(doc, 'line', { class: 'hover-line drop' });
+  const dot = el(doc, 'circle', { class: 'ecdf-mark hover', r: 4 });
+  const grp = el(doc, 'g', { class: 'hover-group', visibility: 'hidden', 'pointer-events': 'none' });
+  grp.append(hline, vline, dot);
+  const area = el(doc, 'rect', { class: 'hover-area', x: geo.x0, y: geo.y1, width: geo.x1 - geo.x0, height: geo.y0 - geo.y1 });
+  area.addEventListener('pointermove', (e) => {
+    const box = svg.getBoundingClientRect();
+    const p = percentileAtY(geo, box.height > 0 ? ((e.clientY - box.top) * geo.height) / box.height : NaN);
+    const at = ecdfAtPercentile(geo.points, p);
+    const y = r2(geo.sy(p));
+    hline.setAttribute('y1', y); hline.setAttribute('y2', y);
+    const inside = at && !at.clamp, mx = inside ? r2(geo.sx(at.x)) : 0;
+    for (const n of [dot, vline]) n.setAttribute('visibility', inside ? 'visible' : 'hidden');
+    if (inside) { dot.setAttribute('cx', mx); dot.setAttribute('cy', y); vline.setAttribute('x1', mx); vline.setAttribute('x2', mx); vline.setAttribute('y1', y); vline.setAttribute('y2', geo.y0); }
+    area.setAttribute('data-tip', ecdfReadout(geo.points, p));
+    grp.setAttribute('visibility', 'visible');
+  });
+  area.addEventListener('pointerleave', () => grp.setAttribute('visibility', 'hidden'));
+  svg.append(grp, area);
 }
 
 export function renderQq(geo, { title, desc, xLabel, yLabel, doc = globalThis.document } = {}) {
@@ -106,7 +163,11 @@ export function renderQq(geo, { title, desc, xLabel, yLabel, doc = globalThis.do
   yAxis(doc, svg, geo); xAxis(doc, svg, geo);
   axisTitles(doc, svg, geo, { xLabel, yLabel });
   if (geo.line) svg.append(el(doc, 'line', { class: 'qq-line', ...geo.line }));
-  for (const d of geo.dots) svg.append(el(doc, 'circle', { class: 'qq-dot', cx: d.cx, cy: d.cy, r: 2.5 }));
+  for (const d of geo.dots) { // the larger transparent circle is the hover target; its data-tip is shown by the shared tooltip
+    const g = el(doc, 'g', { class: 'qq-pt' });
+    g.append(el(doc, 'circle', { class: 'qq-dot', cx: d.cx, cy: d.cy, r: 2.5 }), el(doc, 'circle', { class: 'qq-hit', cx: d.cx, cy: d.cy, r: 8, 'data-tip': qqReadout(d.z, d.y) }));
+    svg.append(g);
+  }
   return svg;
 }
 

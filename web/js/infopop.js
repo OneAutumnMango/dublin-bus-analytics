@@ -1,5 +1,6 @@
 // Round "i" button + popover panel. One popover is open at a time; Escape or an outside click closes it.
 import { h } from './dom.js';
+import { hideTip } from './tooltip.js';
 
 let uid = 0, open = null, inside = false;
 const hooked = new WeakSet();
@@ -33,6 +34,7 @@ export function infoPopover(label, entries) {
     close(false);
     if (was) return;
     open = { btn, panel };
+    hideTip(); // a chart tooltip must not sit over the panel
     panel.removeAttribute('hidden');
     btn.setAttribute('aria-expanded', 'true');
   } } }, 'i');
