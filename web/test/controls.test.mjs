@@ -90,7 +90,14 @@ test('controls: three rows (period, hours, statistics) with no bordered fieldset
   const { form } = build();
   const rows = form.all((n) => (attrs(n, 'class')).split(' ').includes('frow'));
   assert.equal(rows.length, 3);
-  assert.deepEqual(rows.map((r) => r.byTag('legend').map((l) => l.textContent)[0] || attrs(r, 'aria-label')), ['Period', 'Hours (Dublin time)', 'Statistics']);
+  assert.deepEqual(rows.map((r) => r.byTag('legend').map((l) => l.textContent)[0] || attrs(r, 'aria-label')), ['Period', 'Hours', 'Statistics']);
+  const [dates, hours] = rows;
+  assert.equal(dates.byTag('button').length, 0, 'dates row holds no day chips');
+  assert.equal(hours.all((n) => attrs(n, 'aria-label') === 'Days of week')[0].byTag('button').length, 7, 'days group lives in the hours row');
+  const tr = hours.all((n) => attrs(n, 'class').split(' ').includes('time-range'))[0];
+  const cls = tr.children.map((c) => attrs(c, 'class'));
+  assert.ok(cls.indexOf('tr-presets') > cls.indexOf('tr-track') && cls.includes('tr-presets'), 'presets follow the track');
+  assert.ok(!/Dublin/.test(hours.all((n) => attrs(n, 'class') === 'row-label')[0].textContent));
   assert.equal(form.byTag('fieldset').length, 2);
   assert.equal(form.byTag('legend').length, 2);
   assert.ok(form.byTag('legend').every((l) => attrs(l, 'class') === 'sr-only'));
@@ -146,8 +153,8 @@ test('controls: days group is named and described; hours group is named once and
   assert.equal(days[0].byTag('button').length, 7);
   assert.equal(dayBtns().length, 7);
   const hours = form.all((n) => /Hours/.test(attrs(n, 'aria-label')));
-  assert.deepEqual(hours.map((n) => attrs(n, 'aria-label')), ['Hours (Dublin time)']);
-  for (const [g, re] of [[days[0], /None selected = every day/], [hours[0], /wrap midnight/]]) {
+  assert.deepEqual(hours.map((n) => attrs(n, 'aria-label')), ['Hours of day']);
+  for (const [g, re] of [[days[0], /None selected = every day/], [hours[0], /Times are Dublin local time\. Whole hours; drag the start past the end to wrap midnight/]]) {
     const t = byId(attrs(g, 'aria-describedby'));
     assert.equal(t.length, 1);
     assert.match(t[0].textContent, re);
