@@ -126,7 +126,8 @@ def _reserve(tmp_tar: Path, backup_dir: Path, stamp: str) -> Path:
     raise RuntimeError("too many backups in one second")
 
 
-def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> Path:
+def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
+             archive_dir: Path | None = None) -> Path:
     if keep < 1:
         raise ValueError("keep must be >= 1")
     data_dir = Path(data_dir)
@@ -136,19 +137,16 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> P
         _clean_stale(backup_dir, (".snap-*",))
         # only top-level db files are collected, so a backup_dir inside data_dir is never included
         files = [p for p in sorted(data_dir.iterdir())
-                 if p.is_file() and (p.name == "meta.db" or re.fullmatch(r"samples-.*\.db(\.gz)?", p.name))]
+                 if p.is_file() and (p.name == "meta.db" or re.fullmatch(r"samples-.*\.db", p.name))]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         with tempfile.TemporaryDirectory(prefix=".snap-", dir=backup_dir) as stage:
             tmp_tar = Path(stage) / "out.tar"
             with tarfile.open(tmp_tar, "w") as tar:
                 for p in files:
-                    if p.name.endswith(".gz"):
-                        tar.add(p, arcname=p.name)
-                    else:
-                        copy = Path(stage) / p.name
-                        _copy_db(p, copy)
-                        tar.add(copy, arcname=p.name)
-                        copy.unlink()
+                    copy = Path(stage) / p.name
+                    _copy_db(p, copy)
+                    tar.add(copy, arcname=p.name)
+                    copy.unlink()
             fd = os.open(tmp_tar, os.O_RDONLY)
             try:
                 os.fsync(fd)
@@ -161,7 +159,41 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7) -> P
         others = [p for p in list_backups(backup_dir) if p != final and not _is_future(p, now)]
         for old in others[:max(0, len(others) - (keep - 1))]:
             old.unlink()
+        if archive_dir is not None:
+            try:  # the archive copy must never fail the snapshot
+                archive_dir = Path(archive_dir)
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                _clean_stale(archive_dir, ("samples-????-??.db.gz.tmp",))
+                archive_months(data_dir, archive_dir)
+            except Exception:
+                log.exception("archiving closed months to %s failed", archive_dir)
         return final
+
+
+def archive_months(data_dir: Path, archive_dir: Path) -> list[Path]:
+    """Copy each samples-*.db.gz not yet in archive_dir (temp, fsync, rename; never overwrite).
+    Per-file errors are logged, not raised. Returns the paths newly copied."""
+    archive_dir, copied = Path(archive_dir), []
+    for gz in sorted(Path(data_dir).glob("samples-*.db.gz")):
+        dst, tmp = archive_dir / gz.name, archive_dir / (gz.name + ".tmp")
+        try:
+            if dst.exists():
+                if dst.stat().st_size != gz.stat().st_size:
+                    log.warning("archive %s differs in size from %s; left untouched", dst, gz)
+                continue
+            with open(gz, "rb") as src, open(tmp, "wb") as out:
+                shutil.copyfileobj(src, out)
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(tmp, dst)
+            copied.append(dst)
+        except Exception:
+            log.exception("archiving %s failed", gz.name)
+        finally:
+            tmp.unlink(missing_ok=True)
+    if copied:
+        _fsync_dir(archive_dir)
+    return copied
 
 
 def _sha(path: Path) -> str:

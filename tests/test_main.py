@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -26,3 +27,23 @@ def test_create_app_default_settings(monkeypatch):
 def test_create_app_uses_configured_timeout(tmp_path):
     app = create_app(Settings("http://fake", tmp_path, 30, server_timeout_seconds=9), start_background=False)
     assert app.state.client._client.timeout.read == 9
+
+
+def _status(tmp_path, hosts, host):
+    app = create_app(Settings("http://x", tmp_path, allowed_hosts=hosts), start_background=False)
+    return TestClient(app).get("/api/health", headers={"host": host}).status_code
+
+
+def test_no_allowed_hosts_accepts_any_host(tmp_path):
+    assert _status(tmp_path, (), "evil.example") == 200
+
+
+@pytest.mark.parametrize("host,code", [
+    ("tunnel.example.com", 200), ("TUNNEL.example.com:443", 200), ("localhost:8081", 200),
+    ("127.0.0.1", 200), ("[::1]:8081", 200), ("evil.example", 400)])
+def test_allowed_hosts_enforced(tmp_path, host, code):
+    assert _status(tmp_path, ("tunnel.example.com",), host) == code
+
+
+def test_allowed_hosts_wildcard(tmp_path):
+    assert _status(tmp_path, ("*.example.com",), "a.example.com") == 200

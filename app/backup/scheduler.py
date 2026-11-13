@@ -65,7 +65,8 @@ class BackupScheduler:
         without a fresh backup). A compaction failure keeps the new backup. Never raises (except cancel)."""
         s = self.settings
         try:
-            path = await asyncio.to_thread(self.snapshot_fn, s.data_dir, s.backup_path, s.backup_keep)
+            path = await asyncio.to_thread(self.snapshot_fn, s.data_dir, s.backup_path, s.backup_keep,
+                                           archive_dir=s.archive_path)
         except Exception:
             log.exception("backup snapshot failed; compaction skipped")
             return None

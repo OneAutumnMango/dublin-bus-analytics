@@ -29,7 +29,8 @@ def create_backup(request: Request):
         return JSONResponse({"detail": f"A backup was made less than {MIN_BACKUP_INTERVAL_S} s ago; try again in {wait} s."},
                             status_code=429, headers={"Retry-After": str(wait)})
     s = request.app.state.settings
-    p = snapshot(s.data_dir, _dir(request), getattr(s, "backup_keep", 7))
+    p = snapshot(s.data_dir, _dir(request), getattr(s, "backup_keep", 7),
+                 archive_dir=getattr(s, "archive_path", None))
     return {"file": p.name, "size": p.stat().st_size}
 
 

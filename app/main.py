@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.routes import router as api_router
 from app.backup.api import router as backup_router
@@ -50,6 +51,9 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
 
     app = FastAPI(title="dublin-bus-analytics", lifespan=lifespan)
     app.state.settings = settings
+    if settings.allowed_hosts:  # loopback stays allowed so the Docker healthcheck works
+        app.add_middleware(TrustedHostMiddleware,
+                           allowed_hosts=[*settings.allowed_hosts, "localhost", "127.0.0.1", "[::1]"])
     app.include_router(api_router)
     # constructors do no I/O (LazyTracker opens the DB on first ingest), so importing this module is safe
     app.state.client = client or ServerClient(settings.server_url, read_timeout_s=settings.server_timeout_seconds)

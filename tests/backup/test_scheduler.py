@@ -160,7 +160,8 @@ class Spy:
     def __init__(self, fail_snapshot=False, fail_compact=False, skip=()):
         self.calls, self.fail_snapshot, self.fail_compact, self.skip = [], fail_snapshot, fail_compact, skip
 
-    def snap(self, data_dir, backup_dir, keep):
+    def snap(self, data_dir, backup_dir, keep, archive_dir=None):
+        self.archive_dir = archive_dir
         self.calls.append(("snapshot", data_dir, backup_dir, keep))
         if self.fail_snapshot:
             raise OSError("disk full")
@@ -190,6 +191,7 @@ async def test_run_once_snapshot_then_compaction_order(tmp_path, caplog):
         path = await sc.run_once()
     assert [c[0] for c in spy.calls] == ["snapshot", "compact"]
     assert spy.calls[0][1:] == (tmp_path / "data", tmp_path / "bk", 4)
+    assert spy.archive_dir == tmp_path / "bk" / "archive"
     assert spy.calls[1][2] == int(NOW.timestamp())
     assert path == tmp_path / "bk" / "analytics-x.tar"
     assert any(r.levelno == logging.WARNING and "samples-2020-01.db" in r.message for r in caplog.records)

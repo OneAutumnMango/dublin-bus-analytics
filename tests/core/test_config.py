@@ -42,7 +42,7 @@ def test_invalid_int_raises(clean_env, name, bad):
         Settings.from_env()
 
 
-BENV = ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR")
+BENV = ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR", "BACKUP_ARCHIVE_DIR")
 
 
 @pytest.fixture
@@ -66,6 +66,15 @@ def test_env_roundtrip_all_backup_vars(benv):
     s = Settings.from_env()
     assert (s.backup_enabled, s.backup_time, s.backup_keep, s.backup_dir) == (False, "23:59", 1, Path("rel/b"))
     assert s.backup_path == Path("rel/b")
+
+
+def test_archive_path_default_set_and_disabled(benv):
+    assert Settings.from_env().archive_path == Path("/data/backups/archive")
+    benv.setenv("BACKUP_ARCHIVE_DIR", "/x")
+    assert Settings.from_env().archive_path == Path("/x")
+    for blank in ("", "   "):
+        benv.setenv("BACKUP_ARCHIVE_DIR", blank)
+        assert Settings.from_env().archive_path is None
 
 
 @pytest.mark.parametrize("v,exp", [("true", True), ("TRUE", True), ("1", True), ("yes", True),
@@ -122,3 +131,12 @@ def test_server_tuning_invalid_rejected(senv, name, bad):
     senv.setenv(name, bad)
     with pytest.raises(ValueError, match=name):
         Settings.from_env()
+
+
+def test_allowed_hosts_parsing(clean_env, monkeypatch):
+    monkeypatch.delenv("ALLOWED_HOSTS", raising=False)
+    assert Settings.from_env().allowed_hosts == ()
+    monkeypatch.setenv("ALLOWED_HOSTS", "  , ")
+    assert Settings.from_env().allowed_hosts == ()
+    monkeypatch.setenv("ALLOWED_HOSTS", "a.com, *.b.com ,")
+    assert Settings.from_env().allowed_hosts == ("a.com", "*.b.com")

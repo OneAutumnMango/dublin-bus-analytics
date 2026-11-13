@@ -128,17 +128,68 @@ def test_restore_contents_equal(data, tmp_path):
         s.close()
 
 
-def test_snapshot_includes_gz_as_is_and_safe_names(data, tmp_path):
+def test_snapshot_excludes_gz_months(data, tmp_path):
     compact_closed_months(data, ts(2026, 10, 3))
-    gz = data / "samples-2026-09.db.gz"
-    assert gz.exists()
+    assert (data / "samples-2026-09.db.gz").exists()
     p = snapshot(data, tmp_path / "bk")
     with tarfile.open(p) as tar:
         names = tar.getnames()
-        assert sorted(names) == ["meta.db", "samples-2026-09.db.gz", "samples-2026-10.db"]
-        for n in names:
-            assert not n.startswith("/") and ".." not in Path(n).parts and "/" not in n
-        assert tar.extractfile("samples-2026-09.db.gz").read() == gz.read_bytes()
+    assert sorted(names) == ["meta.db", "samples-2026-10.db"]
+
+
+def _gz_data(data):
+    compact_closed_months(data, ts(2026, 10, 3))
+    return data / "samples-2026-09.db.gz"
+
+
+def test_archive_copies_each_gz_once(data, tmp_path):
+    gz = _gz_data(data)
+    a = tmp_path / "arch"
+    snapshot(data, tmp_path / "bk", archive_dir=a)
+    assert [p.name for p in a.iterdir()] == [gz.name]
+    assert (a / gz.name).read_bytes() == gz.read_bytes()
+    assert backup.archive_months(data, a) == []
+
+
+def test_archive_never_overwrites_a_different_file(data, tmp_path, caplog):
+    gz = _gz_data(data)
+    a = tmp_path / "arch"
+    a.mkdir()
+    (a / gz.name).write_bytes(b"other")
+    with caplog.at_level(logging.WARNING):
+        snapshot(data, tmp_path / "bk", archive_dir=a)
+    assert (a / gz.name).read_bytes() == b"other"
+    assert any(r.levelno == logging.WARNING and gz.name in r.getMessage() for r in caplog.records)
+
+
+def test_archive_failure_does_not_fail_snapshot_and_leaves_no_temp(data, tmp_path, monkeypatch):
+    _gz_data(data)
+    a = tmp_path / "arch"
+    real = os.replace
+
+    def boom(src, dst, *x, **k):
+        if Path(dst).parent == a:
+            raise OSError("disk full")
+        return real(src, dst, *x, **k)
+
+    monkeypatch.setattr(os, "replace", boom)
+    p = snapshot(data, tmp_path / "bk", archive_dir=a)
+    assert p.is_file()
+    assert list(a.glob("*.tmp")) == [] and list(a.iterdir()) == []
+
+
+def test_archive_disabled_when_none(data, tmp_path):
+    _gz_data(data)
+    snapshot(data, tmp_path / "bk")
+    assert not (tmp_path / "bk" / "archive").exists()
+
+
+def test_api_backup_creates_archive_copy(data, tmp_path):
+    gz = _gz_data(data)
+    a = tmp_path / "arch"
+    app = create_app(Settings(server_url="http://x", data_dir=data, backup_archive_dir=a))
+    assert TestClient(app).post("/api/backup").status_code == 200
+    assert (a / gz.name).read_bytes() == gz.read_bytes()
 
 
 def test_snapshot_retention_keeps_7(data, tmp_path):
