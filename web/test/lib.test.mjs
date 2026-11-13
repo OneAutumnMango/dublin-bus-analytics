@@ -176,6 +176,7 @@ test('hash routes round trip', () => {
     ['stop', { route: '46A', stop: 'Ünï cødé/1' }, { page: '2' }],
     ['trip', { trip: 't#1?x', stop: '8220DB000002' }, { seq: '1700000000' }],
     ['analytics', { route: 'x y' }, {}],
+    ['lab', { route: 'x y' }, {}],
     ['all', {}, {}],
   ];
   for (const [name, params, query] of cases) {
