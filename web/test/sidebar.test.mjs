@@ -7,7 +7,7 @@ const { rankRoutes, renderSidebar, onTrackedChange } = await import('../js/sideb
 const R = (...n) => n.map((s, i) => ({ id: `i${i}`, shortName: s, longName: '' }));
 const mount = async () => { const root = new FNode('aside'); await renderSidebar(root, { signal: new AbortController().signal }); return root; };
 const type = (root, v) => { const i = root.byTag('input')[0]; i.value = v; i.dispatch('input'); return i; };
-const trackedHrefs = (root) => root.byTag('a').map((a) => a.getAttribute('href')).filter((x) => x !== '#/all');
+const trackedHrefs = (root) => root.byTag('a').map((a) => a.getAttribute('href')).filter((x) => x !== '#/all' && !x.startsWith('#/lab/'));
 const names = (l) => l.map((r) => r.shortName);
 
 test('rankRoutes: exact, prefixes, rest; stable; case-insensitive', () => {
@@ -32,6 +32,17 @@ test('sidebar: tracked links are url-encoded, untrack works', async () => {
   root.byText('button', /^Confirm$/)[0].dispatch('click');
   await settle();
   assert.deepEqual(trackedHrefs(root), ['#/analytics/sA']);
+});
+
+test('sidebar: each tracked route has a Stats lab link', async () => {
+  installFetch({ 'GET /api/routes/tracked': { routes: ['15', 'sA/B'] } });
+  const root = await mount();
+  for (const [r, href] of [['15', '#/lab/15'], ['sA/B', '#/lab/sA%2FB']]) {
+    const a = root.byTag('a').filter((x) => x.getAttribute('href') === href);
+    assert.equal(a.length, 1);
+    assert.equal(a[0].getAttribute('aria-label'), `Stats lab for route ${r}`);
+    assert.equal(a[0].textContent, 'Stats lab');
+  }
 });
 
 test('sidebar: typing searches after debounce without submit; ranked; literal text', async () => {
@@ -102,7 +113,7 @@ test('sidebar: aria-current follows the hash', async () => {
   const root = await mount();
   globalThis.location.hash = '#/analytics/sA';
   for (const fn of globalThis.__listeners.hashchange) fn();
-  const [a, b] = root.byTag('a').filter((x) => x.getAttribute('href') !== '#/all');
+  const [a, b] = root.byTag('a').filter((x) => x.getAttribute('href') !== '#/all' && !x.getAttribute('href').startsWith('#/lab/'));
   assert.equal(a.getAttribute('aria-current'), 'page');
   assert.equal(b.getAttribute('aria-current'), null);
   globalThis.location.hash = '#/analytics/sB';

@@ -83,7 +83,7 @@ export async function renderSidebar(root, { signal } = {}) {
             h('button', { class: 'btn btn-quiet', type: 'button', 'aria-label': `Cancel untracking route ${r}`, on: { click: () => ask(false) } }, 'Cancel')]
           : [h('button', { class: 'btn btn-danger', type: 'button', 'aria-label': `Untrack route ${r}`, disabled: busy, on: { click: () => ask(true) } }, 'Untrack')];
         mutButtons.push(...btns.slice(0, 1));
-        const btn = h('span', { class: 'row-actions' }, btns);
+        const btn = h('span', { class: 'row-actions' }, link(buildHash('lab', { route: r }), 'Stats lab', { class: 'lab-link', 'aria-label': `Stats lab for route ${r}` }), btns);
         const a = link(buildHash('analytics', { route: r }), `Route ${r}`, { 'data-route': r });
         links.push(a);
         return h('li', {}, h('span', { class: 'name grow' }, a), btn);

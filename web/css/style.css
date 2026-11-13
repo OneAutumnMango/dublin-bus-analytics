@@ -371,3 +371,5 @@ th[aria-sort="descending"] .sort-btn::after { content: " \25BC"; font-size: 0.7e
 .chart .lab-bar { fill: var(--accent); }
 p.reading { font-weight: 600; }
 .analytics-section details { margin: var(--s3) 0; }
+.sidebar .lab-link { align-self: center; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; padding: 0 var(--s1); }
+.sidebar .lab-link:hover { color: var(--accent); }
