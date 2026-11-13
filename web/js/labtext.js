@@ -40,6 +40,7 @@ export const EXPLAIN = {
     paragraphs: [
       'Each bar is the correlation between a bus delay at one stop and its delay a given number of stops (the lag) further along the same trip. Values near 1 mean a late bus stays late; near 0 means the delay at one stop tells you nothing about later ones.',
       'High correlation that decays slowly is the bad pattern: once a bus falls behind, it stays behind. Fast decay means the route absorbs delays.',
+      'A negative correlation means a late stop tends to be followed by an earlier-than-usual one.',
     ],
   },
   recovery: {
@@ -47,6 +48,7 @@ export const EXPLAIN = {
     paragraphs: [
       'The slope regresses the delay at a later stop on the delay at an earlier stop of the same trip. A slope near 1 means delay persists: whatever lateness a bus has, it keeps. A slope above 1 means delay grows along the trip: late buses fall even further behind.',
       'A slope near 0 means buses recover and the earlier delay is forgotten. Between roughly 0.3 and 0.7 the delay partly recovers.',
+      'A negative slope means a bus that starts late tends to finish early relative to schedule: an over-correction.',
     ],
   },
   variance: {
@@ -54,6 +56,7 @@ export const EXPLAIN = {
     paragraphs: [
       'Each bar is the share of delay variance associated with one factor: hour of day, weekday, stop, or calendar date. It is omega squared, an ANOVA effect size adjusted for the number of levels.',
       'The four bars overlap and do not add to 100%: each factor is measured on its own, and the factors are correlated (for example, hour and stop). A tall bar means that factor separates delays well; a short one means it matters little.',
+      'Because the figure is adjusted for the number of levels, a slightly negative value is possible; it is shown and treated as no effect.',
     ],
   },
   ci: {
@@ -77,8 +80,8 @@ export function readDistribution(d) {
   const parts = [];
   if (v('median') !== null) parts.push(`Half of buses are ${describeDelay(v('median'))} or better`);
   const p95 = v('p95');
-  if (p95 !== null) parts.push(`1 in 20 buses are ${Math.abs(p95) < 1 ? 'later than the scheduled time' : p95 > 0 ? `later than ${fmtMinutes(p95)}` : `less than ${fmtMinutes(-p95)} early (or are late)`}`);
-  if (v('buffer') !== null) parts.push(`allow ${fmtMinutes(Math.abs(v('buffer')))} beyond the median delay for the buffer`);
+  if (p95 !== null) parts.push(`95% of buses are ${Math.abs(p95) < 1 ? 'no later than the scheduled time' : p95 > 0 ? `no later than ${fmtMinutes(p95)}` : `at least ${fmtMinutes(-p95)} early`}`);
+  if (v('buffer') !== null) parts.push(`allow an extra ${fmtMinutes(Math.abs(v('buffer')))} on top of the typical (median) delay to be on time 19 times in 20`);
   const sk = v('skew'), ku = v('kurtosis');
   if (sk !== null) parts.push(`skew ${fmtNum(sk, 2)} (${Math.abs(sk) < 0.1 ? 'roughly symmetric' : sk > 0 ? 'right-tailed: a long tail of late buses' : 'left-tailed: a long tail of early buses'})`);
   if (ku !== null) parts.push(`excess kurtosis ${fmtNum(ku, 2)} (${Math.abs(ku) < 0.1 ? 'normal-like tails' : ku > 0 ? 'heavier tails than normal' : 'lighter tails than normal'})`);

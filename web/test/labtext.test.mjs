@@ -53,15 +53,16 @@ test('buffer explanation is relative to the median', () => {
 
 test('readDistribution handles early and near-zero values naturally', () => {
   const early = readDistribution({ n: 50, tiles: { median: T(-120), p95: T(-60), buffer: T(60) } });
-  assert.match(early, /1 in 20 buses are less than 1\.0 min early/);
-  assert.doesNotMatch(early, /more than|allow.*late/);
-  assert.match(early, /allow 1\.0 min beyond the median delay/);
+  assert.match(early, /95% of buses are at least 1\.0 min early/);
+  assert.doesNotMatch(early, /more than|allow.*late|or are late/);
+  assert.match(early, /allow an extra 1\.0 min on top of the typical/);
   const zero = readDistribution({ n: 50, tiles: { median: T(0), p95: T(0.4), buffer: T(0.2) } });
+  assert.match(zero, /95% of buses are no later than the scheduled time/);
   assert.doesNotMatch(zero, /more than on time|allow on time/);
-  assert.match(zero, /allow 0 s beyond the median delay/);
+  assert.match(zero, /allow an extra 0 s on top of the typical/);
   const late = readDistribution({ n: 50, tiles: { p95: T(540), buffer: T(450) } });
-  assert.match(late, /1 in 20 buses are later than 9\.0 min/);
-  assert.match(late, /allow 7\.5 min beyond/);
+  assert.match(late, /95% of buses are no later than 9\.0 min/);
+  assert.match(late, /allow an extra 7\.5 min on top/);
   assert.doesNotMatch(late, /7\.5 min late/);
 });
 
@@ -116,4 +117,11 @@ test('readVariance ignores non-positive omega2', () => {
   assert.doesNotMatch(none, bad);
   assert.match(readVariance({ n: 100, low_n: true, factors: [f('stop', 0.1)] }), /few observations/);
   assert.match(readVariance({ n: 100, enough_days: false, factors: [f('stop', 0.1)] }), /not shown yet/);
+});
+
+test('EXPLAIN covers negative correlation, negative slope and negative omega squared', () => {
+  const all = (k) => EXPLAIN[k].paragraphs.join(' ');
+  assert.match(all('persistence'), /negative correlation.*late stop tends to be followed by an earlier-than-usual one/);
+  assert.match(all('recovery'), /negative slope.*starts late tends to finish early.*over-correction/);
+  assert.match(all('variance'), /slightly negative.*no effect/);
 });

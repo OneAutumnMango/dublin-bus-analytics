@@ -114,7 +114,7 @@ test('lab renders negative correlations and early delays', async () => {
     [url('15', 'distribution')]: { ...DIST, tiles: { ...DIST.tiles, median: T(-120), p95: T(-60) } } });
   const ctx = await mount();
   assert.match(sections(ctx)[1].textContent, /−0\.40/);
-  assert.match(sections(ctx)[0].textContent, /less than 1\.0 min early/);
+  assert.match(sections(ctx)[0].textContent, /95% of buses are at least 1\.0 min early/);
   assert.doesNotMatch(ctx.main.textContent, bad);
 });
 
@@ -125,4 +125,11 @@ test('lab escapes malicious route in links and the stop-free tables', async () =
   const ctx = await mount(r);
   assert.equal(ctx.main.byTag('script').length, 0);
   assert.equal(ctx.main.all((n) => n.tag === 'svg' || n.tag === 'title').filter((n) => n.byTag('script').length).length, 0);
+});
+
+test('lab buffer tile is unsigned', async () => {
+  stubs({ [url('15', 'distribution')]: DIST });
+  const t = tileText(await mount(), 'Buffer');
+  assert.match(t, /4\.0 min/);
+  assert.doesNotMatch(t, /\+/);
 });

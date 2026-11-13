@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { barGeometry, ecdfGeometry, qqGeometry, renderBars, renderEcdf, renderQq } from '../labcharts.js';
 import { EXPLAIN, readDistribution, readPersistence, readVariance } from '../labtext.js';
 import { dataTable, emptyState, figure, h, link, put, tile } from '../dom.js';
-import { buildHash, fmtCount, fmtDelay, fmtNum, isNum } from '../lib.js';
+import { buildHash, fmtCount, fmtDelay, fmtMinutes, fmtNum, isNum } from '../lib.js';
 import { region } from '../view.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
@@ -61,7 +61,7 @@ function drawDist(route, d, el, s) {
   put(el, reading(readDistribution(d)),
     figure({ title: 'Cumulative distribution', svg, table, level: 'h3', legend: h('p', { class: 'legend' }, 'Shaded band: on-time window · circles: median (p50) and 95th percentile (p95) · dashed line: on time.') }),
     figure({ title: 'Normal Q-Q plot', svg: qsvg, table: qtable, level: 'h3' }),
-    h('div', { class: 'tiles' }, ciTile('Median delay', t.median, e, fmtDelay, d.n), ciTile('95th percentile', t.p95, e, fmtDelay, d.n), ciTile('Buffer (p95 minus median)', t.buffer, e, fmtDelay, d.n),
+    h('div', { class: 'tiles' }, ciTile('Median delay', t.median, e, fmtDelay, d.n), ciTile('95th percentile', t.p95, e, fmtDelay, d.n), ciTile('Buffer (p95 minus median)', t.buffer, e, fmtMinutes, d.n),
       ciTile('Skew', t.skew, e, (v) => fmtNum(v, 2), d.n), ciTile('Excess kurtosis', t.kurtosis, e, (v) => fmtNum(v, 2), d.n)),
     h('p', { class: 'hint' }, windowText(d)));
 }
