@@ -40,7 +40,7 @@ def open_samples(*a, **k):
 def test_meta_schema_has_tables(tmp_path):
     c = open_meta(tmp_path)
     names = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
-    assert {"routes_tracked", "arrivals", "forecast", "gaps", "meta_kv"} <= names
+    assert {"routes_tracked", "arrivals", "forecast", "gaps"} <= names
 
 
 def test_wal_enabled(tmp_path):
@@ -91,22 +91,19 @@ def test_forecast_pk_and_route_pk(tmp_path):
     c.execute("insert into routes_tracked values ('1',0)")
     with pytest.raises(sqlite3.IntegrityError):
         c.execute("insert into routes_tracked values ('1',0)")
-    c.execute("insert into meta_kv values ('k','v')")
-    with pytest.raises(sqlite3.IntegrityError):
-        c.execute("insert into meta_kv values ('k','w')")
 
 
 def test_concurrent_read_while_writing(tmp_path):
     w = open_meta(tmp_path)
-    w.execute("insert into meta_kv values ('a','1')")
+    w.execute("insert into gaps values (1,1)")
     w.commit()
     w.execute("begin")
-    w.execute("insert into meta_kv values ('b','2')")  # uncommitted write open
+    w.execute("insert into gaps values (2,2)")  # uncommitted write open
     out = []
 
     def read():
         r = open_meta(tmp_path)
-        out.append(r.execute("select count(*) from meta_kv").fetchone()[0])
+        out.append(r.execute("select count(*) from gaps").fetchone()[0])
         r.close()
 
     t = threading.Thread(target=read)
@@ -198,7 +195,6 @@ def test_column_names_and_types(tmp_path):
     assert _cols(m, "forecast") == [
         ("arrival_id", "int"), ("horizon_min", "int"), ("predicted", "int"), ("error_s", "int")]
     assert _cols(m, "gaps") == [("start", "int"), ("end", "int")]
-    assert _cols(m, "meta_kv") == [("k", "text"), ("v", "text")]
     assert _cols(open_samples(tmp_path, 0), "sample") == [
         ("ts", "int"), ("trip_id", "text"), ("stop_id", "text"), ("seq", "int"),
         ("due_min", "int"), ("expected", "int"), ("realtime", "int")]
@@ -239,7 +235,15 @@ def test_samples_reopen_idempotent_and_concurrent_read(tmp_path):
 def test_meta_two_connections_read_while_writing(tmp_path):
     w, r = open_meta(tmp_path), open_meta(tmp_path)
     w.execute("begin")
-    w.execute("insert into meta_kv values ('a','1')")
-    assert r.execute("select count(*) from meta_kv").fetchone()[0] == 0
+    w.execute("insert into gaps values (1,1)")
+    assert r.execute("select count(*) from gaps").fetchone()[0] == 0
     w.commit()
-    assert r.execute("select count(*) from meta_kv").fetchone()[0] == 1
+    assert r.execute("select count(*) from gaps").fetchone()[0] == 1
+
+
+def test_service_date_lookups_use_the_date_index(tmp_path):
+    c = open_meta(tmp_path)
+    for sql, args in (("select id from arrivals where service_date=? and route=?", ("2026-01-01", "15")),
+                      ("select count(*) from arrivals where service_date=?", ("2026-01-01",))):
+        plan = " ".join(r[3] for r in c.execute("explain query plan " + sql, args))
+        assert "ix_arr_date" in plan

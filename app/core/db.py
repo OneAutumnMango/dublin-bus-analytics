@@ -20,8 +20,8 @@ create table if not exists forecast(
   primary key(arrival_id, horizon_min));
 create index if not exists ix_arr_route_sched on arrivals(route, scheduled);
 create index if not exists ix_arr_stop_sched on arrivals(stop_id, scheduled);
+create index if not exists ix_arr_date on arrivals(service_date, route);
 create table if not exists gaps(start int, end int);
-create table if not exists meta_kv(k text primary key, v text);
 """
 
 SAMPLES_SCHEMA = """

@@ -12,7 +12,7 @@ from tests.support.fake_server import FakeServer
 def A(**kw):
     d = dict(routeShortName="15", destination="Clongriffin", dueMinutes=3, isRealtime=True,
              tripId="t1", routeId="r15", expectedEpochSeconds=1000, delaySeconds=60,
-             vehicleId="v1", possiblyPassed=False, scheduledEpochSeconds=940)
+             scheduledEpochSeconds=940)
     d.update(kw)
     return d
 
@@ -28,37 +28,36 @@ def mock_client(handler, base="http://srv"):
 
 async def test_route_arrivals_flattens_by_stop():
     fake, c = make()
-    fake.set_arrivals("15", {"s1": [A(), A(tripId="t2")], "s2": [A(tripId="t3", possiblyPassed=True)]})
+    fake.set_arrivals("15", {"s1": [A(), A(tripId="t2")], "s2": [A(tripId="t3")]})
     out = await c.route_arrivals("15")
     assert sorted((a.stop_id, a.trip_id) for a in out) == [("s1", "t1"), ("s1", "t2"), ("s2", "t3")]
     a = out[0]
-    assert a == Arrival("s1", "t1", "15", 3, 1000, 940, 60, True, "v1", False)
-    assert [x.possibly_passed for x in out if x.trip_id == "t3"] == [True]
+    assert a == Arrival("s1", "t1", "15", 3, 1000, 940, 60, True)
 
 
 async def test_missing_scheduled_is_none():
     fake, c = make()
     raw = A()
-    for k in ("scheduledEpochSeconds", "delaySeconds", "vehicleId"):
+    for k in ("scheduledEpochSeconds", "delaySeconds"):
         del raw[k]
     fake.set_arrivals("15", {"s1": [raw]})
     (a,) = await c.route_arrivals("15")
-    assert (a.scheduled, a.delay, a.vehicle_id) == (None, None, None)
+    assert (a.scheduled, a.delay) == (None, None)
 
 
 async def test_null_fields_are_none():
     fake, c = make()
-    fake.set_arrivals("15", {"s1": [A(scheduledEpochSeconds=None, delaySeconds=None, vehicleId=None)]})
+    fake.set_arrivals("15", {"s1": [A(scheduledEpochSeconds=None, delaySeconds=None)]})
     (a,) = await c.route_arrivals("15")
-    assert (a.scheduled, a.delay, a.vehicle_id) == (None, None, None)
+    assert (a.scheduled, a.delay) == (None, None)
 
 
 async def test_defaults_for_omitted_server_defaults():
-    # Kotlin defaults: tripId="", expectedEpochSeconds=0, possiblyPassed=false
+    # Kotlin defaults: tripId="", expectedEpochSeconds=0
     fake, c = make()
     fake.set_arrivals("15", {"s1": [{"routeShortName": "15", "destination": "x", "dueMinutes": 0, "isRealtime": False}]})
     (a,) = await c.route_arrivals("15")
-    assert (a.trip_id, a.expected, a.possibly_passed, a.due_min, a.realtime) == ("", 0, False, 0, False)
+    assert (a.trip_id, a.expected, a.due_min, a.realtime) == ("", 0, 0, False)
 
 
 async def test_extra_unknown_fields_ignored():
@@ -89,12 +88,13 @@ async def test_server_500_raises_unavailable():
 
 async def test_set_down_raises_unavailable():
     fake, c = make()
+    fake.set_arrivals("15", {})
     fake.set_down(True)
     with pytest.raises(ServerUnavailable):
-        await c.status()
+        await c.route_arrivals("15")
     fake.set_down(False)
     fake.set_status(None)
-    assert (await c.status())["ok"] is True
+    assert await c.route_arrivals("15") == []
 
 
 async def test_connection_refused_raises_unavailable():
@@ -108,7 +108,7 @@ async def test_timeout_raises_unavailable():
     def h(req):
         raise httpx.ReadTimeout("slow")
     with pytest.raises(ServerUnavailable):
-        await mock_client(h).status()
+        await mock_client(h).route_arrivals("15")
 
 
 @pytest.mark.parametrize("body", [b"not json", b"[]", b'"x"', b'{"s1": 5}', b'{"s1": [1]}',
@@ -147,14 +147,13 @@ async def test_route_is_url_encoded(route, enc):
     assert seen == [f"/v1/routes/{enc}/arrivals"]
 
 
-async def test_search_routes_stops_status():
+async def test_search_routes_stops():
     fake, c = make()
     fake.set_routes([{"id": "r15", "shortName": "15", "longName": "x", "agencyId": "a"}])
     fake.set_route_stops("15", {"0": [{"id": "s1"}], "1": [{"id": "s2"}]})
     assert (await c.search_routes("15"))[0]["shortName"] == "15"
     assert await c.search_routes("zzz") == []
     assert set(await c.route_stops("15")) == {"0", "1"}
-    assert (await c.status())["ok"] is True
 
 
 async def test_search_routes_passes_query():
@@ -176,7 +175,7 @@ async def test_unknown_route_stops_not_found():
 async def test_default_client_created_and_closeable():
     c = ServerClient("http://127.0.0.1:1")
     with pytest.raises(ServerUnavailable):
-        await c.status()
+        await c.route_arrivals("15")
     await c.aclose()
 
 
@@ -188,7 +187,6 @@ payload = st.dictionaries(
         optional={"tripId": st.text(max_size=5), "routeId": st.text(max_size=5),
                   "expectedEpochSeconds": st.integers(0, 2**40),
                   "delaySeconds": st.none() | st.integers(-10_000, 10_000),
-                  "vehicleId": st.none() | st.text(max_size=5), "possiblyPassed": st.booleans(),
                   "scheduledEpochSeconds": st.none() | st.integers(0, 2**40),
                   "extra": st.integers()}), max_size=4),
     max_size=4)
@@ -210,7 +208,7 @@ async def test_read_timeout_is_configurable():
             seen.append(timeout)
             return httpx.Response(200, json={})
 
-    await ServerClient("http://x", client=Stub(), read_timeout_s=7).status()
-    await ServerClient("http://x", client=Stub()).status()
+    await ServerClient("http://x", client=Stub(), read_timeout_s=7).route_arrivals("15")
+    await ServerClient("http://x", client=Stub()).route_arrivals("15")
     assert (seen[0].read, seen[0].connect) == (7.0, 5.0)
     assert (seen[1].read, seen[1].connect) == (45.0, 5.0)

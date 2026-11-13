@@ -11,5 +11,3 @@ class Arrival:
     scheduled: int | None
     delay: int | None
     realtime: bool
-    vehicle_id: str | None
-    possibly_passed: bool

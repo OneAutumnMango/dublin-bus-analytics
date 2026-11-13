@@ -17,11 +17,11 @@ T0 = 1_760_000_000  # Oct 2025
 
 
 def arr(due=5, expected=None, scheduled=T0 + 300, trip="t1", stop="s1", route="15",
-        realtime=True, passed=False):
+        realtime=True):
     return Arrival(stop_id=stop, trip_id=trip, route=route, due_min=due,
                    expected=T0 + due * 60 if expected is None else expected,
                    scheduled=scheduled, delay=None if scheduled is None else 0,
-                   realtime=realtime, vehicle_id="v", possibly_passed=passed)
+                   realtime=realtime)
 
 
 def make_lookup(calls=None):
@@ -213,13 +213,6 @@ async def test_vanish_detection_is_per_route(tr, tmp_path):
     assert res.finalised == 0  # held live after due 0
     res = await tr.ingest("16", [], T0 + 60)
     assert res.finalised == 1
-
-
-async def test_possibly_passed_recorded_and_still_present(tr, tmp_path):
-    r = await tr.ingest("15", [arr(1, passed=True)], T0)
-    assert r.samples_written == 1
-    r = await tr.ingest("15", [arr(1, passed=True)], T0 + 30)
-    assert (r.finalised, r.dropped) == (0, 0)
 
 
 async def test_stale_now_ignored(tr, tmp_path):
@@ -949,7 +942,7 @@ async def test_failure_injection_oracle(seed):
             now += rnd.choice([15, 30, 30, 45, 600])
             al = [Arrival(stop_id=k[1], trip_id=k[0], route="r", due_min=(due := rnd.randint(-1, 6)),
                           expected=now + due * 60 + rnd.randint(-5, 5), scheduled=base + 300 + k[2] * 3600,
-                          delay=0, realtime=rnd.random() < .8, vehicle_id=None, possibly_passed=False)
+                          delay=0, realtime=rnd.random() < .8)
                   for k in rnd.sample(keys, rnd.randint(0, len(keys)))]
             before, dbb = snapshot(t), dbdump(d1)
             point = None

@@ -7,8 +7,7 @@ import pytest
 from hypothesis import given, strategies as st
 from scipy.stats import t as student_t
 
-from app.analysis.stats import (accumulation, delay_summary, filter_rows, forecast_accuracy, heatmap,
-                       heatmap_to_json,
+from app.analysis.stats import (delay_summary, filter_rows, heatmap,
                        on_time_pct, reliability_score)
 
 delays_st = st.lists(st.integers(-10_000, 10_000), min_size=0, max_size=60)
@@ -278,113 +277,6 @@ def test_heatmap_total_n_equals_rows(rows):
     assert h == {} or all(math.isfinite(v["mean_delay"]) for v in h.values())
 
 
-# ---- accumulation / forecast_accuracy ----
-
-def stop(seq, delay, stop_id=None):
-    return {"stop_id": stop_id or 100 + seq, "seq": seq, "delay": delay}
-
-
-def test_accumulation_segment_delta():
-    a = [stop(1, 0), stop(2, 60), stop(3, 180)]
-    b = [stop(1, 60), stop(2, 60), stop(3, 120)]
-    out = accumulation([a, b])
-    assert out == [
-        {"stop_id": 101, "seq": 1, "mean_delay": 30.0, "segment_delta": None, "n": 2, "n_delta": 0},
-        {"stop_id": 102, "seq": 2, "mean_delay": 60.0, "segment_delta": 30.0, "n": 2, "n_delta": 2},   # (60+0)/2
-        {"stop_id": 103, "seq": 3, "mean_delay": 150.0, "segment_delta": 90.0, "n": 2, "n_delta": 2},  # (120+60)/2
-    ]
-
-
-def test_accumulation_unordered_input_and_dict_form():
-    a = [stop(3, 180), stop(1, 0), stop(2, 60)]
-    assert accumulation({"t1": a}) == accumulation([sorted(a, key=lambda r: r["seq"])])
-    assert accumulation([a])[2]["segment_delta"] == 120.0
-
-
-def test_accumulation_gap_in_seq_gives_no_delta():
-    # trip missing seq 2: its seq3 row must not be diffed against seq1
-    full = [stop(1, 0), stop(2, 0), stop(3, 60)]
-    gap = [stop(1, 0), stop(3, 900)]
-    out = accumulation([full, gap])
-    assert out[2]["mean_delay"] == 480.0 and out[2]["segment_delta"] == 60.0
-    assert out[2]["n"] == 2 and out[2]["n_delta"] == 1
-
-
-def test_accumulation_empty_and_single_stop():
-    assert accumulation([]) == [] and accumulation([[]]) == []
-    assert accumulation([[stop(1, 5)]]) == [
-        {"stop_id": 101, "seq": 1, "mean_delay": 5.0, "segment_delta": None, "n": 1, "n_delta": 0}]
-
-
-def test_accumulation_skips_none_delay():
-    out = accumulation([[stop(1, None), stop(2, 10)]])
-    assert [r["seq"] for r in out] == [2] and out[0]["segment_delta"] is None
-
-
-@given(st.lists(st.lists(st.integers(-900, 900), min_size=1, max_size=8), max_size=6))
-def test_accumulation_invariants(trips):
-    out = accumulation([[stop(i + 1, d) for i, d in enumerate(t)] for t in trips])
-    json.dumps(out)
-    assert [r["seq"] for r in out] == sorted({r["seq"] for r in out})
-    # sum of deltas along a single trip telescopes to last - first
-    if len(trips) == 1 and len(trips[0]) > 1:
-        t = trips[0]
-        assert sum(r["segment_delta"] for r in out[1:]) == pytest.approx(t[-1] - t[0])
-
-
-def fr(h, err):
-    return {"horizon_min": h, "error": err}
-
-
-def test_forecast_accuracy_by_horizon():
-    rows = [fr(30, 60), fr(30, -120), fr(30, 0), fr(5, 10), fr(5, 10)]
-    out = forecast_accuracy(rows)
-    assert set(out) == {30, 5}
-    assert out[30]["n"] == 3
-    assert out[30]["mean_error"] == pytest.approx(-20.0)
-    assert out[30]["mae"] == pytest.approx(60.0)
-    # p5 of [-120,0,60]: index 0.1 -> -120 + 0.1*120 = -108; p95: index 1.9 -> 0 + 0.9*60 = 54
-    assert out[30]["p_low"] == pytest.approx(-108) and out[30]["p_high"] == pytest.approx(54)
-    assert out[5] == {"n": 2, "mean_error": 10.0, "mae": 10.0, "p_low": 10.0, "p_high": 10.0}
-
-
-def test_forecast_accuracy_percentiles_exact():
-    out = forecast_accuracy([fr(10, e) for e in (0, 60, 120, 180, 240)])[10]
-    assert out["p_low"] == pytest.approx(12) and out["p_high"] == pytest.approx(228)
-
-
-def test_forecast_accuracy_empty_and_skips_none():
-    assert forecast_accuracy([]) == {}
-    assert forecast_accuracy([fr(2, None), {"error": 3}]) == {}
-
-
-@given(st.lists(st.builds(fr, st.sampled_from([30, 20, 10, 5, 2]), st.integers(-3600, 3600)), max_size=50))
-def test_forecast_accuracy_invariants(rows):
-    out = forecast_accuracy(rows)
-    json.dumps(out)
-    assert sum(v["n"] for v in out.values()) == len(rows)
-    for v in out.values():
-        assert v["mae"] >= abs(v["mean_error"]) - 1e-9
-        assert v["p_low"] <= v["p_high"] + 1e-9
-
-
-def test_forecast_error_sign_is_actual_minus_predicted():
-    # error = actual - predicted: +120 means the bus was 2 min later than predicted
-    out = forecast_accuracy([fr(10, 120)])
-    assert out[10]["mean_error"] == 120 and out[10]["mae"] == 120
-
-
-def test_heatmap_to_json_sorted_and_serialisable():
-    h = {(3, 0): {"n": 1, "mean_delay": 30.0}, (0, 5): {"n": 2, "mean_delay": 1.5},
-         (0, 2): {"n": 1, "mean_delay": -4.0}}
-    out = heatmap_to_json(h)
-    assert out == [{"weekday": 0, "hour": 2, "n": 1, "mean_delay": -4.0},
-                   {"weekday": 0, "hour": 5, "n": 2, "mean_delay": 1.5},
-                   {"weekday": 3, "hour": 0, "n": 1, "mean_delay": 30.0}]
-    json.dumps(out)
-    assert heatmap_to_json({}) == []
-
-
 # ---- round 2: None handling, error_s, n counts ----
 
 def test_none_values_dropped():
@@ -409,23 +301,9 @@ mixed_st = st.lists(st.one_of(st.none(), st.integers(-10**6, 10**6)), max_size=3
 @given(mixed_st)
 def test_mixed_none_never_raises_and_finite(d):
     outs = [delay_summary(d), on_time_pct(d), {"r": reliability_score(d)},
-            {"h": [heatmap_to_json(heatmap([row(x, 1_750_000_000) for x in d]))]},
-            {"a": accumulation([[stop(i + 1, x) for i, x in enumerate(d)]])},
-            {"f": forecast_accuracy([{"horizon_min": 5, "error_s": x} for x in d])}]
+            {"h": [list(heatmap([row(x, 1_750_000_000) for x in d]).values())]}]
     for o in outs:
         json.dumps(o, allow_nan=False)
-
-
-def test_accumulation_counts_and_none_gap():
-    out = accumulation([[stop(1, 0), stop(2, 10)], [stop(1, 5)], [stop(1, 1), stop(2, None), stop(3, 9)]])
-    assert [(r["n"], r["n_delta"]) for r in out] == [(3, 0), (1, 1), (1, 0)]
-
-
-def test_forecast_accepts_error_s_and_prefers_it():
-    assert forecast_accuracy([{"horizon_min": 5, "error_s": 60}])[5]["mean_error"] == 60
-    assert forecast_accuracy([{"horizon_min": 5, "error": 30}])[5]["mean_error"] == 30
-    assert forecast_accuracy([{"horizon_min": 5, "error_s": 60, "error": 30}])[5]["mean_error"] == 60
-    assert forecast_accuracy([{"horizon_min": 5, "error_s": None, "error": 30}])[5]["mean_error"] == 30
 
 
 def _at(h, m):

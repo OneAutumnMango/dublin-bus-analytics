@@ -45,8 +45,7 @@ class ServerClient:
                     stop_id=stop, trip_id=a.get("tripId", ""), route=a["routeShortName"],
                     due_min=_int(a["dueMinutes"]), expected=_int(a.get("expectedEpochSeconds", 0)),
                     scheduled=a.get("scheduledEpochSeconds"), delay=a.get("delaySeconds"),
-                    realtime=bool(a["isRealtime"]), vehicle_id=a.get("vehicleId"),
-                    possibly_passed=bool(a.get("possiblyPassed", False)),
+                    realtime=bool(a["isRealtime"]),
                 )
                 for stop, arrs in data.items() for a in arrs
             ]
@@ -66,9 +65,6 @@ class ServerClient:
         if not isinstance(pts, list):
             raise ServerUnavailable("shape response has no points")
         return pts
-
-    async def status(self) -> dict:
-        return await self._get("/v1/status")
 
 
 def _int(v):

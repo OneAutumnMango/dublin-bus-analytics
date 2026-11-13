@@ -110,38 +110,6 @@ def filter_rows(rows, min_confidence=0, realtime_only=True, since=None, until=No
     return out
 
 
-def accumulation(rows_by_trip_ordered) -> list[dict]:
-    """Delay build-up along a route.
-
-    Input: list of trips (or dict trip_id -> trip); each trip is a list of rows with
-    keys stop_id, seq, delay (sorted by seq here, so order is not required).
-    Output per seq: mean_delay over trips, and segment_delta = mean over trips of
-    delay(seq) - delay(seq-1) for trips that have both *adjacent* seqs (None if none).
-    n = trips with a delay at that seq; n_delta = trips contributing to segment_delta
-    (use these for the n<10 flag). mean_delay is over all trips present at that seq, so it is
-    NOT the cumulative sum of segment_deltas (different trip sets); group by route variant.
-    """
-    trips = rows_by_trip_ordered.values() if isinstance(rows_by_trip_ordered, dict) \
-        else rows_by_trip_ordered
-    delays, deltas, ids = defaultdict(list), defaultdict(list), {}
-    for trip in trips:
-        prev = None
-        for r in sorted(trip, key=lambda r: r["seq"]):
-            if r.get("delay") is None:
-                prev = None
-                continue
-            s = r["seq"]
-            ids[s] = r["stop_id"]
-            delays[s].append(r["delay"])
-            if prev is not None and prev[0] == s - 1:
-                deltas[s].append(r["delay"] - prev[1])
-            prev = (s, r["delay"])
-    return [{"stop_id": ids[s], "seq": s, "mean_delay": _f(np.mean(delays[s])),
-             "segment_delta": _f(np.mean(deltas[s])) if deltas[s] else None,
-             "n": len(delays[s]), "n_delta": len(deltas[s])}
-            for s in sorted(delays)]
-
-
 def stop_changes(trip_rows, direction_lists) -> dict:
     """Per-stop change in delay: {stop_id: [n, sum]}.
 
@@ -152,7 +120,7 @@ def stop_changes(trip_rows, direction_lists) -> dict:
     the list's second stop, so a trip of another direction passing through a shared terminus does not
     count there. A stop repeated within one list counts once per trip (first position). A stop in
     several lists accumulates from each. Work is O(rows + matches): each trip's own stops are looked up
-    in a precomputed stop -> [(list, position)] index. Does not touch segment_delta/accumulation.
+    in a precomputed stop -> [(list, position)] index.
     """
     lists = list(direction_lists.values())
     index: dict[str, list] = {}
@@ -182,26 +150,3 @@ def stop_changes(trip_rows, direction_lists) -> dict:
                 a[0] += 1
                 a[1] += c
     return acc
-
-
-def forecast_accuracy(forecast_rows) -> dict:
-    """{horizon_min: {n, mean_error, mae, p_low, p_high}} from rows with keys
-    horizon_min and error_s (or error; error_s preferred) (seconds, actual minus predicted; positive = bus later than predicted). p_low/p_high = 5th/95th pct."""
-    acc = defaultdict(list)
-    for r in forecast_rows:
-        e = r.get("error_s")
-        if e is None:
-            e = r.get("error")
-        if r.get("horizon_min") is not None and e is not None:
-            acc[r["horizon_min"]].append(e)
-    out = {}
-    for h, errs in acc.items():
-        a = np.asarray(errs, dtype=float)
-        out[h] = {"n": len(errs), "mean_error": _f(a.mean()), "mae": _f(np.abs(a).mean()),
-                  "p_low": _f(np.percentile(a, 5)), "p_high": _f(np.percentile(a, 95))}
-    return out
-
-
-def heatmap_to_json(h: dict) -> list[dict]:
-    """Flatten heatmap() output to JSON-friendly rows sorted by (weekday, hour)."""
-    return [{"weekday": wd, "hour": hr, **v} for (wd, hr), v in sorted(h.items())]

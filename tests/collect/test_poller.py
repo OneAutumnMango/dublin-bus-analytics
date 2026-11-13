@@ -397,7 +397,7 @@ async def test_seq_lookup_contract():
 
 
 def arrival(trip="t1", stop="s1", sched=T0 + 300):
-    return Arrival(stop, trip, "15", 1, T0, sched, 0, True, None, False)
+    return Arrival(stop, trip, "15", 1, T0, sched, 0, True)
 
 
 # ---- track validation, threads ----

@@ -38,7 +38,7 @@ def data(tmp_path):
     m = open_meta(tmp_path)
     _arr(m, 1, "15"); _arr(m, 2, "15"); _arr(m, 3, "7"); _arr(m, 4, "15", sd="2026-11-04"); _arr(m, 5, "15", sd="2026-11-06")
     m.executemany("insert into gaps values (?,?)", [(W0 + 10, W0 + 20), (W0 - 100, W0 - 50), (W1 + 5, W1 + 9)])
-    m.execute("insert into routes_tracked values ('15', 1)"); m.execute("insert into meta_kv values ('k','v')")
+    m.execute("insert into routes_tracked values ('15', 1)")
     m.commit(); m.close()
     s = open_samples(tmp_path, W0)
     for n in (1, 2, 3):
@@ -77,7 +77,6 @@ def test_all_routes_leaves_other_days_and_kv(data):
     assert sorted(r[0] for r in m.execute("select distinct arrival_id from forecast")) == [4, 5]
     assert m.execute("select count(*) from gaps").fetchone()[0] == 2
     assert m.execute("select count(*) from routes_tracked").fetchone()[0] == 1
-    assert m.execute("select count(*) from meta_kv").fetchone()[0] == 1
     s = sqlite3.connect(data / "samples-2026-11.db")
     assert sorted(r[0] for r in s.execute("select seq from sample")) == [4, 5]
 

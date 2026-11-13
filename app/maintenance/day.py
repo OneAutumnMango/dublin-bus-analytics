@@ -1,7 +1,7 @@
 """Remove (or preview removing) all recorded data of one Dublin-local day.
 
 What goes: `arrivals` of that `service_date` (optionally one route) with their `forecast` rows, raw
-`sample` rows and `gaps`. Never touched: `routes_tracked`, `meta_kv`, other days.
+`sample` rows and `gaps`. Never touched: `routes_tracked`, other days.
 
 Samples have no route column. Without a route every sample whose `ts` lies in the day's window
 [local midnight, next local midnight) goes. With a route only samples whose (trip_id, stop_id, seq)
