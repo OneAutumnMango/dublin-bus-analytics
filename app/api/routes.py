@@ -670,6 +670,56 @@ def _distribution_db(request, r, p):
                    "qq": [{"z": z, "y": y} for z, y in lab.qq_points(allx)], "tiles": tiles})
 
 
+@router.get("/routes/{r}/lab/variance")
+async def route_lab_variance(request: Request, r: RouteP, p: P):
+    """Share of delay variance (adjusted omega-squared, 0..1) explained by each of hour, weekday, stop and
+    date, one factor at a time: factors [{factor, omega2, ci_low, ci_high, levels}]. The four overlap and do
+    not sum to 100%; CIs resample whole service days and are null below 5 days (enough_days)."""
+    return await _heavy(request, p, "route = ?", [r], lambda p: _variance_db(request, r, p))
+
+
+_FACTORS = ("hour", "weekday", "stop", "date")
+
+
+def _variance_db(request, r, p):
+    stops: dict = {}
+    hw: dict = {}  # scheduled // 3600 -> (hour, weekday); Dublin offsets are whole hours so this is exact
+    buckets = defaultdict(lambda: (array("d"), array("b"), array("b"), array("i")))  # y, hour, weekday, stop
+
+    def fn(rows):
+        for sd, st, d, sched in rows:  # scheduled is appended last by _scan_arrivals
+            k = int(sched) // 3600
+            if k not in hw:
+                t = stats._local(k * 3600)
+                hw[k] = (t.hour, t.weekday())
+            y, h, w, s = buckets[sd or ""]
+            y.append(d)
+            h.append(hw[k][0])
+            w.append(hw[k][1])
+            s.append(stops.setdefault(st, len(stops)))
+
+    _scan_arrivals(request, p, "route = ?", [r], "service_date, stop_id, delay", fn)
+    days = [tuple(np.frombuffer(a, dtype=t) for a, t in zip(b, ("d", "b", "b", "i"))) for b in buckets.values()]
+    n = sum(len(d[0]) for d in days)
+
+    def omegas(ds) -> dict:
+        if not ds:
+            return dict.fromkeys(_FACTORS)
+        cols = [np.concatenate(c) for c in zip(*ds)]
+        date = np.repeat(np.arange(len(ds)), [len(d[0]) for d in ds])  # each resampled copy is its own group
+        return {f: lab.omega_squared(c, cols[0]) for f, c in zip(_FACTORS, (cols[1], cols[2], cols[3], date))}
+
+    vals = omegas(days)
+    cis = lab.day_bootstrap(days, omegas, level=p["ci"])
+    cols = [np.concatenate(c) for c in zip(*days)] if days else [np.empty(0)] * 4
+    levels = {"hour": len(np.unique(cols[1])), "weekday": len(np.unique(cols[2])),
+              "stop": len(np.unique(cols[3])), "date": len(days)}
+    return _clean({"route": r, "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
+                   "enough_days": len(days) >= lab.MIN_DAYS,
+                   "factors": [{"factor": f, "omega2": vals[f], "ci_low": (cis[f] or (None, None))[0],
+                                "ci_high": (cis[f] or (None, None))[1], "levels": levels[f]} for f in _FACTORS]})
+
+
 @router.get("/routes/{r}/forecast")
 async def route_forecast(request: Request, r: RouteP, p: P):
     """horizons: always [30,20,10,5,2] in that order: {horizon_min, n, low_n, mean_error, mae,
