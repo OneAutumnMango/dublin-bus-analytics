@@ -370,7 +370,7 @@ th[aria-sort="descending"] .sort-btn::after { content: " \25BC"; font-size: 0.7e
 .chart .qq-dot { fill: var(--accent); opacity: .7; }
 .chart .lab-bar { fill: var(--accent); }
 p.reading { font-weight: 600; }
-.sidebar .lab-link { align-self: center; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; padding: 0 var(--s1); }
+.sidebar .lab-link { text-decoration: none; align-self: center; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; padding: 0 var(--s1); }
 .sidebar .lab-link:hover { color: var(--accent); }
 .sidebar .all-routes { display: flex; align-items: center; justify-content: space-between; gap: var(--s1); padding-right: var(--s2); }
 /* invisible Untrack button: gives this row the same right-hand width as the tracked-route rows so the Stats lab links line up */
