@@ -89,7 +89,7 @@ Invalid values stop the app at startup with a message naming the variable. See `
 
 ### Stats lab
 
-The lab page is backed by `GET /api/routes/{route}/lab/distribution`, `/lab/variance` and `/lab/persistence`. The reliability buffer is the 95th percentile minus the median. Excess kurtosis 0 is a normal distribution. Omega-squared values for hour, weekday, stop and date overlap, so they do not sum to 100%. Intervals resample whole service days (200 resamples, fixed seed). Results are computed per request and nothing is stored.
+The lab page is backed by `GET /api/routes/{route}/lab/distribution`, `/lab/variance` and `/lab/persistence`. The reliability buffer is the 95th percentile minus the median. Excess kurtosis 0 is a normal distribution. Omega-squared values for hour, weekday, stop and date overlap, so they do not sum to 100%. Intervals resample whole service days (200 resamples, fixed seed). The persistence section needs the bus data server's stop order; without it the section says so and shows no results. Adjusted omega-squared is clamped at 0. Results are computed per request and nothing is stored.
 
 ## Run the tests
 

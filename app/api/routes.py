@@ -539,8 +539,8 @@ def _assign(stops, delays, scheds, pos):
 
 
 def _matched_trips(request, r, p, lists):
-    """Per trip occurrence: (service_date, direction name or None, matched) with matched as `_assign`
-    returns it. Rows are held in flat arrays (no per-row objects)."""
+    """Per trip occurrence: (service_date, direction name or None, matched) with matched a list of
+    (position, delay, stop_id) tuples for the stops that fall on the direction. Rows are held in flat arrays (no per-row objects)."""
     stop_ix: dict[str, int] = {}
     trip_ix: dict[tuple, int] = {}
     cols = [array("q") for _ in range(4)]  # trip no, stop no, delay, scheduled
