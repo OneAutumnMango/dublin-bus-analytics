@@ -5,6 +5,7 @@ import { EXPLAIN, readDistribution, readPersistence, readVariance } from '../lab
 import { dataTable, emptyState, figure, h, link, put, tile } from '../dom.js';
 import { buildHash, fmtCount, fmtDelay, fmtMinutes, fmtNum, isNum } from '../lib.js';
 import { region } from '../view.js';
+import { infoPopover } from '../infopop.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
 const NO_DATA = 'No data for this selection.';
@@ -31,8 +32,9 @@ export async function render(ctx) {
   ]);
 }
 
-const head = (title, keys, d) => [h('h2', {}, title), ...filterNotices(d),
-  h('details', { open: true }, h('summary', {}, 'What am I looking at?'), keys.map((k) => [h('h3', {}, EXPLAIN[k].title), EXPLAIN[k].paragraphs.map((p) => h('p', {}, p))]))];
+const head = (title, d) => [h('h2', {}, title), ...filterNotices(d)];
+// host for a chart (or tile block) with an "i" button in its top-right corner; keys pick the EXPLAIN entries shown in the popover
+const withInfo = (label, keys, ...content) => h('div', { class: 'info-host' }, content, infoPopover(label, keys.map((k) => EXPLAIN[k])));
 const reading = (text) => h('p', { class: 'reading' }, text);
 const pct = (v) => (isNum(v) ? `${fmtNum(v * 100, 0)}%` : '–');
 const ciOf = (x, enough) => (enough && x && isNum(x.ci_low) && isNum(x.ci_high) ? [x.ci_low, x.ci_high] : null);
@@ -45,7 +47,7 @@ function ciTile(label, x, enough, fmt, n) {
 }
 
 function drawDist(route, d, el, s) {
-  put(el, head('How are delays distributed?', ['ecdf', 'qq', 'shape', 'buffer', 'ci'], d));
+  put(el, head('How are delays distributed?', d));
   if (!d.n) { put(el, emptyState(NO_DATA)); return; }
   const pts = d.ecdf.map((p) => ({ x: p.x / 60, p: p.p }));
   const geo = ecdfGeometry(pts, PAIR);
@@ -60,28 +62,29 @@ function drawDist(route, d, el, s) {
     { label: 'Std. deviations (normal)', num: true, get: (p) => fmtNum(p.z, 2) }, { label: 'Observed delay', num: true, get: (p) => fmtDelay(p.y) }] });
   const t = d.tiles || {}, e = d.enough_days;
   put(el, reading(readDistribution(d)),
-    figure({ title: 'Cumulative distribution', svg, table, level: 'h3', legend: h('p', { class: 'legend' }, 'Shaded band: on-time window · circles: median (p50) and 95th percentile (p95) · dashed line: on time.') }),
-    figure({ title: 'Normal Q-Q plot', svg: qsvg, table: qtable, level: 'h3' }),
-    h('div', { class: 'tiles' }, ciTile('Median delay', t.median, e, fmtDelay, d.n), ciTile('95th percentile', t.p95, e, fmtDelay, d.n), ciTile('Buffer (p95 minus median)', t.buffer, e, fmtMinutes, d.n),
-      ciTile('Skew', t.skew, e, (v) => fmtNum(v, 2), d.n), ciTile('Excess kurtosis', t.kurtosis, e, (v) => fmtNum(v, 2), d.n)),
+    h('div', { class: 'lab-pair' },
+      withInfo('About the cumulative distribution chart', ['ecdf', 'ci'], figure({ title: 'Cumulative distribution', svg, table, level: 'h3', legend: h('p', { class: 'legend' }, 'Shaded band: on-time window · circles: median (p50) and 95th percentile (p95) · dashed line: on time.') })),
+      withInfo('About the Q-Q plot', ['qq'], figure({ title: 'Normal Q-Q plot', svg: qsvg, table: qtable, level: 'h3' }))),
+    withInfo('About the distribution statistics', ['shape', 'buffer', 'ci'], h('div', { class: 'tiles' }, ciTile('Median delay', t.median, e, fmtDelay, d.n), ciTile('95th percentile', t.p95, e, fmtDelay, d.n), ciTile('Buffer (p95 minus median)', t.buffer, e, fmtMinutes, d.n),
+      ciTile('Skew', t.skew, e, (v) => fmtNum(v, 2), d.n), ciTile('Excess kurtosis', t.kurtosis, e, (v) => fmtNum(v, 2), d.n))),
     h('p', { class: 'hint' }, windowText(d)));
 }
 
-function barFigure(title, svgOpts, items, geoOpts, columns, rows, legend) {
+function barFigure(info, keys, title, svgOpts, items, geoOpts, columns, rows, legend) {
   const svg = renderBars(barGeometry(items, geoOpts), svgOpts);
-  return figure({ title, svg, table: dataTable({ caption: svgOpts.title, rows, columns }), level: 'h3', legend: h('p', { class: 'legend' }, legend) });
+  return withInfo(info, [...keys, 'ci'], figure({ title, svg, table: dataTable({ caption: svgOpts.title, rows, columns }), level: 'h3', legend: h('p', { class: 'legend' }, legend) }));
 }
 
 function drawPers(route, d, el) {
   // the shared "listed by stop id" notice does not apply here, so mask order_source for head()
-  put(el, head('Do late buses stay late along the route?', ['persistence', 'recovery'], { ...d, order_source: 'server' }));
+  put(el, head('Do late buses stay late along the route?', { ...d, order_source: 'server' }));
   if (d.order_source === 'none') { put(el, emptyState('Persistence needs the stop order from the bus data server, which is unavailable right now.')); return; }
   if (!d.n_trips) { put(el, emptyState(NO_DATA)); return; }
   const e = d.enough_days, lags = d.lags || [];
   const items = lags.map((l) => { const ci = ciOf(l, e); return { label: `${l.lag} stop${l.lag === 1 ? '' : 's'} on`, value: l.r, ci_low: ci && ci[0], ci_high: ci && ci[1] }; });
   const range = (l) => { const ci = ciOf(l, e); return ci ? `${fmtNum(ci[0], 2)} to ${fmtNum(ci[1], 2)}` : NO_DAYS; };
   put(el, reading(readPersistence(d)),
-    barFigure('Correlation of delay by distance along the route', { title: `Delay correlation by lag, route ${route}`, xLabel: 'Lag (stops apart)', yLabel: 'Autocorrelation (r)',
+    barFigure('About the delay correlation chart', ['persistence', 'recovery'], 'Correlation of delay by distance along the route', { title: `Delay correlation by lag, route ${route}`, xLabel: 'Lag (stops apart)', yLabel: 'Autocorrelation (r)',
       desc: `Correlation of delay between stops ${lags.length} different distances apart, from -1 to 1. ${lags.map((l) => `${l.lag} stops: ${fmtNum(l.r, 2)}`).join('; ')}.` },
     items, { min: -1, max: 1 }, [{ label: 'Lag (stops)', num: true, get: (l) => String(l.lag) }, { label: 'Correlation (r)', num: true, get: (l) => fmtNum(l.r, 2) },
       { label: 'Trips (n)', num: true, get: (l) => fmtCount(l.n) }, { label: 'Confidence interval', num: true, get: range }], lags, 'Bar: correlation r (1 = delay carries over fully, 0 = no link) · whisker: confidence interval.'),
@@ -90,13 +93,13 @@ function drawPers(route, d, el) {
 }
 
 function drawVar(route, d, el) {
-  put(el, head('What explains delay variation?', ['variance'], d));
+  put(el, head('What explains delay variation?', d));
   const fs = d.factors || [];
   if (!d.n || !fs.length) { put(el, emptyState(NO_DATA)); return; }
   const e = d.enough_days;
   const items = fs.map((f) => { const ci = ciOf(f, e); return { label: FACTORS[f.factor] || f.factor, value: f.omega2, ci_low: ci && ci[0], ci_high: ci && ci[1] }; });
   put(el, reading(readVariance(d)),
-    barFigure('Share of delay variation explained', { title: `Variance explained by factor, route ${route}`, xLabel: 'Factor', yLabel: 'Adjusted ω² (share of variance explained)',
+    barFigure('About the variance explained chart', ['variance'], 'Share of delay variation explained', { title: `Variance explained by factor, route ${route}`, xLabel: 'Factor', yLabel: 'Adjusted ω² (share of variance explained)',
       desc: `Share of delay variation explained by each factor: ${fs.map((f) => `${FACTORS[f.factor] || f.factor} ${pct(f.omega2)}`).join('; ')}.` },
     items, { height: 320 }, [{ label: 'Factor', get: (f) => FACTORS[f.factor] || f.factor }, { label: 'Share explained', num: true, get: (f) => pct(f.omega2) },
       { label: 'Groups', num: true, get: (f) => fmtCount(f.levels) }, { label: 'Confidence interval', num: true, get: (f) => { const ci = ciOf(f, e); return ci ? `${pct(ci[0])} to ${pct(ci[1])}` : NO_DAYS; } }], fs,

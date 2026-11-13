@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installDom, installFetch, fail, settle, FNode } from './fakedom.mjs';
+import { installDom, addDocEvents, installFetch, fail, settle, FNode } from './fakedom.mjs';
 
-installDom();
+addDocEvents(installDom().doc);
 const { render } = await import('../js/pages/lab.js');
+const { EXPLAIN } = await import('../js/labtext.js');
 
 const ctxOf = (route = '15') => ({ main: new FNode('main'), params: { route }, query: {}, signal: new AbortController().signal, title() {}, go() {}, reload() {}, nowSec: () => 1_700_000_000 });
 const filters = (over = {}) => ({ ci: 0.95, since: 1_690_000_000, until: null, min_confidence: 1, truncated: false, ...over });
@@ -27,9 +28,7 @@ test('lab renders three sections with explanations', async () => {
   assert.equal(s.length, 3);
   for (const sec of s) {
     assert.equal(sec.byTag('h2').length, 1);
-    const d = sec.byTag('details');
-    assert.equal(d.length, 1);
-    assert.ok(d[0].hasAttribute('open'));
+    assert.equal(sec.byTag('details').length, 0);
     assert.ok(sec.byTag('svg').length >= 1);
     assert.ok(sec.byTag('table').length >= 1);
     assert.ok(sec.byTag('p').some((p) => p.getAttribute('class') === 'reading' && p.textContent.length > 10));
@@ -133,4 +132,48 @@ test('lab buffer tile is unsigned', async () => {
   const t = tileText(await mount(), 'Buffer');
   assert.match(t, /4\.0 min/);
   assert.doesNotMatch(t, /\+/);
+});
+
+const infoBtns = (sec) => sec.byTag('button').filter((b) => /^About /.test(b.getAttribute('aria-label') || ''));
+const popOf = (ctx, btn) => ctx.main.all((n) => n.getAttribute('id') === btn.getAttribute('aria-controls'))[0];
+
+test('lab info buttons: one per chart, popovers hidden and hold the matching explanation', async () => {
+  stubs();
+  const ctx = await mount();
+  const s = sections(ctx);
+  const want = [[/Cumulative distribution \(ECDF\)[\s\S]*confidence/i, /Normal Q-Q/, /Skew/], [/autocorrelation|persistence|stops/i, /ecover/], [/ariance|omega|explain/i]];
+  const btns = s.map(infoBtns);
+  assert.deepEqual(btns.map((b) => b.length), [3, 1, 1]);
+  assert.match(btns[0][0].getAttribute('aria-label'), /cumulative distribution chart/);
+  assert.match(btns[0][1].getAttribute('aria-label'), /Q-Q/);
+  assert.match(btns[0][2].getAttribute('aria-label'), /distribution (summary|statistics)/i);
+  const pops = btns.flat().map((b) => popOf(ctx, b));
+  for (const [i, b] of btns.flat().entries()) {
+    assert.equal(b.getAttribute('aria-expanded'), 'false');
+    assert.ok(pops[i].hasAttribute('hidden'));
+    assert.ok(pops[i].getAttribute('aria-labelledby'));
+  }
+  assert.match(pops[0].textContent, want[0][0]);
+  assert.doesNotMatch(pops[0].textContent, /Normal Q-Q/);
+  assert.match(pops[1].textContent, want[0][1]);
+  assert.match(pops[2].textContent, want[0][2]);
+  assert.match(pops[3].textContent, want[1][1]);
+  assert.match(pops[4].textContent, want[2][0]);
+  // the explanation text lives only inside the popovers
+  const inPop = new Set(pops.flatMap((p) => [...p.walk()]));
+  const loose = ctx.main.byTag('p').filter((n) => !inPop.has(n) && Object.values(EXPLAIN).some((e) => e.paragraphs.includes(n.textContent)));
+  assert.equal(loose.length, 0);
+  btns.flat()[0].dispatch('click'); document.dispatch('click');
+  assert.ok(!pops[0].hasAttribute('hidden'));
+  btns.flat()[1].dispatch('click'); document.dispatch('click');
+  assert.ok(pops[0].hasAttribute('hidden') && !pops[1].hasAttribute('hidden'));
+});
+
+test('lab distribution: ECDF then Q-Q side by side in a lab-pair', async () => {
+  stubs();
+  const ctx = await mount();
+  const pair = sections(ctx)[0].all((n) => n.getAttribute('class') === 'lab-pair');
+  assert.equal(pair.length, 1);
+  const svgs = pair[0].byTag('svg');
+  assert.deepEqual(svgs.map((v) => v.getAttribute('class')), ['chart ecdf-chart', 'chart qq-chart']);
 });

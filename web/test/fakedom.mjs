@@ -25,6 +25,13 @@ export class FNode {
   byText(tag, re) { return this.all((n) => n.tag === tag && re.test(n.textContent)); }
 }
 
+// opt-in: give the fake document addEventListener/dispatch (tooltip code treats a document without them as a node host)
+export function addDocEvents(doc) {
+  doc.listeners = {};
+  doc.addEventListener = (ev, fn) => { (doc.listeners[ev] ||= []).push(fn); };
+  doc.dispatch = (ev, extra = {}) => { for (const fn of doc.listeners[ev] || []) fn({ type: ev, target: doc, ...extra }); };
+}
+
 export function installDom() {
   const body = new FNode('body');
   const status = new FNode('div'); status.setAttribute('id', 'status');
