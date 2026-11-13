@@ -50,7 +50,7 @@ test('renderers: role, labels, finite output, zero range', () => {
   finiteAttrs(renderEcdf(ecdfGeometry([]), { title: 'T', desc: 'D', doc }));
   const q = renderQq(qqGeometry([1, 2, 3, 4, 5].map(() => ({ z: 0, y: 3 }))), { title: 'T', desc: 'D', doc });
   hasTitle(q); finiteAttrs(q);
-  const b = renderBars(barGeometry([{ label: 'a', value: 0.5, ci_low: 0.5, ci_high: 0.5 }, { label: 'b', value: null }]), { title: 'T', desc: 'D', axisLabel: 'share', doc });
+  const b = renderBars(barGeometry([{ label: 'a', value: 0.5, ci_low: 0.5, ci_high: 0.5 }, { label: 'b', value: null }]), { title: 'T', desc: 'D', doc });
   hasTitle(b); finiteAttrs(b);
   finiteAttrs(renderQq(qqGeometry([]), { title: 'T', desc: 'D', doc }));
 });
@@ -87,4 +87,28 @@ test('qqGeometry: reference line keeps the exact Q1-Q3 slope on heavy tails', ()
   const dz = ((g.line.x2 - g.line.x1) / (g.x1 - g.x0)) * (z1 - z0), dy = ((g.line.y1 - g.line.y2) / (g.y0 - g.y1)) * (y1 - y0);
   assert.ok(Math.abs(dy / dz - k) < 1e-9);
   for (const v of [g.line.y1, g.line.y2]) assert.ok(v >= g.y1 - 1e-9 && v <= g.y0 + 1e-9);
+});
+
+const rotated = (svg) => svg.byTag('text').filter((t) => (t.getAttribute('transform') || '').startsWith('rotate(-90'));
+const axisTexts = (svg) => svg.all((n) => n.tag === 'text' && n.getAttribute('class') === 'axis-label');
+
+test('renderers draw the given axis labels, y rotated, and none by default', () => {
+  const lbl = { xLabel: 'X axis', yLabel: 'Y axis' };
+  const cases = [
+    [renderEcdf(ecdfGeometry([{ x: -1, p: 0.2 }, { x: 3, p: 1 }]), { title: 'T', desc: 'D', doc, ...lbl }), renderEcdf(ecdfGeometry([{ x: 1, p: 1 }]), { title: 'T', desc: 'D', doc })],
+    [renderQq(qqGeometry([1, 2, 3, 4].map((i) => ({ z: i, y: i * 2 }))), { title: 'T', desc: 'D', doc, ...lbl }), renderQq(qqGeometry([]), { title: 'T', desc: 'D', doc })],
+    [renderBars(barGeometry([{ label: 'a', value: 0.5 }]), { title: 'T', desc: 'D', doc, ...lbl }), renderBars(barGeometry([]), { title: 'T', desc: 'D', doc })],
+  ];
+  for (const [withL, without] of cases) {
+    assert.deepEqual(axisTexts(withL).map((t) => t.textContent).sort(), ['X axis', 'Y axis']);
+    assert.equal(rotated(withL).length, 1);
+    assert.equal(rotated(withL)[0].textContent, 'Y axis');
+    finiteAttrs(withL);
+    assert.equal(axisTexts(without).length, 0);
+  }
+});
+
+test('axis labels are finite on degenerate input and clear the tick labels', () => {
+  for (const g of [ecdfGeometry([]), qqGeometry([]), barGeometry([])]) assert.ok(g.x0 >= 60 && g.height - g.y0 >= 50);
+  finiteAttrs(renderEcdf(ecdfGeometry([]), { title: 'T', desc: 'D', doc, xLabel: 'x', yLabel: 'y' }));
 });

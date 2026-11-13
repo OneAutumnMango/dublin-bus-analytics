@@ -7,7 +7,7 @@ const r2 = (x) => Math.round(x * 100) / 100;
 const lab = (m) => fmtNum(m, Number.isInteger(m) ? 0 : 1);
 
 function frame(o, dw, dh) {
-  const { width = dw, height = dh, left = 44, right = 16, top = 14, bottom = 38 } = o;
+  const { width = dw, height = dh, left = 64, right = 16, top = 14, bottom = 52 } = o;
   return { width, height, left, top, x0: left, x1: width - right, y0: height - bottom, y1: top };
 }
 
@@ -80,14 +80,20 @@ function root(doc, g, title, desc, cls) {
   return svg;
 }
 const yAxis = (doc, svg, g) => { for (const t of g.yTicks) svg.append(el(doc, 'line', { class: 'grid', x1: g.x0, x2: g.x1, y1: t.y, y2: t.y }), el(doc, 'text', { class: 'tick-label', x: g.x0 - 6, y: t.y + 4, 'text-anchor': 'end' }, t.label)); };
+// optional axis titles: x centred under the tick labels, y rotated -90 in the left margin
+const axisTitles = (doc, svg, g, { xLabel, yLabel }) => {
+  const cy = (g.y0 + g.y1) / 2;
+  if (xLabel) svg.append(el(doc, 'text', { class: 'axis-label', x: (g.x0 + g.x1) / 2, y: g.height - 8, 'text-anchor': 'middle' }, xLabel));
+  if (yLabel) svg.append(el(doc, 'text', { class: 'axis-label', x: 14, y: cy, transform: `rotate(-90 14 ${cy})`, 'text-anchor': 'middle' }, yLabel));
+};
 const xAxis = (doc, svg, g) => { for (const t of g.xTicks) svg.append(el(doc, 'text', { class: 'tick-label', x: t.x, y: g.y0 + 16, 'text-anchor': 'middle' }, t.label)); };
 
-export function renderEcdf(geo, { title, desc, band = null, doc = globalThis.document } = {}) {
+export function renderEcdf(geo, { title, desc, band = null, xLabel, yLabel, doc = globalThis.document } = {}) {
   const svg = root(doc, geo, title, desc, 'ecdf-chart');
   yAxis(doc, svg, geo); xAxis(doc, svg, geo);
   if (band && band.x1 > band.x0) svg.append(el(doc, 'rect', { class: 'ci-band', x: band.x0, y: geo.y1, width: band.x1 - band.x0, height: geo.y0 - geo.y1 }));
-  svg.append(el(doc, 'line', { class: 'zero-line', x1: geo.zeroX, x2: geo.zeroX, y1: geo.y1, y2: geo.y0 }),
-    el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 4 }, '← early    minutes vs schedule    late →    (share of arrivals at or below)'));
+  svg.append(el(doc, 'line', { class: 'zero-line', x1: geo.zeroX, x2: geo.zeroX, y1: geo.y1, y2: geo.y0 }));
+  axisTitles(doc, svg, geo, { xLabel, yLabel });
   if (geo.path) svg.append(el(doc, 'path', { class: 'ecdf-line', d: geo.path, fill: 'none' }));
   for (const [m, k] of [[geo.p50, 'p50'], [geo.p95, 'p95']]) {
     if (m) svg.append(el(doc, 'circle', { class: `ecdf-mark ${k}`, cx: m.x, cy: m.y, r: 4 }), el(doc, 'text', { class: 'marker-label', x: m.x + 6, y: m.y + 14 }, k.toUpperCase()));
@@ -95,16 +101,16 @@ export function renderEcdf(geo, { title, desc, band = null, doc = globalThis.doc
   return svg;
 }
 
-export function renderQq(geo, { title, desc, doc = globalThis.document } = {}) {
+export function renderQq(geo, { title, desc, xLabel, yLabel, doc = globalThis.document } = {}) {
   const svg = root(doc, geo, title, desc, 'qq-chart');
   yAxis(doc, svg, geo); xAxis(doc, svg, geo);
-  svg.append(el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 4 }, 'Expected delay if normal (std. deviations)  vs  observed delay (min)'));
+  axisTitles(doc, svg, geo, { xLabel, yLabel });
   if (geo.line) svg.append(el(doc, 'line', { class: 'qq-line', ...geo.line }));
   for (const d of geo.dots) svg.append(el(doc, 'circle', { class: 'qq-dot', cx: d.cx, cy: d.cy, r: 2.5 }));
   return svg;
 }
 
-export function renderBars(geo, { title, desc, axisLabel = '', doc = globalThis.document } = {}) {
+export function renderBars(geo, { title, desc, xLabel, yLabel, doc = globalThis.document } = {}) {
   const svg = root(doc, geo, title, desc, 'bar-chart');
   yAxis(doc, svg, geo);
   for (const b of geo.bars) {
@@ -120,6 +126,6 @@ export function renderBars(geo, { title, desc, axisLabel = '', doc = globalThis.
     g.append(el(doc, 'text', { class: 'tick-label', x: r2(b.x + b.w / 2), y: geo.y0 + 16, 'text-anchor': 'middle' }, b.label));
     svg.append(g);
   }
-  if (axisLabel) svg.append(el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 4 }, axisLabel));
+  axisTitles(doc, svg, geo, { xLabel, yLabel });
   return svg;
 }
