@@ -91,6 +91,8 @@ Invalid values stop the app at startup with a message naming the variable. See `
 
 The lab page is backed by `GET /api/routes/{route}/lab/distribution`, `/lab/variance` and `/lab/persistence`. The reliability buffer is the 95th percentile minus the median. Excess kurtosis 0 is a normal distribution. Omega-squared values for hour, weekday, stop and date overlap, so they do not sum to 100%. Intervals resample whole service days (200 resamples, fixed seed). The persistence section needs the bus data server's stop order; without it the section says so and shows no results. Adjusted omega-squared is clamped at 0. Results are computed per request and nothing is stored.
 
+`#/lab` with no route (the sidebar "Stats lab (all routes)" link and the link on the All routes page) pools every tracked route with the same filters. Every arrival counts once, so busy routes weigh more, and the variance chart gains a `route` factor. Persistence uses each route's own stop order and leaves out routes whose order is unavailable (the page says how many). It is backed by `GET /api/all/lab/distribution`, `/api/all/lab/variance` and `/api/all/lab/persistence`.
+
 ## Run the tests
 
 ```bash
