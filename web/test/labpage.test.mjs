@@ -177,3 +177,13 @@ test('lab distribution: ECDF then Q-Q side by side in a lab-pair', async () => {
   const svgs = pair[0].byTag('svg');
   assert.deepEqual(svgs.map((v) => v.getAttribute('class')), ['chart ecdf-chart', 'chart qq-chart']);
 });
+
+test('lab passes the exact axis labels to every chart', async () => {
+  stubs();
+  const ctx = await mount();
+  const axes = (sec) => sec.all((n) => n.tag === 'text' && n.getAttribute('class') === 'axis-label').map((t) => t.textContent);
+  const s = sections(ctx);
+  assert.deepEqual(axes(s[0]), ['Delay (minutes; negative = early)', 'Share of arrivals at or below this delay', 'Normal quantile (standard deviations)', 'Observed delay (minutes)']);
+  assert.deepEqual(axes(s[1]), ['Lag (stops apart)', 'Autocorrelation (r)']);
+  assert.deepEqual(axes(s[2]), ['Factor', 'Adjusted ω² (share of variance explained)']);
+});

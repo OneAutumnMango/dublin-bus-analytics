@@ -385,4 +385,10 @@ p.reading { font-weight: 600; }
 .info-host .figure-head { padding-right: 36px; }
 .lab-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--s5); }
 .lab-pair .chart { min-width: 0; }
-@media (max-width: 720px) { .lab-pair { grid-template-columns: minmax(0, 1fr); } }
+/* the 260px sidebar and page padding are always present, so stack well before phone width */
+@media (max-width: 1100px) { .lab-pair { grid-template-columns: minmax(0, 1fr); } }
+
+.info-host:has(> .tiles) { padding-top: calc(var(--s3) + 24px + var(--s2)); } /* header row for the button, never over a tile */
+.sidebar .route-list li:has(> .row-actions) { flex-wrap: wrap; }
+.sidebar li > .name.grow { min-width: 4em; }
+.sidebar .row-actions { display: flex; align-items: center; gap: var(--s1); flex: none; }
