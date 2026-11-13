@@ -3,7 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from app.analysis.lab import (autocorr_by_lag, day_bootstrap, ecdf_points, omega_squared,
+from app.analysis.lab import (autocorr_by_lag, autocorr_from_sums, autocorr_sums, recovery_from_sums,
+                              recovery_sums, day_bootstrap, ecdf_points, omega_squared,
                               qq_points, recovery_slope, shape_stats)
 
 
@@ -201,3 +202,35 @@ def test_omega_degenerate():
     assert omega_squared(np.arange(10) % 2, np.ones(10)) is None
     with pytest.raises(ValueError):
         omega_squared(np.zeros(3, dtype=int), np.zeros(4))
+
+
+def _rand_days(seed):
+    rng = np.random.default_rng(seed)
+    days = []
+    for _ in range(6):
+        day = []
+        for _ in range(int(rng.integers(0, 6))):
+            k = int(rng.integers(1, 9))
+            pos = np.cumsum(rng.integers(1, 4, k)) - 1  # strictly increasing, with gaps
+            day.append([(int(p), int(rng.integers(-300, 900))) for p in pos])
+        days.append(day)
+    return days
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_sums_equal_reference_and_additive(seed):
+    days = _rand_days(seed)
+    if seed == 0:
+        days.append([[(0, 60), (1, 60), (2, 60)], [(0, 60)]])  # constant delays + tiny trips
+    allt = [t for d in days for t in d]
+    vec = sum(np.concatenate([autocorr_sums(d), recovery_sums(d)]) for d in days)
+    assert np.array_equal(vec, np.concatenate([autocorr_sums(allt), recovery_sums(allt)]))
+    ac, rec = autocorr_from_sums(vec[:-5]), recovery_from_sums(vec[-5:])
+    want, wrec = autocorr_by_lag(allt), recovery_slope(allt)
+    for g in want:
+        assert ac[g]["n"] == want[g]["n"] and (ac[g]["r"] is None) == (want[g]["r"] is None)
+        if want[g]["r"] is not None:
+            assert ac[g]["r"] == pytest.approx(want[g]["r"], abs=1e-12)
+    assert rec["n"] == wrec["n"] and (rec["slope"] is None) == (wrec["slope"] is None)
+    if wrec["slope"] is not None:
+        assert rec["slope"] == pytest.approx(wrec["slope"], rel=1e-12)

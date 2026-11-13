@@ -5,6 +5,8 @@ empty/degenerate *data* yields None fields, never NaN/inf.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy.stats import norm
 
@@ -114,6 +116,66 @@ def recovery_slope(trips) -> dict:
         return {"slope": None, "n": n}
     slope = float(((x - x.mean()) * (y - y.mean())).sum() / ((x - x.mean()) ** 2).sum())
     return {"slope": slope if np.isfinite(slope) else None, "n": n}
+
+
+def autocorr_sums(trips, max_lag: int = 5) -> np.ndarray:
+    """Additive sufficient statistics for autocorr_by_lag: per lag 1..max_lag
+    [n, sum a, sum b, sum a^2, sum b^2, sum ab] (a earlier, b later delay), flattened to one int64 vector.
+    Delays are integer seconds (truncated with int()), so the sums are exact; per-day vectors just add."""
+    if max_lag < 1:
+        raise ValueError("max_lag must be >= 1")
+    v = [[0] * 6 for _ in range(max_lag)]
+    for t in trips:
+        for i, (p, d) in enumerate(t):
+            d = int(d)
+            for q, e in t[i + 1:]:
+                if q - p > max_lag:
+                    break
+                e, a = int(e), v[q - p - 1]
+                a[0] += 1
+                a[1] += d
+                a[2] += e
+                a[3] += d * d
+                a[4] += e * e
+                a[5] += d * e
+    return np.array(v, dtype=np.int64).ravel()
+
+
+def recovery_sums(trips) -> np.ndarray:
+    """Additive sufficient statistics for recovery_slope: [n, sum x, sum y, sum x^2, sum xy] (int64, exact)."""
+    n = sx = sy = sxx = sxy = 0
+    for t in trips:
+        x = int(t[0][1])
+        for _, y in t[1:]:
+            y = int(y)
+            n += 1
+            sx += x
+            sy += y
+            sxx += x * x
+            sxy += x * y
+    return np.array([n, sx, sy, sxx, sxy], dtype=np.int64)
+
+
+def autocorr_from_sums(vec, max_lag: int = 5) -> dict[int, dict]:
+    """Same result as autocorr_by_lag, from (summed) autocorr_sums vectors. Python ints: no overflow."""
+    out = {}
+    for g in range(1, max_lag + 1):
+        n, sa, sb, saa, sbb, sab = (int(x) for x in vec[(g - 1) * 6:g * 6])
+        va, vb, cov = n * saa - sa * sa, n * sbb - sb * sb, n * sab - sa * sb
+        r = None
+        if n >= 3 and va > 0 and vb > 0:
+            r = min(1.0, max(-1.0, cov / math.sqrt(va * vb)))
+        out[g] = {"r": r, "n": n}
+    return out
+
+
+def recovery_from_sums(vec) -> dict:
+    """Same result as recovery_slope, from (summed) recovery_sums vectors."""
+    n, sx, sy, sxx, sxy = (int(x) for x in vec)
+    vx = n * sxx - sx * sx
+    if n < 3 or vx == 0:
+        return {"slope": None, "n": n}
+    return {"slope": (n * sxy - sx * sy) / vx, "n": n}
 
 
 def omega_squared(codes, y) -> float | None:

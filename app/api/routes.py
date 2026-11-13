@@ -743,23 +743,25 @@ def _persistence_db(request, r, p, lists):
     for sd, name, matched in _matched_trips(request, r, p, lists):
         if name is not None and matched:
             by_day[sd or ""].append([(pp, d) for pp, d, _ in matched])
-    days = list(by_day.values())
+    # per-day additive sums: a resample is then O(days), not O(trips)
+    days = [np.concatenate([lab.autocorr_sums(t), lab.recovery_sums(t)]) for t in by_day.values()]
+    nt = sum(len(t) for t in by_day.values())
 
     def stat(ds) -> dict:
-        trips = [t for d in ds for t in d]
-        ac = lab.autocorr_by_lag(trips)
-        return {**{f"lag{g}": ac[g]["r"] for g in _LAGS}, "slope": lab.recovery_slope(trips)["slope"]}
+        v = np.sum(ds, axis=0) if ds else np.zeros(35, dtype=np.int64)
+        ac = lab.autocorr_from_sums(v[:-5])
+        return {**{f"lag{g}": ac[g]["r"] for g in _LAGS}, "slope": lab.recovery_from_sums(v[-5:])["slope"]}
 
-    trips = [t for d in days for t in d]
-    ac, rec = lab.autocorr_by_lag(trips), lab.recovery_slope(trips)
+    total = np.sum(days, axis=0) if days else np.zeros(35, dtype=np.int64)
+    ac, rec = lab.autocorr_from_sums(total[:-5]), lab.recovery_from_sums(total[-5:])
     vals, cis = stat(days), lab.day_bootstrap(days, stat, level=p["ci"])
 
     def ci(k):
         lo, hi = cis[k] or (None, None)
         return {"ci_low": lo, "ci_high": hi}
 
-    return _clean({"route": r, "filters": _filters(p), "order_source": "server", "n_trips": len(trips),
-                   "days": len(days), "low_n": len(trips) < LOW_N, "enough_days": len(days) >= lab.MIN_DAYS,
+    return _clean({"route": r, "filters": _filters(p), "order_source": "server", "n_trips": nt,
+                   "days": len(days), "low_n": nt < LOW_N, "enough_days": len(days) >= lab.MIN_DAYS,
                    "lags": [{"lag": g, "r": vals[f"lag{g}"], "n": ac[g]["n"], "low_n": ac[g]["n"] < LOW_N,
                              **ci(f"lag{g}")} for g in _LAGS],
                    "recovery": {"slope": vals["slope"], "n": rec["n"], "low_n": rec["n"] < LOW_N, **ci("slope")}})
