@@ -155,6 +155,11 @@ def _filters(p):
     return out
 
 
+def _forecast_filters(p):
+    # forecast percentiles are fixed at 5/95, so pct_lo/pct_hi are accepted but not echoed
+    return {k: v for k, v in _filters(p).items() if k not in ("pct_lo", "pct_hi")}
+
+
 # Concurrent sqlite readers in the threadpool slow each other 10-1000x on this host, so ALL sqlite
 # work in this module runs under one lock. It is taken per statement / per fetched chunk (never
 # around the caller's processing), so short requests interleave with a long scan; `with` releases
@@ -357,6 +362,17 @@ async def _order(request, r):
     except _NoOrder:
         return None, "none"
     return {k: [_sid(x) for x in v] for k, v in d.items()}, "server"
+
+
+async def _bounded_map(request, items: list, fn) -> list:
+    """await fn(item) for every item, at most server_concurrency in flight; results in input order,
+    exceptions returned as values."""
+    sem = asyncio.Semaphore(getattr(request.app.state.settings, "server_concurrency", 2))
+
+    async def one(x):
+        async with sem:
+            return await fn(x)
+    return await asyncio.gather(*(one(x) for x in items), return_exceptions=True)
 
 
 # ---- routes: proxy + tracking ----
@@ -602,7 +618,7 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
 @router.get("/routes/{r}/forecast")
 async def route_forecast(request: Request, r: RouteP, p: P):
     """horizons: always [30,20,10,5,2] in that order: {horizon_min, n, low_n, mean_error, mae,
-    p_low, p_high} (null stats when n=0). error = actual minus predicted seconds."""
+    p_low, p_high} (null stats when n=0); p_low/p_high are always the 5th/95th percentile. error = actual minus predicted seconds."""
     return await _heavy(request, p, "route = ?", [r], lambda p: _forecast_db(request, r, p), delay=False)
 
 
@@ -627,7 +643,7 @@ def _forecast_db(request, r, p):
             v = {"mean_error": float(a.mean()), "mae": float(np.abs(a).mean()),
                  "p_low": float(np.percentile(a, 5)), "p_high": float(np.percentile(a, 95))}
         hs.append({"horizon_min": h, "n": len(a), **v, "low_n": len(a) < LOW_N})
-    return _clean({"route": r, "filters": _filters(p), "horizons": hs})
+    return _clean({"route": r, "filters": _forecast_filters(p), "horizons": hs})
 
 
 # ---- trip series ----
@@ -842,12 +858,20 @@ async def map_data(request: Request, p: P):
     A stop on several routes/directions appears once; stops without coordinates are skipped;
     routes whose stop list the server cannot give are named in `unavailable`."""
     routes, info, unavailable, per_route, truncated = [], {}, [], {}, False
-    for r in (await _tracked(request))["routes"]:
-        lists, _src = await _order(request, r)
+    tracked = (await _tracked(request))["routes"]
+    orders = await _bounded_map(request, tracked, lambda r: _order(request, r))
+    for order in orders:
+        if isinstance(order, BaseException):
+            raise order
+    ok = [r for r, o in zip(tracked, orders) if o[0] is not None]
+    raws = dict(zip(ok, await _bounded_map(request, ok, lambda r: _directions(request, r))))  # cache hits after _order
+    for r, (lists, _src) in zip(tracked, orders):
         if lists is None:
             unavailable.append(r)
             continue
-        raw = await _directions(request, r)
+        raw = raws[r]
+        if isinstance(raw, BaseException):
+            raise raw
         routes.append({"route": r, "directions": lists})
         for stops in raw.values():
             for s in stops:
@@ -934,16 +958,20 @@ async def map_shapes(request: Request):
     server, thinned and cached for an hour. A direction the server has no shape for is simply absent (the page
     then falls back to a line through that direction's stops)."""
     out: dict[str, dict] = {}
-    for r in (await _tracked(request))["routes"]:
-        lists, _src = await _order(request, r)
-        if lists is None:
-            continue
-        per = {}
-        for d in lists:
-            pts = await _shape(request, r, d)
-            if pts:
-                per[d] = pts
-        out[r] = per
+    tracked = (await _tracked(request))["routes"]
+    orders = await _bounded_map(request, tracked, lambda r: _order(request, r))
+    pairs = []
+    for r, order in zip(tracked, orders):
+        if isinstance(order, BaseException):
+            raise order
+        if order[0] is not None:
+            out[r] = {}
+            pairs += [(r, d) for d in order[0]]
+    for (r, d), pts in zip(pairs, await _bounded_map(request, pairs, lambda rd: _shape(request, *rd))):
+        if isinstance(pts, BaseException):
+            raise pts
+        if pts:
+            out[r][d] = pts
     return {"shapes": out}
 
 
@@ -1056,4 +1084,4 @@ async def all_forecast(request: Request, p: P):
             v = {"mean_error": tot / n, "mae": abs_tot / n,
                  "p_low": _hist_percentile(counts, n, 0.05), "p_high": _hist_percentile(counts, n, 0.95)}
         hs.append({"horizon_min": h, "n": n, **v, "low_n": n < LOW_N})
-    return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "horizons": hs})
+    return _clean({"filters": {**_forecast_filters(p), "truncated_routes": trunc}, "horizons": hs})

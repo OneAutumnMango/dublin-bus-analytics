@@ -632,6 +632,24 @@ def test_forecast_filters(env):
     assert n() == 1 and n(min_confidence=0) == 2
 
 
+def test_forecast_filters_omit_percentile_params(env):
+    env.fc(env.add(delay=0), 5, 10)
+    r = env.get("/api/routes/15/forecast", pct_lo="0.1", pct_hi="0.9")
+    assert r.status_code == 200
+    f = r.json()["filters"]
+    assert "pct_lo" not in f and "pct_hi" not in f
+    assert {"ci", "window_lo", "window_hi", "since", "realtime_only"} <= set(f)
+
+
+def test_all_forecast_filters_omit_percentile_params(env):
+    env.fc(env.add(delay=0), 5, 10)
+    r = env.get("/api/all/forecast", pct_lo="0.1", pct_hi="0.9")
+    assert r.status_code == 200
+    f = r.json()["filters"]
+    assert "pct_lo" not in f and "pct_hi" not in f
+    assert {"ci", "window_lo", "since", "truncated_routes"} <= set(f)
+
+
 # ---------- empty database ----------
 
 def assert_empty(url, j):
@@ -1316,8 +1334,12 @@ def test_forecast_matches_reference_computation(env):
     db = open_meta(env.s.data_dir)
     ok = {r[0] for r in db.execute("select id from arrivals where confidence >= 1")}
     db.close()
-    import app.analysis.stats as st
-    ref = st.forecast_accuracy([{"horizon_min": h, "error_s": e} for h, e, i in rows if i + 1 in ok])
+    import numpy as np
+    ref = {}
+    for h in (30, 20, 10, 5, 2):
+        x = np.asarray([e for hh, e, i in rows if hh == h and i + 1 in ok], dtype=float)
+        ref[h] = {"n": len(x), "mean_error": x.mean(), "mae": np.abs(x).mean(),
+                  "p_low": np.percentile(x, 5), "p_high": np.percentile(x, 95)}
     for h in (30, 20, 10, 5, 2):
         assert got[h]["n"] == ref[h]["n"]
         for k in ("mean_error", "mae", "p_low", "p_high"):
@@ -1326,7 +1348,8 @@ def test_forecast_matches_reference_computation(env):
 
 def test_accumulation_matches_reference_computation(env):
     import random
-    import app.analysis.stats as st
+    from collections import defaultdict
+    import numpy as np
     rnd = random.Random(11)
     ids = [f"s{i}" for i in range(12)]
     env.fake.set_route_stops("15", {"out": [{"id": x} for x in ids]})
@@ -1342,7 +1365,17 @@ def test_accumulation_matches_reference_computation(env):
         trips.append(rows)
     g = acc(env)["groups"]
     assert len(g) == 1 and g[0]["n"] == 60
-    ref = {a["seq"]: a for a in st.accumulation(trips)}
+    dl, dt, sid = defaultdict(list), defaultdict(list), {}
+    for rows in trips:  # reference: mean delay and mean step to the adjacent previous seq
+        prev = None
+        for r in rows:
+            sid[r["seq"]] = r["stop_id"]
+            dl[r["seq"]].append(r["delay"])
+            if prev and prev["seq"] == r["seq"] - 1:
+                dt[r["seq"]].append(r["delay"] - prev["delay"])
+            prev = r
+    ref = {q: {"stop_id": sid[q], "n": len(dl[q]), "n_delta": len(dt[q]), "mean_delay": np.mean(dl[q]),
+               "segment_delta": np.mean(dt[q]) if dt[q] else None} for q in dl}
     assert [x["position"] for x in g[0]["stops"]] == sorted(ref)
     for x in g[0]["stops"]:
         r = ref[x["position"]]
@@ -2570,3 +2603,55 @@ def test_all_forecast_reports_truncated_routes(env, monkeypatch):
 def test_all_forecast_no_tracked(env):
     hs = env.get("/api/all/forecast").json()["horizons"]
     assert [h["horizon_min"] for h in hs] == [30, 20, 10, 5, 2] and all(h["n"] == 0 and h["p_low"] is None for h in hs)
+
+
+def _slow_client_method(env, name, fail=()):
+    """Wrap client.<name>(route, ...) to record peak concurrency; routes in `fail` raise ServerUnavailable."""
+    from app.collect.serverclient import ServerUnavailable
+    client, orig, st = env.app.state.client, getattr(env.app.state.client, name), {"now": 0, "peak": 0, "calls": {}}
+
+    async def wrapped(route, *a, **k):
+        st["calls"][route] = st["calls"].get(route, 0) + 1
+        st["now"] += 1
+        st["peak"] = max(st["peak"], st["now"])
+        try:
+            await asyncio.sleep(0.05)
+            if route in fail:
+                raise ServerUnavailable("down")
+            return await orig(route, *a, **k)
+        finally:
+            st["now"] -= 1
+    setattr(client, name, wrapped)
+    return st
+
+
+def _track_many(env, routes):
+    for r in routes:
+        env.c.put(f"/api/routes/tracked/{r}")
+        env.fake.set_route_stops(r, {"out": [_stop("a" + r, "A", 53.3, -6.2), _stop("b" + r, "B", 53.31, -6.21)]})
+
+
+def test_map_fetches_routes_concurrently_within_cap(env):
+    _track_many(env, ["1", "2", "3", "4", "5", "6"])
+    st = _slow_client_method(env, "route_stops")
+    assert env.get("/api/map").status_code == 200
+    assert 1 < st["peak"] <= env.s.server_concurrency
+
+
+def test_map_one_route_unavailable_others_load(env):
+    _track_many(env, ["1", "2", "3", "4", "5", "6"])
+    st = _slow_client_method(env, "route_stops", fail={"3"})
+    j = env.get("/api/map").json()
+    assert st["calls"] == {r: 1 for r in "123456"}  # failing route is not re-fetched by the second pass
+    assert j["unavailable"] == ["3"]
+    assert [r["route"] for r in j["routes"]] == ["1", "2", "4", "5", "6"]
+
+
+def test_map_shapes_concurrent_and_ordered(env):
+    _track_many(env, ["1", "2", "3", "4", "5", "6"])
+    for r in ["1", "2", "3", "4", "5", "6"]:
+        env.fake.set_shape(r, "out", [[53.3, -6.2], [53.4, -6.3]])
+    st = _slow_client_method(env, "route_shape")
+    j = env.get("/api/map/shapes").json()["shapes"]
+    assert list(j) == ["1", "2", "3", "4", "5", "6"] and all(list(v) == ["out"] for v in j.values())
+    assert 1 < st["peak"] <= env.s.server_concurrency
