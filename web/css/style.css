@@ -372,7 +372,10 @@ th[aria-sort="descending"] .sort-btn::after { content: " \25BC"; font-size: 0.7e
 p.reading { font-weight: 600; }
 .sidebar .lab-link { align-self: center; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; padding: 0 var(--s1); }
 .sidebar .lab-link:hover { color: var(--accent); }
-.sidebar .all-routes { display: flex; align-items: center; gap: var(--s1); }
+.sidebar .all-routes { display: flex; align-items: center; justify-content: space-between; gap: var(--s1); padding-right: var(--s2); }
+/* invisible Untrack button: gives this row the same right-hand width as the tracked-route rows so the Stats lab links line up */
+.sidebar .all-routes .ghost { visibility: hidden; }
+.sidebar .all-routes .ghost::before { content: "Untrack"; }
 .sidebar .all-routes a[data-all] { flex: 1; min-width: 0; }
 .sidebar .all-routes a.lab-link { display: inline-block; flex: none; padding: 0 var(--s1); font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
 .sidebar .all-routes a.lab-link:hover { background: none; color: var(--accent); }

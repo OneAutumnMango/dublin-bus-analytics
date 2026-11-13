@@ -204,6 +204,9 @@ test('sidebar: all-routes Stats lab link sits inline with All routes and tracks 
   const hrefs = root.byTag('a').map((a) => a.getAttribute('href'));
   assert.equal(hrefs[hrefs.indexOf('#/all') + 1], '#/lab');
   const a = root.byTag('a').find((x) => x.getAttribute('href') === '#/lab');
+  const ghost = root.byTag('button').find((b) => b.getAttribute('aria-hidden') === 'true');
+  assert.ok(ghost, 'hidden Untrack spacer keeps the all-routes link aligned with the per-route links');
+  assert.equal(ghost.getAttribute('tabindex'), '-1');
   assert.equal(a.getAttribute('aria-label'), 'Stats lab for all routes');
   assert.equal(a.getAttribute('aria-current'), 'page');
   assert.equal(root.byText('a', /^All routes$/)[0].getAttribute('aria-current'), null);

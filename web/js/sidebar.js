@@ -140,7 +140,7 @@ export async function renderSidebar(root, { signal } = {}) {
     if (hit && input.value === sent) { input.value = ''; resultsBox.replaceChildren(); }
   } } }, h('label', { for: 'route-q' }, 'Route number', input));
 
-  root.replaceChildren(h('h2', {}, 'Find a route'), form, alertBox, resultsBox, h('h2', {}, 'Tracked routes'), h('p', { class: 'all-routes' }, allLink, labLink), trackedBox);
+  root.replaceChildren(h('h2', {}, 'Find a route'), form, alertBox, resultsBox, h('h2', {}, 'Tracked routes'), h('p', { class: 'all-routes' }, allLink, h('span', { class: 'row-actions' }, labLink, h('button', { class: 'btn btn-danger ghost', type: 'button', tabindex: '-1', 'aria-hidden': 'true', disabled: true }))), trackedBox);
   markActive();
   if (!hooked) { hooked = true; globalThis.addEventListener?.('hashchange', () => mark()); }
   trackedBox.replaceChildren(h('div', { class: 'skeleton', 'aria-hidden': 'true' }, h('span'), h('span')));
