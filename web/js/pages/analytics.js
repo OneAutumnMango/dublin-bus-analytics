@@ -19,7 +19,7 @@ export async function render(ctx) {
   ctx.title(`Analytics · route ${route}`);
   const sections = ['heat', 'acc', 'fc'].map(() => h('section', { class: 'analytics-section' }));
   put(ctx.main, 
-    crumbs(link('#/', '← All routes'), link(buildHash('route', { route }, s.linkQuery), `Route ${route} stops`)),
+    crumbs(link('#/', '← All routes'), link(buildHash('route', { route }, s.linkQuery), `Route ${route} stops`), link(buildHash('lab', { route }, s.linkQuery), 'Stats lab for this route')),
     h('h1', {}, `Analytics for route ${route}`),
     h('p', { class: 'subtitle' }, 'Delay = actual minus scheduled: negative = early, positive = late. Statistics use confirmed arrivals unless you change the filter.'),
     ...filterBar(ctx, 'analytics', { route }, s), ...sections);

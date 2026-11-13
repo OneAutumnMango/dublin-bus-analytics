@@ -793,3 +793,17 @@ test('analytics heatmap: selecting a cell refocuses it after re-render, ordinary
   await mod.render(c3);
   assert.equal(heatCells(c3).filter((c) => c.focused).length, 0, 'focus is only restored once');
 });
+
+test('lab page stub: h1 and filter bar; route page links to it', async () => {
+  installFetch({ 'GET /api/routes/15/stops': stopsResp });
+  const ctx = ctxOf({ route: '15' });
+  await (await import('../js/pages/lab.js')).render(ctx);
+  assert.deepEqual(ctx.main.byTag('h1').map(text), ['Stats lab for route 15']);
+  const rctx = ctxOf({ route: '15' });
+  await (await import('../js/pages/route.js')).render(rctx);
+  await settle();
+  assert.ok(rctx.main.byTag('a').some((a) => a.getAttribute('href') === '#/lab/15' && /Stats lab for this route/.test(text(a))));
+  const actx = ctxOf({ route: '15' });
+  await (await import('../js/pages/analytics.js')).render(actx);
+  assert.ok(actx.main.byTag('a').some((a) => a.getAttribute('href') === '#/lab/15'));
+});

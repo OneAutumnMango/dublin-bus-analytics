@@ -6,6 +6,7 @@ import { onTrackedChange, renderSidebar } from './sidebar.js';
 import { installTooltip } from './tooltip.js';
 import * as all from './pages/all.js';
 import * as analytics from './pages/analytics.js';
+import * as lab from './pages/lab.js';
 import * as route from './pages/route.js';
 import * as routes from './pages/routes.js';
 import * as stop from './pages/stop.js';
@@ -14,12 +15,12 @@ import * as settings from './pages/settings.js';
 import * as map from './pages/map.js';
 import { onSettings } from './settings.js';
 
-const PAGES = { routes, route, stop, trip, analytics, settings, map, all };
+const PAGES = { routes, route, stop, trip, analytics, lab, settings, map, all };
 const SITE = 'Dublin Bus Analytics';
 let ctl = null;
 let lastKey = null;
 
-const NAV = { routes: 'routes', route: 'routes', stop: 'routes', trip: 'routes', analytics: 'routes', map: 'map', settings: 'settings', all: 'routes' };
+const NAV = { routes: 'routes', route: 'routes', stop: 'routes', trip: 'routes', analytics: 'routes', lab: 'routes', map: 'map', settings: 'settings', all: 'routes' };
 function markNav(name) { // highlight the current section in the top bar
   const links = globalThis.document.querySelectorAll?.('.main-nav a') || [];
   for (const a of links) { if (a.getAttribute('data-nav') === NAV[name]) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }

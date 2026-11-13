@@ -17,7 +17,7 @@ export async function render(ctx) {
   ctx.title(`Route ${route}`);
   const box = h('div', {});
   put(ctx.main, 
-    crumbs(link('#/', '← All routes'), link(buildHash('analytics', { route }, s.linkQuery), 'Analytics for this route')),
+    crumbs(link('#/', '← All routes'), link(buildHash('analytics', { route }, s.linkQuery), 'Analytics for this route'), link(buildHash('lab', { route }, s.linkQuery), 'Stats lab for this route')),
     h('h1', {}, `Route ${route}`),
     h('p', { class: 'subtitle' }, 'Delay at each stop: negative = early, positive = late. Pick a stop to see its arrival distribution.'),
     ...filterBar(ctx, 'route', { route }, s, dir ? { dir } : {}), box);
