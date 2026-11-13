@@ -11,6 +11,7 @@ export const EXPLAIN = {
       'Each point shows the share of observed bus arrivals whose delay was at or below that value. Delay is actual minus scheduled time, so negative means early and positive means late.',
       'Read it from the y axis: where the curve crosses 0.5 is the median delay, and where it crosses 0.95 is the delay that 1 in 20 buses exceeds. A steep curve means delays are tightly bunched; a long right tail means occasional very late buses.',
       'A good shape rises sharply close to zero. A bad one climbs slowly, or sits well to the right of zero.',
+      'When the percentile band in the filter is narrower than 0 to 100, the chart shows only the arrivals inside that band, so the shares on the chart are within the band and the tails beyond it are deliberately left out.',
     ],
   },
   qq: {
@@ -18,6 +19,7 @@ export const EXPLAIN = {
     paragraphs: [
       'Observed delays (y, in minutes) are plotted against the values a normal distribution would give at the same ranks (x, in standard deviations). Points on a straight line mean the delays are roughly normal.',
       'Bus delays usually are not: a curve bending upward at the right means a heavy late tail, and a bend at the left means some buses run very early. The further the points bow away from a straight line, the less a mean and standard deviation describe the data.',
+      'When the percentile band in the filter is narrower than 0 to 100, the plot shows only the arrivals inside that band, so the percentiles here are within the band and the tails beyond it are deliberately left out.',
     ],
   },
   shape: {

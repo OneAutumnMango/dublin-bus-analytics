@@ -270,3 +270,45 @@ test('pooled persistence says "along each route"; per-route keeps "along the rou
   ctx = await mount();
   assert.match(sections(ctx)[1].textContent, /along the route/);
 });
+
+// percentile band: the distribution section says what was trimmed; persistence/variance say they use everything
+const BAND = { pct_lo: 0.05, pct_hi: 0.95, lo: -120, hi: 510, n_all: 4580, n_kept: 4168 };
+const MODES = [['per-route', '15', (k) => url('15', k)], ['all-routes', undefined, (k) => `GET /api/all/lab/${k}`]];
+const bandStubs = (mk, dist) => installFetch({ [mk('distribution')]: dist, [mk('persistence')]: PERS, [mk('variance')]: VAR });
+const hints = (sec) => sec.all((n) => n.tag === 'p' && n.getAttribute('class') === 'hint').map((p) => p.textContent);
+const mountMode = (route) => (route ? mount(route) : mountAll());
+
+for (const [name, route, mk] of MODES) {
+  test(`lab band note shows what was trimmed (${name})`, async () => {
+    const calls = bandStubs(mk, { ...DIST, band: BAND, ...(route ? {} : { routes: 3 }) });
+    const ctx = await mountMode(route);
+    const note = hints(sections(ctx)[0]).find((t) => /Showing arrivals between/.test(t));
+    assert.ok(note, 'note present');
+    for (const re of [/2\.0 min early/, /8\.5 min late/, /5–95/, /412 of 4,580/]) assert.match(note, re);
+    assert.doesNotMatch(note, bad);
+    const d = calls.find((c) => c.key === mk('distribution'));
+    assert.match(d.url, /pct_lo=/); assert.match(d.url, /pct_hi=/);
+  });
+
+  test(`lab band note absent when nothing left out, band null or missing (${name})`, async () => {
+    for (const band of [{ ...BAND, n_kept: BAND.n_all }, null, undefined]) {
+      bandStubs(mk, { ...DIST, band, ...(route ? {} : { routes: 3 }) });
+      const ctx = await mountMode(route);
+      assert.doesNotMatch(sections(ctx)[0].textContent, /Showing arrivals between/);
+      assert.doesNotMatch(sections(ctx)[0].textContent, bad);
+    }
+  });
+
+  test(`lab band note survives a degenerate band (${name})`, async () => {
+    bandStubs(mk, { ...DIST, band: { ...BAND, lo: 60, hi: 60 }, ...(route ? {} : { routes: 3 }) });
+    const ctx = await mountMode(route);
+    assert.match(sections(ctx)[0].textContent, /Showing arrivals/);
+    assert.doesNotMatch(sections(ctx)[0].textContent, bad);
+  });
+
+  test(`lab persistence and variance say they use all arrivals (${name})`, async () => {
+    bandStubs(mk, DIST);
+    const ctx = await mountMode(route);
+    for (const i of [1, 2]) assert.ok(hints(sections(ctx)[i]).includes('Uses all arrivals; the percentile band applies to the distribution charts only.'));
+  });
+}

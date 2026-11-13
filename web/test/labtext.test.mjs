@@ -138,3 +138,7 @@ test('readVariance names route when it is the top factor', () => {
   const f = (factor, omega2) => ({ factor, omega2, levels: 3 });
   assert.match(readVariance({ n: 100, factors: [f('hour', 0.05), f('route', 0.3)] }), /route explains the most delay variation \(30%\)/);
 });
+
+test('ecdf and qq explain the percentile band', () => {
+  for (const k of ['ecdf', 'qq']) assert.match(EXPLAIN[k].paragraphs.join(' '), /percentile band/);
+});

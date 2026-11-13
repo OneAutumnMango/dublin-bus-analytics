@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { barGeometry, ecdfGeometry, qqGeometry, renderBars, renderEcdf, renderQq } from '../labcharts.js';
 import { EXPLAIN, readDistribution, readPersistence, readVariance } from '../labtext.js';
 import { dataTable, emptyState, figure, h, link, put, tile } from '../dom.js';
-import { buildHash, fmtCount, fmtDelay, fmtMinutes, fmtNum, isNum, plural } from '../lib.js';
+import { buildHash, describeDelay, fmtCount, fmtDelay, fmtMinutes, fmtNum, isNum, plural } from '../lib.js';
 import { region } from '../view.js';
 import { infoPopover } from '../infopop.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
@@ -41,6 +41,7 @@ const head = (title, d) => [h('h2', {}, title), ...filterNotices(d)];
 // host for a chart (or tile block) with an "i" button in its top-right corner; keys pick the EXPLAIN entries shown in the popover
 const withInfo = (label, keys, ...content) => h('div', { class: 'info-host' }, content, infoPopover(label, keys.map((k) => EXPLAIN[k])));
 const reading = (text) => h('p', { class: 'reading' }, text);
+const allArrivals = () => h('p', { class: 'hint' }, 'Uses all arrivals; the percentile band applies to the distribution charts only.');
 const pct = (v) => (isNum(v) ? `${fmtNum(v * 100, 0)}%` : '–');
 const ciOf = (x, enough) => (enough && x && isNum(x.ci_low) && isNum(x.ci_high) ? [x.ci_low, x.ci_high] : null);
 
@@ -55,6 +56,12 @@ function drawDist(who, d, el, s, pooled) {
   put(el, head('How are delays distributed?', d));
   if (!d.n) { put(el, emptyState(NO_DATA)); return; }
   if (pooled) put(el, h('p', { class: 'hint' }, `${plural(d.routes, 'route')} pooled; every arrival counts once, so busy routes weigh more.`));
+  const b = d.band;
+  if (b && b.n_all > b.n_kept) {
+    const [lo, hi] = [b.lo, b.hi].map((v) => (isNum(v) ? describeDelay(v) : null));
+    const span = lo && hi ? (lo === hi ? `at ${lo}` : `between ${lo} and ${hi}`) : 'inside the band';
+    put(el, h('p', { class: 'hint' }, `Showing arrivals ${span} (percentile band ${fmtNum(b.pct_lo * 100, 1).replace(/\.0$/, '')}–${fmtNum(b.pct_hi * 100, 1).replace(/\.0$/, '')}); ${fmtCount(b.n_all - b.n_kept)} of ${fmtCount(b.n_all)} arrivals left out.`));
+  }
   const pts = d.ecdf.map((p) => ({ x: p.x / 60, p: p.p }));
   const geo = ecdfGeometry(pts, CHART);
   const lo = Math.max(geo.x0, geo.sx(s.controls.winLo)), hi = Math.min(geo.x1, geo.sx(s.controls.winHi));
@@ -84,7 +91,7 @@ function barFigure(info, keys, title, svgOpts, items, geoOpts, columns, rows, le
 function drawPers(who, d, el, pooled) {
   const along = pooled ? 'along each route' : 'along the route';
   // the shared "listed by stop id" notice does not apply here, so mask order_source for head()
-  put(el, head(`Do late buses stay late ${along}?`, { ...d, order_source: 'server' }));
+  put(el, head(`Do late buses stay late ${along}?`, { ...d, order_source: 'server' }), allArrivals());
   if (d.routes_skipped?.length) put(el, h('p', { class: 'hint' }, `${plural(d.routes_skipped.length, 'route')} left out: stop order unavailable`));
   if (d.order_source === 'none') { put(el, emptyState('Persistence needs the stop order from the bus data server, which is unavailable right now.')); return; }
   if (!d.n_trips) { put(el, emptyState(NO_DATA)); return; }
@@ -101,7 +108,7 @@ function drawPers(who, d, el, pooled) {
 }
 
 function drawVar(who, d, el, pooled) {
-  put(el, head('What explains delay variation?', d));
+  put(el, head('What explains delay variation?', d), allArrivals());
   const fs = d.factors || [];
   if (!d.n || !fs.length) { put(el, emptyState(NO_DATA)); return; }
   const e = d.enough_days;
