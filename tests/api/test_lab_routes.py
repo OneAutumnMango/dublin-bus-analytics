@@ -260,3 +260,156 @@ def test_persistence_matches_lab_functions(env):
         assert x["ci_low"] is not None
     assert b["recovery"]["slope"] == pytest.approx(rec["slope"]) and b["recovery"]["n"] == rec["n"]
     assert b == env.get(PER).json()
+
+
+# ---- all routes (pooled) ----
+
+ALL = "/api/all/lab/"
+ROUTES = ("15", "16", "N4")
+
+
+def _track(env, routes=ROUTES):
+    for r in routes:
+        env.app.state.poller.track(r)
+
+
+def _seed_all(env, days=6, per=10):
+    _track(env)
+    out = []
+    for k, r in enumerate(ROUTES):
+        out += seed(env, days, per=per, delay=lambda d, i, k=k: (i * 7 + d * 3 + k * 40) % 90 + k, route=r)
+    return out
+
+
+def test_all_distribution_matches_pooled_rows(env):
+    import pytest
+    from app.analysis import lab
+    delays = _seed_all(env)
+    b = env.get(ALL + "distribution").json()
+    finite(b)
+    assert b["routes"] == 3 and b["n"] == len(delays) == 180 and "route" not in b
+    want = lab.shape_stats(delays)
+    for k in ("median", "p95", "buffer", "skew", "kurtosis"):
+        assert b["tiles"][k]["value"] == pytest.approx(want[k], abs=1e-9)
+
+
+def test_all_distribution_no_tracked_routes(env):
+    r = env.get(ALL + "distribution")
+    b = r.json()
+    finite(b)
+    assert r.status_code == 200 and b["n"] == 0 and b["ecdf"] == [] and b["routes"] == 0
+
+
+def test_all_distribution_ignores_untracked(env):
+    _seed_all(env, days=2, per=2)
+    seed(env, 2, per=2, route="99")
+    assert env.get(ALL + "distribution").json()["n"] == 12
+
+
+def _seed_var(env):
+    _track(env)
+    rows = []
+    for k, r in enumerate(ROUTES):
+        for d in range(7):
+            for h in (8, 9, 10):
+                for i in range(3):
+                    s = T0 + d * 86400 + h * 3600 + i * 60
+                    rows.append((r, f"2026-01-{d + 1:02d}", f"S{(i + k) % 4}", 100 * k + (i + d) % 2, s))
+                    env.add(route=r, delay=rows[-1][3], stop=rows[-1][2], scheduled=s, date=rows[-1][1])
+    return rows
+
+
+def test_all_variance_has_route_factor(env):
+    import pytest
+    from app.analysis import lab, stats
+    rows = _seed_var(env)
+    b = env.get(ALL + "variance").json()
+    finite(b)
+    assert [x["factor"] for x in b["factors"]] == ["hour", "weekday", "stop", "date", "route"]
+    assert b["routes"] == 3 and "route" not in b
+    f = {x["factor"]: x for x in b["factors"]}
+    assert f["route"]["omega2"] > 0.9 and f["route"]["levels"] == 3
+    y = np.array([r[3] for r in rows], float)
+    loc = [stats._local(r[4]) for r in rows]
+    want = {"hour": [t.hour for t in loc], "weekday": [t.weekday() for t in loc],
+            "stop": [r[2] for r in rows], "date": [r[1] for r in rows], "route": [r[0] for r in rows]}
+    for x in b["factors"]:
+        exp = lab.omega_squared(np.unique(want[x["factor"]], return_inverse=True)[1], y)
+        assert exp is not None
+        assert x["omega2"] == pytest.approx(exp, abs=1e-9)
+
+
+def test_all_variance_shared_stop_is_one_level(env):
+    _track(env, ("15", "16"))
+    for r in ("15", "16"):
+        _seed_hours(env, 4, route=r, stops=("SHARED",))
+    f = {x["factor"]: x for x in env.get(ALL + "variance").json()["factors"]}
+    assert f["stop"]["levels"] == 1 and f["route"]["levels"] == 2
+
+
+def test_all_variance_no_tracked_routes(env):
+    b = env.get(ALL + "variance").json()
+    finite(b)
+    assert b["n"] == 0 and b["routes"] == 0 and len(b["factors"]) == 5
+    assert all(x["omega2"] is None for x in b["factors"])
+
+
+def _seed_two_routes(env, days=7, per=3):
+    _track(env, ("15", "16"))
+    out = []
+    for k, r in enumerate(("15", "16")):
+        stops = [f"{r}s{i}" for i in range(6)]
+        env.fake.set_route_stops(r, {"out": [{"id": s} for s in stops]})
+        for d in range(days):
+            for j in range(per):
+                ds = [(d * 7 + j * 13 + i * i * (j + 1) + k * 11) % 90 for i in range(6)]
+                for i, (s, x) in enumerate(zip(stops, ds)):
+                    env.add(route=r, trip=f"{r}t{d}-{j}", stop=s, delay=x,
+                            scheduled=T0 + d * 86400 + j * 3600 + i * 60, date=f"2026-01-{d + 1:02d}")
+                out.append(list(enumerate(ds)))
+    return out
+
+
+def test_all_persistence_pools_routes(env):
+    import pytest
+    from app.analysis import lab
+    trips = _seed_two_routes(env)
+    b = env.get(ALL + "persistence").json()
+    finite(b)
+    assert b["routes"] == 2 and b["routes_used"] == ["15", "16"] and b["routes_skipped"] == []
+    assert b["order_source"] == "server" and b["n_trips"] == len(trips) and "route" not in b
+    ac, rec = lab.autocorr_by_lag(trips), lab.recovery_slope(trips)
+    for x in b["lags"]:
+        assert x["r"] == pytest.approx(ac[x["lag"]]["r"]) and x["n"] == ac[x["lag"]]["n"]
+        assert x["ci_low"] is not None
+    assert b["recovery"]["slope"] == pytest.approx(rec["slope"]) and b["recovery"]["n"] == rec["n"]
+
+
+def test_all_persistence_skips_unavailable_route(env):
+    _seed_two_routes(env)
+    del env.fake.route_stops["16"]  # server 404 for route 16 -> its stop order is unavailable
+    b = env.get(ALL + "persistence").json()
+    assert b["routes_used"] == ["15"] and b["routes_skipped"] == ["16"] and b["order_source"] == "server"
+
+
+def test_all_persistence_all_unavailable(env):
+    _seed_two_routes(env)
+    env.fake.set_down(True)
+    r = env.get(ALL + "persistence")
+    b = r.json()
+    finite(b)
+    assert r.status_code == 200 and b["order_source"] == "none" and b["routes_used"] == []
+    assert b["routes_skipped"] == ["15", "16"] and b["lags"] == [] and b["recovery"] is None
+
+
+def test_all_persistence_no_tracked_routes(env):
+    b = env.get(ALL + "persistence").json()
+    assert b["routes"] == 0 and b["routes_used"] == [] and b["n_trips"] == 0 and b["order_source"] == "none"
+
+
+def test_all_endpoints_filters_echoed(env):
+    _seed_all(env, days=7)
+    for ep in ("distribution", "variance"):
+        full = env.get(ALL + ep).json()
+        b = env.get(ALL + ep, weekdays="0,1,2").json()
+        assert 0 < b["n"] < full["n"] and b["filters"]["weekdays"] == [0, 1, 2]

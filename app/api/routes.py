@@ -632,6 +632,25 @@ async def route_lab_distribution(request: Request, r: RouteP, p: P):
     return await _heavy(request, p, "route = ?", [r], lambda p: _distribution_db(request, r, p))
 
 
+def _head(r, seen) -> dict:
+    return {"route": r} if r is not None else {"routes": len(seen)}
+
+
+async def _tracked_where(request):
+    """(tracked route list, `route in (...)` clause, args) for the pooled all-routes lab endpoints."""
+    routes = sorted(await run_in_threadpool(request.app.state.poller.tracked))
+    return routes, f"route in ({','.join('?' * len(routes))})", routes
+
+
+@router.get("/all/lab/distribution")
+async def all_lab_distribution(request: Request, p: P):
+    """Pooled across every tracked route (one scan, MAX_ROWS applies to the pooled set): the per-route
+    distribution shape without `route`, plus `routes` (tracked routes with data). A bootstrap day is a
+    service date pooled across routes; busy routes dominate (every arrival counts once)."""
+    _, where, args = await _tracked_where(request)
+    return await _heavy(request, p, where, args, lambda p: _distribution_db(request, None, p, where, args))
+
+
 _TILES = ("median", "p95", "buffer", "skew", "kurtosis")
 
 
@@ -649,14 +668,17 @@ def _tile_stats(days) -> dict:
             "kurtosis": float((z**4).mean() - 3) if z is not None and n >= 4 else None}
 
 
-def _distribution_db(request, r, p):
+def _distribution_db(request, r, p, where="route = ?", args=None):
+    """r None = pooled over `where`/`args` (response has `routes` instead of `route`)."""
     buckets = defaultdict(lambda: array("d"))  # service_date -> delays; "" when service_date is null
+    seen = set()
 
     def fn(rows):
-        for sd, d, _ in rows:  # scheduled is appended last by _scan_arrivals
+        for sd, d, rt, _ in rows:  # scheduled is appended last by _scan_arrivals
             buckets[sd or ""].append(d)
+            seen.add(rt)
 
-    _scan_arrivals(request, p, "route = ?", [r], "service_date, delay", fn)
+    _scan_arrivals(request, p, where, [r] if args is None else args, "service_date, delay, route", fn)
     days = [np.frombuffer(b, dtype=float) for b in buckets.values()]
     n = sum(len(d) for d in days)
     allx = np.concatenate(days) if days else np.empty(0)
@@ -664,7 +686,7 @@ def _distribution_db(request, r, p):
     cis = lab.day_bootstrap(days, _tile_stats, level=p["ci"])
     tiles = {k: {"value": vals[k], "ci_low": (cis[k] or (None, None))[0], "ci_high": (cis[k] or (None, None))[1]}
              for k in _TILES}
-    return _clean({"route": r, "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
+    return _clean({**_head(r, seen), "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
                    "enough_days": len(days) >= lab.MIN_DAYS,
                    "ecdf": [{"x": x, "p": q} for x, q in lab.ecdf_points(allx)],
                    "qq": [{"z": z, "y": y} for z, y in lab.qq_points(allx)], "tiles": tiles})
@@ -678,48 +700,63 @@ async def route_lab_variance(request: Request, r: RouteP, p: P):
     return await _heavy(request, p, "route = ?", [r], lambda p: _variance_db(request, r, p))
 
 
+@router.get("/all/lab/variance")
+async def all_lab_variance(request: Request, p: P):
+    """Pooled across every tracked route (one scan): like the per-route variance without `route`, plus `routes`
+    and a fifth factor, route (factors: hour, weekday, stop, date, route). A stop id shared by routes is one level."""
+    _, where, args = await _tracked_where(request)
+    return await _heavy(request, p, where, args, lambda p: _variance_db(request, None, p, where, args))
+
+
 _FACTORS = ("hour", "weekday", "stop", "date")
 
 
-def _variance_db(request, r, p):
+def _variance_db(request, r, p, where="route = ?", args=None):
+    """r None = pooled over `where`/`args`: adds the route factor and `routes`."""
+    pooled = r is None
+    factors = _FACTORS + ("route",) * pooled
+    kinds = ("d", "b", "b", "i") + ("i",) * pooled
+    routes: dict = {}
     stops: dict = {}
     hw: dict = {}  # scheduled // 3600 -> (hour, weekday); Dublin offsets are whole hours so this is exact
-    buckets = defaultdict(lambda: (array("d"), array("b"), array("b"), array("i")))  # y, hour, weekday, stop
+    buckets = defaultdict(lambda: tuple(array(k) for k in kinds))  # y, hour, weekday, stop[, route]
 
     def fn(rows):
-        for sd, st, d, sched in rows:  # scheduled is appended last by _scan_arrivals
+        for sd, st, d, rt, sched in rows:  # scheduled is appended last by _scan_arrivals
             k = int(sched) // 3600
             if k not in hw:
                 t = stats._local(k * 3600)
                 hw[k] = (t.hour, t.weekday())
-            y, h, w, s = buckets[sd or ""]
+            y, h, w, s, *rc = buckets[sd or ""]
             y.append(d)
             h.append(hw[k][0])
             w.append(hw[k][1])
             s.append(stops.setdefault(st, len(stops)))
+            if rc:
+                rc[0].append(routes.setdefault(rt, len(routes)))
 
-    _scan_arrivals(request, p, "route = ?", [r], "service_date, stop_id, delay", fn)
-    days = [tuple(np.frombuffer(a, dtype=t) for a, t in zip(b, ("d", "b", "b", "i"))) for b in buckets.values()]
+    _scan_arrivals(request, p, where, [r] if args is None else args, "service_date, stop_id, delay, route", fn)
+    days = [tuple(np.frombuffer(a, dtype=t) for a, t in zip(b, kinds)) for b in buckets.values()]
     n = sum(len(d[0]) for d in days)
 
     def omegas(ds) -> dict:
         if not ds:
-            return dict.fromkeys(_FACTORS)
+            return dict.fromkeys(factors)
         cols = [np.concatenate(c) for c in zip(*ds)]
         date = np.repeat(np.arange(len(ds)), [len(d[0]) for d in ds])  # each resampled copy is its own group
-        lv = (24, 7, len(stops), len(ds))
-        return {f: lab.omega_squared(c, cols[0], levels=m)
-                for f, c, m in zip(_FACTORS, (cols[1], cols[2], cols[3], date), lv)}
+        cs = (cols[1], cols[2], cols[3], date, *cols[4:])
+        lv = (24, 7, len(stops), len(ds), len(routes))
+        return {f: lab.omega_squared(c, cols[0], levels=m) for f, c, m in zip(factors, cs, lv)}
 
     vals = omegas(days)
     cis = lab.day_bootstrap(days, omegas, level=p["ci"])
     cols = [np.concatenate(c) for c in zip(*days)] if days else [np.empty(0)] * 4
     levels = {"hour": len(np.unique(cols[1])), "weekday": len(np.unique(cols[2])),
-              "stop": len(np.unique(cols[3])), "date": len(days)}
-    return _clean({"route": r, "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
+              "stop": len(np.unique(cols[3])), "date": len(days), "route": len(routes)}
+    return _clean({**_head(r, routes), "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
                    "enough_days": len(days) >= lab.MIN_DAYS,
                    "factors": [{"factor": f, "omega2": vals[f], "ci_low": (cis[f] or (None, None))[0],
-                                "ci_high": (cis[f] or (None, None))[1], "levels": levels[f]} for f in _FACTORS]})
+                                "ci_high": (cis[f] or (None, None))[1], "levels": levels[f]} for f in factors]})
 
 
 @router.get("/routes/{r}/lab/persistence")
@@ -740,14 +777,22 @@ async def route_lab_persistence(request: Request, r: RouteP, p: P):
 _LAGS = range(1, 6)
 
 
-def _persistence_db(request, r, p, lists):
+def _day_sums(request, r, p, lists):
+    """({service_date: additive sum vector}, n trips) for one route; per-day sums make a resample O(days)."""
     by_day = defaultdict(list)  # service_date -> [[(position, delay)]]
     for sd, name, matched in _matched_trips(request, r, p, lists):
         if name is not None and matched:
             by_day[sd or ""].append([(pp, d) for pp, d, _ in matched])
-    # per-day additive sums: a resample is then O(days), not O(trips)
-    days = [np.concatenate([lab.autocorr_sums(t), lab.recovery_sums(t)]) for t in by_day.values()]
-    nt = sum(len(t) for t in by_day.values())
+    return ({sd: np.concatenate([lab.autocorr_sums(t), lab.recovery_sums(t)]) for sd, t in by_day.items()},
+            sum(len(t) for t in by_day.values()))
+
+
+def _persistence_db(request, r, p, lists):
+    sums, nt = _day_sums(request, r, p, lists)
+    return _persistence_result({"route": r}, list(sums.values()), nt, p)
+
+
+def _persistence_result(head, days, nt, p):
 
     def stat(ds) -> dict:
         v = np.sum(ds, axis=0) if ds else np.zeros(35, dtype=np.int64)
@@ -762,11 +807,41 @@ def _persistence_db(request, r, p, lists):
         lo, hi = cis[k] or (None, None)
         return {"ci_low": lo, "ci_high": hi}
 
-    return _clean({"route": r, "filters": _filters(p), "order_source": "server", "n_trips": nt,
+    return _clean({**head, "filters": _filters(p), "order_source": "server", "n_trips": nt,
                    "days": len(days), "low_n": nt < LOW_N, "enough_days": len(days) >= lab.MIN_DAYS,
                    "lags": [{"lag": g, "r": vals[f"lag{g}"], "n": ac[g]["n"], "low_n": ac[g]["n"] < LOW_N,
                              **ci(f"lag{g}")} for g in _LAGS],
                    "recovery": {"slope": vals["slope"], "n": rec["n"], "low_n": rec["n"] < LOW_N, **ci("slope")}})
+
+
+@router.get("/all/lab/persistence")
+async def all_lab_persistence(request: Request, p: P):
+    """Persistence pooled over tracked routes: each route is matched against its own server stop order and its
+    per-day sums are added across routes. Per-route persistence shape without `route`, plus routes_used,
+    routes_skipped (stop order unavailable, or no matched trips) and routes. order_source is "server" if any
+    route was used, else "none" with the usual empty result."""
+    routes = sorted(await run_in_threadpool(request.app.state.poller.tracked))
+    lists = {}
+    for r in routes:
+        try:
+            lists[r] = {k: [_sid(x) for x in v] for k, v in (await _directions(request, r)).items()}
+        except _NoOrder:
+            pass
+    # routes without a stop order never reach the scan (worker returns None; only the cheap probe runs)
+    res, _ = await _each_tracked(request, p, lambda rq, r, p2: _day_sums(rq, r, p2, lists[r]) if r in lists else None)
+    used, total, nt = [], {}, 0
+    for r, x in res:
+        if x is None or not x[0]:
+            continue
+        used.append(r)
+        nt += x[1]
+        for sd, v in x[0].items():
+            total[sd] = total[sd] + v if sd in total else v
+    head = {"routes": len(routes), "routes_used": used, "routes_skipped": [r for r in routes if r not in used]}
+    if not used:
+        return {**head, "filters": _filters(p), "order_source": "none", "n_trips": 0, "days": 0,
+                "low_n": True, "enough_days": False, "lags": [], "recovery": None}
+    return _persistence_result(head, list(total.values()), nt, p)
 
 
 @router.get("/routes/{r}/forecast")
