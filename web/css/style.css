@@ -372,6 +372,9 @@ th[aria-sort="descending"] .sort-btn::after { content: " \25BC"; font-size: 0.7e
 p.reading { font-weight: 600; }
 .sidebar .lab-link { align-self: center; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; padding: 0 var(--s1); }
 .sidebar .lab-link:hover { color: var(--accent); }
+.sidebar .all-routes a.lab-link { display: inline-block; padding: 0 var(--s2); font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
+.sidebar .all-routes a.lab-link:hover { background: none; color: var(--accent); }
+.sidebar .all-routes a.lab-link[aria-current="page"] { background: none; box-shadow: none; padding-left: var(--s2); color: var(--accent); }
 
 /* info popovers: round "i" button in the host's top-right corner, panel anchored under it */
 .info-host { position: relative; }
