@@ -36,6 +36,7 @@ Open http://127.0.0.1:8081. The pages (hash routes):
 - **Trip**: how the predictions for one trip at one stop evolved over time.
 - **Analytics**: mean delay by weekday and hour, where time is lost along the route, and how accurate the 30/20/10/5/2-minute forecasts were.
 - **All routes** (`#/all`, button at the top of the tracked list): a per-route comparison of mean and median delay, plus the weekday and hour heatmap and forecast accuracy pooled across every tracked route.
+- **Stats lab** (`#/lab/{route}`): the shape of the delay distribution (ECDF, QQ plot, skew, kurtosis, reliability buffer), how delay persists or recovers along a trip, and how much of the delay variance hour, weekday, stop and date each explain. Intervals resample whole days; with fewer than 5 days of data they are not shown.
 
 The fake server returns no live arrivals, so only the seeded history appears.
 
@@ -85,6 +86,10 @@ Invalid values stop the app at startup with a message naming the variable. See `
 ### How delays are measured
 
 `delay = actual - scheduled`. From version 0.3.0, `actual` is the time the bus left the stop's arrival list (the midpoint between the last poll that listed it and the first that did not), once it has shown as due now. If the bus stays listed for more than 10 minutes after first showing due now (some feeds keep passed stops), `actual` falls back to the feed's predicted time at that first due-now reading. The same 10-minute window also bounds the leave-time estimate after a gap in polling. A bus that vanishes without ever showing due now is stored (confidence 0) with its last predicted time only if that prediction was within 2 minutes of arrival; otherwise it is dropped. A feed that drops a bus for one poll right after due now gives an early `actual`. Rows stored before this change used the predicted time only.
+
+### Stats lab
+
+The lab page is backed by `GET /api/routes/{route}/lab/distribution`, `/lab/variance` and `/lab/persistence`. The reliability buffer is the 95th percentile minus the median. Excess kurtosis 0 is a normal distribution. Omega-squared values for hour, weekday, stop and date overlap, so they do not sum to 100%. Intervals resample whole service days (200 resamples, fixed seed). Results are computed per request and nothing is stored.
 
 ## Run the tests
 
