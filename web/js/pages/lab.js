@@ -1,15 +1,103 @@
-// Stats lab view (stub): heading and filter bar; the plots are added by later tasks.
-import { h, link, put } from '../dom.js';
-import { buildHash } from '../lib.js';
-import { crumbs, filterBar, setup } from './common.js';
+// Stats lab view: distribution, persistence along the route, and variance explained. API delays are seconds; charts take minutes.
+import { api } from '../api.js';
+import { barGeometry, ecdfGeometry, qqGeometry, renderBars, renderEcdf, renderQq } from '../labcharts.js';
+import { EXPLAIN, readDistribution, readPersistence, readVariance } from '../labtext.js';
+import { dataTable, emptyState, figure, h, link, put, tile } from '../dom.js';
+import { buildHash, fmtCount, fmtDelay, fmtNum, isNum } from '../lib.js';
+import { region } from '../view.js';
+import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
+
+const NO_DATA = 'No data for this selection.';
+const NO_DAYS = 'not enough days yet';
+const FACTORS = { hour: 'Hour of day', weekday: 'Day of week', stop: 'Stop', date: 'Calendar date' };
 
 export async function render(ctx) {
   const { route } = ctx.params;
   const s = setup(ctx);
   ctx.title(`Stats lab · route ${route}`);
+  const sections = ['dist', 'pers', 'var'].map(() => h('section', { class: 'analytics-section' }));
   put(ctx.main,
     crumbs(link('#/', '← All routes'), link(buildHash('route', { route }, s.linkQuery), `Route ${route} stops`), link(buildHash('analytics', { route }, s.linkQuery), 'Analytics for this route')),
     h('h1', {}, `Stats lab for route ${route}`),
     h('p', { class: 'subtitle' }, 'Delay = actual minus scheduled: negative = early, positive = late. Statistics use confirmed arrivals unless you change the filter.'),
-    ...filterBar(ctx, 'lab', { route }, s));
+    ...filterBar(ctx, 'lab', { route }, s), ...sections);
+  const [dist, pers, vari] = sections.map((el) => region(el, ctx.signal));
+  const q = s.apiQuery, o = (signal) => ({ signal });
+  await Promise.all([
+    dist.load((sig) => api.labDistribution(route, q, o(sig)), (d, el) => drawDist(route, d, el, s), { announce: (d) => `Route ${route} delay distribution loaded: ${fmtCount(d.n)} arrivals` }),
+    pers.load((sig) => api.labPersistence(route, q, o(sig)), (d, el) => drawPers(route, d, el), { announce: (d) => `Route ${route} delay persistence loaded: ${fmtCount(d.n_trips)} trips` }),
+    vari.load((sig) => api.labVariance(route, q, o(sig)), (d, el) => drawVar(route, d, el), { announce: (d) => `Route ${route} variance explained loaded: ${fmtCount(d.n)} arrivals` }),
+  ]);
+}
+
+const head = (title, keys, d) => [h('h2', {}, title), ...filterNotices(d),
+  h('details', { open: true }, h('summary', {}, 'What am I looking at?'), keys.map((k) => [h('h3', {}, EXPLAIN[k].title), EXPLAIN[k].paragraphs.map((p) => h('p', {}, p))]))];
+const reading = (text) => h('p', { class: 'reading' }, text);
+const pct = (v) => (isNum(v) ? `${fmtNum(v * 100, 0)}%` : '–');
+const ciOf = (x, enough) => (enough && x && isNum(x.ci_low) && isNum(x.ci_high) ? [x.ci_low, x.ci_high] : null);
+
+// value text plus its CI (or the not-enough-days note); fmt converts a raw API number to text
+function ciTile(label, x, enough, fmt, n) {
+  if (!x || !isNum(x.value ?? x.slope)) return tile(label, '–', { note: NO_DATA });
+  const ci = ciOf(x, enough);
+  return tile(label, fmt(x.value ?? x.slope), { n, lowN: x.low_n, note: ci ? `CI ${fmt(ci[0])} to ${fmt(ci[1])}` : NO_DAYS });
+}
+
+function drawDist(route, d, el, s) {
+  put(el, head('How are delays distributed?', ['ecdf', 'qq', 'shape', 'buffer', 'ci'], d));
+  if (!d.n) { put(el, emptyState(NO_DATA)); return; }
+  const pts = d.ecdf.map((p) => ({ x: p.x / 60, p: p.p }));
+  const geo = ecdfGeometry(pts);
+  const lo = Math.max(geo.x0, geo.sx(s.controls.winLo)), hi = Math.min(geo.x1, geo.sx(s.controls.winHi));
+  const svg = renderEcdf(geo, { title: `Cumulative delay distribution, route ${route}`, band: { x0: lo, x1: hi },
+    desc: `Share of ${fmtCount(d.n)} arrivals at or below each delay in minutes. The shaded band is the on-time window (${s.controls.winLo} to ${s.controls.winHi} min); circles mark the median (p50) and the 95th percentile (p95).` });
+  const table = dataTable({ caption: 'Share of arrivals at or below each delay (negative = early)', rows: d.ecdf, columns: [
+    { label: 'Delay', num: true, get: (p) => fmtDelay(p.x) }, { label: 'Share at or below', num: true, get: (p) => pct(p.p) }] });
+  const qg = qqGeometry(d.qq.map((p) => ({ z: p.z, y: p.y / 60 })));
+  const qsvg = renderQq(qg, { title: `Normal Q-Q plot of delays, route ${route}`, desc: `${d.qq.length} quantile points of observed delay in minutes against a normal distribution; a straight line would mean normal delays.` });
+  const qtable = dataTable({ caption: 'Observed delay against the normal-distribution quantile', rows: d.qq, columns: [
+    { label: 'Std. deviations (normal)', num: true, get: (p) => fmtNum(p.z, 2) }, { label: 'Observed delay', num: true, get: (p) => fmtDelay(p.y) }] });
+  const t = d.tiles || {}, e = d.enough_days;
+  put(el, reading(readDistribution(d)),
+    figure({ title: 'Cumulative distribution', svg, table, level: 'h3', legend: h('p', { class: 'legend' }, 'Shaded band: on-time window · circles: median (p50) and 95th percentile (p95) · dashed line: on time.') }),
+    figure({ title: 'Normal Q-Q plot', svg: qsvg, table: qtable, level: 'h3' }),
+    h('div', { class: 'tiles' }, ciTile('Median delay', t.median, e, fmtDelay, d.n), ciTile('95th percentile', t.p95, e, fmtDelay, d.n), ciTile('Buffer (p95 minus median)', t.buffer, e, fmtDelay, d.n),
+      ciTile('Skew', t.skew, e, (v) => fmtNum(v, 2), d.n), ciTile('Excess kurtosis', t.kurtosis, e, (v) => fmtNum(v, 2), d.n)),
+    h('p', { class: 'hint' }, windowText(d)));
+}
+
+function barFigure(title, svgOpts, items, geoOpts, columns, rows, legend) {
+  const svg = renderBars(barGeometry(items, geoOpts), svgOpts);
+  return figure({ title, svg, table: dataTable({ caption: svgOpts.title, rows, columns }), level: 'h3', legend: h('p', { class: 'legend' }, legend) });
+}
+
+function drawPers(route, d, el) {
+  put(el, head('Do late buses stay late along the route?', ['persistence', 'recovery'], d));
+  if (d.order_source === 'none') return; // filterNotices already explained why
+  if (!d.n_trips) { put(el, emptyState(NO_DATA)); return; }
+  const e = d.enough_days, lags = d.lags || [];
+  const items = lags.map((l) => { const ci = ciOf(l, e); return { label: `${l.lag} stop${l.lag === 1 ? '' : 's'} on`, value: l.r, ci_low: ci && ci[0], ci_high: ci && ci[1] }; });
+  const range = (l) => { const ci = ciOf(l, e); return ci ? `${fmtNum(ci[0], 2)} to ${fmtNum(ci[1], 2)}` : NO_DAYS; };
+  put(el, reading(readPersistence(d)),
+    barFigure('Correlation of delay by distance along the route', { title: `Delay correlation by lag, route ${route}`, axisLabel: 'correlation of a trip’s delay with its delay some stops later',
+      desc: `Correlation of delay between stops ${lags.length} different distances apart, from -1 to 1. ${lags.map((l) => `${l.lag} stops: ${fmtNum(l.r, 2)}`).join('; ')}.` },
+    items, { min: -1, max: 1 }, [{ label: 'Lag (stops)', num: true, get: (l) => String(l.lag) }, { label: 'Correlation (r)', num: true, get: (l) => fmtNum(l.r, 2) },
+      { label: 'Trips (n)', num: true, get: (l) => fmtCount(l.n) }, { label: 'Confidence interval', num: true, get: range }], lags, 'Bar: correlation r (1 = delay carries over fully, 0 = no link) · whisker: confidence interval.'),
+    h('div', { class: 'tiles' }, ciTile('Recovery slope', d.recovery, e, (v) => fmtNum(v, 2), d.recovery?.n)),
+    h('p', { class: 'hint' }, windowText({ ...d, n: d.n_trips })));
+}
+
+function drawVar(route, d, el) {
+  put(el, head('What explains delay variation?', ['variance'], d));
+  const fs = d.factors || [];
+  if (!d.n || !fs.length) { put(el, emptyState(NO_DATA)); return; }
+  const e = d.enough_days;
+  const items = fs.map((f) => { const ci = ciOf(f, e); return { label: FACTORS[f.factor] || f.factor, value: f.omega2, ci_low: ci && ci[0], ci_high: ci && ci[1] }; });
+  put(el, reading(readVariance(d)),
+    barFigure('Share of delay variation explained', { title: `Variance explained by factor, route ${route}`, axisLabel: 'share of delay variation explained (omega squared)',
+      desc: `Share of delay variation explained by each factor: ${fs.map((f) => `${FACTORS[f.factor] || f.factor} ${pct(f.omega2)}`).join('; ')}.` },
+    items, {}, [{ label: 'Factor', get: (f) => FACTORS[f.factor] || f.factor }, { label: 'Share explained', num: true, get: (f) => pct(f.omega2) },
+      { label: 'Groups', num: true, get: (f) => fmtCount(f.levels) }, { label: 'Confidence interval', num: true, get: (f) => { const ci = ciOf(f, e); return ci ? `${pct(ci[0])} to ${pct(ci[1])}` : NO_DAYS; } }], fs,
+    'Bar: share of the variation in delay that the factor explains · whisker: confidence interval.'),
+    h('p', { class: 'hint' }, windowText(d)));
 }

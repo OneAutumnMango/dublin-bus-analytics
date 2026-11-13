@@ -363,3 +363,12 @@ th .sort-btn { all: unset; cursor: pointer; font: inherit; font-weight: 600; col
 th .sort-btn:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
 th[aria-sort="ascending"] .sort-btn::after { content: " \25B2"; font-size: 0.7em; }
 th[aria-sort="descending"] .sort-btn::after { content: " \25BC"; font-size: 0.7em; }
+
+/* stats lab charts */
+.chart .ecdf-line, .chart .qq-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart .ecdf-mark { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5; }
+.chart .marker-label, .chart .axis-label { fill: var(--muted); font-size: 11px; }
+.chart .qq-dot { fill: var(--accent); opacity: .7; }
+.chart .lab-bar { fill: var(--accent); }
+p.reading { font-weight: 600; }
+.analytics-section details { margin: var(--s3) 0; }
