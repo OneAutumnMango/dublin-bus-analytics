@@ -178,22 +178,29 @@ def recovery_from_sums(vec) -> dict:
     return {"slope": (n * sxy - sx * sy) / vx, "n": n}
 
 
-def omega_squared(codes, y) -> float | None:
-    """Adjusted one-way ANOVA effect size, clamped at 0."""
+def omega_squared(codes, y, levels: int | None = None) -> float | None:
+    """Adjusted one-way ANOVA effect size, clamped at 0. `levels`: codes are ints in [0, levels); skips np.unique."""
     codes, y = np.asarray(codes), np.asarray(y, float)
     if len(codes) != len(y):
         raise ValueError("codes and y must have the same length")
     n = len(y)
-    _, inv = np.unique(codes, return_inverse=True)
-    cnt = np.bincount(inv)
-    k = len(cnt)
+    if levels is None:
+        _, inv = np.unique(codes, return_inverse=True)
+        cnt = np.bincount(inv)
+    else:
+        if n and (codes.min() < 0 or codes.max() >= levels):
+            raise ValueError("codes must be in [0, levels)")
+        inv = codes
+        cnt = np.bincount(inv, minlength=levels)
+    k = int(np.count_nonzero(cnt))
     if k < 2 or n - k < 1:
         return None
     sst = float(((y - y.mean()) ** 2).sum())
     if sst == 0:
         return None
-    means = np.bincount(inv, weights=y) / cnt
-    ssb = float((cnt * (means - y.mean()) ** 2).sum())
+    nz = cnt > 0
+    means = np.bincount(inv, weights=y, minlength=len(cnt))[nz] / cnt[nz]
+    ssb = float((cnt[nz] * (means - y.mean()) ** 2).sum())
     msw = (sst - ssb) / (n - k)
     w = (ssb - (k - 1) * msw) / (sst + msw)
     return max(0.0, float(w)) if np.isfinite(w) else None

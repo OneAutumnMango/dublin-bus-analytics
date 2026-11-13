@@ -234,3 +234,25 @@ def test_sums_equal_reference_and_additive(seed):
     assert rec["n"] == wrec["n"] and (rec["slope"] is None) == (wrec["slope"] is None)
     if wrec["slope"] is not None:
         assert rec["slope"] == pytest.approx(wrec["slope"], rel=1e-12)
+
+
+def test_omega_levels_matches_unique():
+    rng = np.random.default_rng(7)
+    cases = [(rng.choice([0, 2, 5, 9], 200), rng.normal(size=200)),  # gaps in codes
+             (np.zeros(10, dtype=int), rng.normal(size=10)),  # single group
+             (np.arange(10), rng.normal(size=10)),  # N == k
+             (np.arange(10) % 3, np.ones(10)),  # constant y
+             (rng.integers(0, 6, 300), rng.normal(size=300))]
+    for codes, y in cases:
+        for lv in (int(codes.max()) + 1, int(codes.max()) + 50):
+            a, b = omega_squared(codes, y, levels=lv), omega_squared(codes, y)
+            assert (a is None) == (b is None)
+            if a is not None:
+                assert a == pytest.approx(b, rel=1e-12)
+
+
+def test_omega_levels_out_of_range():
+    y = np.arange(4.0)
+    for codes in ([0, 1, 2, 3], [0, 1, -1, 1]):
+        with pytest.raises(ValueError):
+            omega_squared(np.array(codes), y, levels=3)

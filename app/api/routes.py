@@ -707,7 +707,9 @@ def _variance_db(request, r, p):
             return dict.fromkeys(_FACTORS)
         cols = [np.concatenate(c) for c in zip(*ds)]
         date = np.repeat(np.arange(len(ds)), [len(d[0]) for d in ds])  # each resampled copy is its own group
-        return {f: lab.omega_squared(c, cols[0]) for f, c in zip(_FACTORS, (cols[1], cols[2], cols[3], date))}
+        lv = (24, 7, len(stops), len(ds))
+        return {f: lab.omega_squared(c, cols[0], levels=m)
+                for f, c, m in zip(_FACTORS, (cols[1], cols[2], cols[3], date), lv)}
 
     vals = omegas(days)
     cis = lab.day_bootstrap(days, omegas, level=p["ci"])
