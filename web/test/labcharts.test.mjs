@@ -153,21 +153,25 @@ test('readouts: ecdf and q-q wording', () => {
 test('renderEcdf hover: overlay tracks the pointer, marker on the curve, hides on leave', () => {
   const g = ecdfGeometry(P);
   const svg = renderEcdf(g, { title: 'T', desc: 'D', doc });
-  svg.getBoundingClientRect = () => ({ top: 100, left: 0, height: g.height, width: g.width });
+  svg.getBoundingClientRect = () => ({ top: 100, left: 0, height: g.height / 2, width: g.width / 2 }); // rendered at half size: pointer pixels must be scaled back to viewBox units
   const area = svg.all((n) => n.getAttribute('class') === 'hover-area')[0];
   const grp = svg.all((n) => n.getAttribute('class') === 'hover-group')[0];
-  assert.equal(grp.getAttribute('visibility'), 'hidden');
-  area.dispatch('pointermove', { clientX: 50, clientY: 100 + (g.y0 + g.y1) / 2 });
-  assert.equal(grp.getAttribute('visibility'), 'visible');
+  assert.equal(grp.getAttribute('display'), 'none');
+  area.dispatch('pointermove', { clientX: 50, clientY: 100 + (g.y0 + g.y1) / 4 });
+  assert.equal(grp.getAttribute('display'), null);
   assert.match(area.getAttribute('data-tip'), /^50th percentile: on time$/);
   const circle = grp.byTag('circle')[0];
   assert.ok(Math.abs(Number(circle.getAttribute('cx')) - g.sx(0)) < 0.01 && Math.abs(Number(circle.getAttribute('cy')) - (g.y0 + g.y1) / 2) < 0.01);
   finiteAttrs(svg);
-  area.dispatch('pointermove', { clientX: 50, clientY: 100 + g.y1 });
+  area.dispatch('pointermove', { clientX: 50, clientY: 100 + g.y1 / 2 });
   assert.equal(circle.getAttribute('visibility'), 'hidden'); // beyond the data: no marker
   assert.match(area.getAttribute('data-tip'), /beyond/);
   area.dispatch('pointerleave');
-  assert.equal(grp.getAttribute('visibility'), 'hidden');
+  assert.equal(grp.getAttribute('display'), 'none'); // children with an explicit visibility would override a hidden parent
+  assert.equal(grp.byTag('circle')[0].getAttribute('visibility'), 'hidden');
+  assert.ok(grp.byTag('line').every((l) => l.getAttribute('visibility') === 'hidden'));
+  area.dispatch('pointermove', { clientX: 50, clientY: 100 + (g.y0 + g.y1) / 4 });
+  assert.equal(grp.getAttribute('display'), null);
   assert.equal(renderEcdf(ecdfGeometry([]), { title: 'T', desc: 'D', doc }).all((n) => n.getAttribute('class') === 'hover-area').length, 0);
 });
 

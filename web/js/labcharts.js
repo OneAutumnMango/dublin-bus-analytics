@@ -139,7 +139,7 @@ function ecdfHover(doc, svg, geo) {
   const hline = el(doc, 'line', { class: 'hover-line', x1: geo.x0, x2: geo.x1 });
   const vline = el(doc, 'line', { class: 'hover-line drop' });
   const dot = el(doc, 'circle', { class: 'ecdf-mark hover', r: 4 });
-  const grp = el(doc, 'g', { class: 'hover-group', visibility: 'hidden', 'pointer-events': 'none' });
+  const grp = el(doc, 'g', { class: 'hover-group', display: 'none', 'pointer-events': 'none' });
   grp.append(hline, vline, dot);
   const area = el(doc, 'rect', { class: 'hover-area', x: geo.x0, y: geo.y1, width: geo.x1 - geo.x0, height: geo.y0 - geo.y1 });
   area.addEventListener('pointermove', (e) => {
@@ -147,14 +147,15 @@ function ecdfHover(doc, svg, geo) {
     const p = percentileAtY(geo, box.height > 0 ? ((e.clientY - box.top) * geo.height) / box.height : NaN);
     const at = ecdfAtPercentile(geo.points, p);
     const y = r2(geo.sy(p));
-    hline.setAttribute('y1', y); hline.setAttribute('y2', y);
+    hline.setAttribute('y1', y); hline.setAttribute('y2', y); hline.setAttribute('visibility', 'visible');
     const inside = at && !at.clamp, mx = inside ? r2(geo.sx(at.x)) : 0;
     for (const n of [dot, vline]) n.setAttribute('visibility', inside ? 'visible' : 'hidden');
     if (inside) { dot.setAttribute('cx', mx); dot.setAttribute('cy', y); vline.setAttribute('x1', mx); vline.setAttribute('x2', mx); vline.setAttribute('y1', y); vline.setAttribute('y2', geo.y0); }
     area.setAttribute('data-tip', ecdfReadout(geo.points, p));
-    grp.setAttribute('visibility', 'visible');
+    grp.removeAttribute('display');
   });
-  area.addEventListener('pointerleave', () => grp.setAttribute('visibility', 'hidden'));
+  // display none on the group wins over any child's explicit visibility; the children are hidden too so nothing lingers
+  area.addEventListener('pointerleave', () => { grp.setAttribute('display', 'none'); for (const n of [hline, vline, dot]) n.setAttribute('visibility', 'hidden'); });
   svg.append(grp, area);
 }
 
