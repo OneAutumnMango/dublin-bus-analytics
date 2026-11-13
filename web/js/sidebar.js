@@ -44,7 +44,7 @@ export async function renderSidebar(root, { signal } = {}) {
   const current = () => parseHash(globalThis.location?.hash).params.route;
   let links = [];
   const allLink = link(buildHash('all'), 'All routes', { 'data-all': '' });
-  const labLink = link(buildHash('lab'), 'Stats lab (all routes)', { 'data-all-lab': '', class: 'lab-link' });
+  const labLink = link(buildHash('lab'), 'Stats lab', { 'data-all-lab': '', class: 'lab-link', 'aria-label': 'Stats lab for all routes' });
   const markActive = mark = () => {
     const cur = current();
     const name = parseHash(globalThis.location?.hash).name;

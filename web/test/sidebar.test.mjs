@@ -197,16 +197,17 @@ test('sidebar: unsubscribe stops calls; a throwing listener does not break other
   offBad(); offB();
 });
 
-test('sidebar: Stats lab (all routes) link sits right under All routes and tracks the hash', async () => {
+test('sidebar: all-routes Stats lab link sits inline with All routes and tracks the hash', async () => {
   installFetch({ 'GET /api/routes/tracked': () => ({ routes: ['15'] }) });
   globalThis.location = { hash: '#/lab' };
   const root = await mount();
   const hrefs = root.byTag('a').map((a) => a.getAttribute('href'));
   assert.equal(hrefs[hrefs.indexOf('#/all') + 1], '#/lab');
-  const a = root.byText('a', /^Stats lab \(all routes\)$/)[0];
+  const a = root.byTag('a').find((x) => x.getAttribute('href') === '#/lab');
+  assert.equal(a.getAttribute('aria-label'), 'Stats lab for all routes');
   assert.equal(a.getAttribute('aria-current'), 'page');
   assert.equal(root.byText('a', /^All routes$/)[0].getAttribute('aria-current'), null);
   globalThis.location = { hash: '#/lab/15' };
   const root2 = await mount();
-  assert.equal(root2.byText('a', /^Stats lab \(all routes\)$/)[0].getAttribute('aria-current'), null);
+  assert.equal(root2.byTag('a').find((x) => x.getAttribute('href') === '#/lab').getAttribute('aria-current'), null);
 });
