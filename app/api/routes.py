@@ -538,10 +538,12 @@ def _assign(stops, delays, scheds, pos):
     return (None, []) if tied or best[0] == 0 else (best[1], best[2])
 
 
-def _accumulation_db(request, r, p, lists, direction):
+def _matched_trips(request, r, p, lists):
+    """Per trip occurrence: (service_date, direction name or None, matched) with matched as `_assign`
+    returns it. Rows are held in flat arrays (no per-row objects)."""
     stop_ix: dict[str, int] = {}
     trip_ix: dict[tuple, int] = {}
-    cols = [array("q") for _ in range(4)]  # trip no, stop no, delay, scheduled (flat, no per-row objects)
+    cols = [array("q") for _ in range(4)]  # trip no, stop no, delay, scheduled
 
     def fn(rows):
         for t, sd, sid, d, sch in rows:  # rows arrive ordered by scheduled
@@ -551,21 +553,29 @@ def _accumulation_db(request, r, p, lists, direction):
             cols[3].append(sch)
 
     _scan_arrivals(request, p, "route = ?", [r], "trip_id, service_date, stop_id, delay", fn)
+    dates = [k[1] for k in trip_ix]  # dict order == trip no
     del trip_ix
-    names = list(stop_ix)
     pos = {name: defaultdict(list) for name in lists}
     for name, ids in lists.items():
         for i, sid in enumerate(ids):
             if sid in stop_ix:
                 pos[name][stop_ix[sid]].append(i)
+    names = list(stop_ix)
     trip_no, stop_no, dly, sch = (np.frombuffer(c, dtype=np.int64) for c in cols) if cols[0] else ([],) * 4
     order = np.argsort(trip_no, kind="stable")  # stable: keeps scheduled order inside each trip
     cuts = [0, *(np.flatnonzero(np.diff(trip_no[order])) + 1).tolist(), len(order)] if len(order) else [0]
-    # per group: [trips, {position: [stop no, n, sum, n_delta, delta sum]}]
-    agg = {name: [0, {}] for name in lists} | {None: [0, {}]}  # None (not a str) = fallback group
+    out = []
     for lo, hi in zip(cuts, cuts[1:]):
         ix = order[lo:hi]
         name, matched = _assign(stop_no[ix].tolist(), dly[ix].tolist(), sch[ix].tolist(), pos)
+        out.append((dates[trip_no[ix[0]]], name, [(pp, d, names[si]) for pp, d, si in matched]))
+    return out
+
+
+def _accumulation_db(request, r, p, lists, direction):
+    # per group: [trips, {position: [stop id, n, sum, n_delta, delta sum]}]
+    agg = {name: [0, {}] for name in lists} | {None: [0, {}]}  # None (not a str) = fallback group
+    for _, name, matched in _matched_trips(request, r, p, lists):
         g = agg[name]
         g[0] += 1
         prev = None
@@ -582,7 +592,7 @@ def _accumulation_db(request, r, p, lists, direction):
     for name, (trips, by_pos) in agg.items():
         if not trips or (direction is not None and name != want):
             continue
-        acc = [{"stop_id": names[a[0]], "position": pp, "mean_delay": a[2] / a[1],
+        acc = [{"stop_id": a[0], "position": pp, "mean_delay": a[2] / a[1],
                 "segment_delta": a[4] / a[3] if a[3] else None, "n": a[1], "n_delta": a[3],
                 "low_n": a[1] < LOW_N, "low_n_delta": a[3] < LOW_N} for pp, a in sorted(by_pos.items())]
         out.append({"direction": name, "fallback": name is None,
