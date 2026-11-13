@@ -140,12 +140,14 @@ def iter_export(data_dir: Path, *, route: str | None = None, since: int | None =
             sql += " order by id"
 
             def add_forecast(rows):
+                grouped = {}
+                for aid, h, p, e in conn.execute(  # batch <= BATCH ids, under SQLite's variable limit
+                        "select arrival_id, horizon_min, predicted, error_s from forecast where arrival_id in ("
+                        + ",".join("?" * len(rows)) + ") order by arrival_id, horizon_min",
+                        [r["id"] for r in rows]):
+                    grouped.setdefault(aid, []).append({"horizon_min": h, "predicted": p, "error_s": e})
                 for r in rows:
-                    r["forecast"] = [
-                        {"horizon_min": h, "predicted": p, "error_s": e}
-                        for h, p, e in conn.execute(
-                            "select horizon_min, predicted, error_s from forecast"
-                            " where arrival_id=? order by horizon_min", (r["id"],))]
+                    r["forecast"] = grouped.get(r["id"], [])
 
             yield from _array(conn.execute(sql, args), add_forecast)
         else:

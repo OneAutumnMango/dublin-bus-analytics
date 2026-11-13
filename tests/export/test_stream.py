@@ -99,6 +99,30 @@ def test_connections_usable_across_threads(tmp_path):
     assert json.loads("".join(c for c in out if c))["complete"] is True
 
 
+GOLDEN = '{"version":1,"exported_at":7,"filters":{"route":null,"since":null,"until":null},"routes_tracked":[],"gaps":[],"arrivals":[{"id":1,"trip_id":"t1","stop_id":"s1","seq":1,"service_date":"2026-11-01","scheduled":1000,"actual":1060,"delay":60,"confidence":0.9,"realtime":1,"route":"15","forecast":[{"horizon_min":5,"predicted":90,"error_s":3},{"horizon_min":10,"predicted":100,"error_s":5}]},{"id":2,"trip_id":"t2","stop_id":"s2","seq":2,"service_date":"2026-11-01","scheduled":1000,"actual":1060,"delay":60,"confidence":0.9,"realtime":1,"route":"15","forecast":[]},{"id":3,"trip_id":"t3","stop_id":"s3","seq":3,"service_date":"2026-11-01","scheduled":1000,"actual":1060,"delay":60,"confidence":0.9,"realtime":1,"route":"15","forecast":[{"horizon_min":15,"predicted":70,"error_s":-2}]}],"samples":[],"complete":true}'
+
+
+def test_export_output_matches_golden_with_forecasts(tmp_path):
+    _build(tmp_path, arrivals=[_arr(1), _arr(2), _arr(3)],
+           forecasts=[(1, 10, 100, 5), (1, 5, 90, 3), (3, 15, 70, -2)])
+    assert "".join(iter_export(tmp_path, exported_at=7)) == GOLDEN
+
+
+def test_export_runs_one_forecast_query_per_batch(tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    _build(tmp_path, arrivals=[_arr(i) for i in range(1, 6)], forecasts=[(1, 5, 1, 1)])
+    stmts = []
+
+    def connect(*a, **kw):
+        c = sqlite3.connect(*a, **kw)
+        c.set_trace_callback(stmts.append)
+        return c
+    monkeypatch.setattr(stream, "sqlite3", SimpleNamespace(connect=connect, Cursor=sqlite3.Cursor))
+    _doc(tmp_path)
+    assert sum("from forecast" in s.lower() for s in stmts) == 1
+
+
 # ---- samples across months ----
 import gzip
 import os
