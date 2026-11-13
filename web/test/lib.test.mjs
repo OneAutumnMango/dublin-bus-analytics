@@ -466,3 +466,8 @@ test('hoursToWindow / windowToHours round-trip every hour pair', () => {
   assert.deepEqual(L.hoursToWindow(22, 5), [1320, 360]);
   assert.deepEqual(L.windowToHours(1320, 360), { hFrom: 22, hTo: 5 });
 });
+
+test('usesTrackedSet: all page and pooled lab only', () => {
+  for (const h of ['#/all', '#/lab', '#/lab?hours=8']) assert.equal(L.usesTrackedSet(L.parseHash(h)), true, h);
+  for (const h of ['#/lab/15', '#/route/15', '#/', '#/nothing']) assert.equal(L.usesTrackedSet(L.parseHash(h)), false, h);
+});

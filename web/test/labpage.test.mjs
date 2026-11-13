@@ -259,3 +259,14 @@ test('per-route page keeps the per-route heading and variance text', async () =>
   assert.doesNotMatch(ctx.main.textContent, /routes pooled/);
   assert.doesNotMatch(popOf(ctx, infoBtns(sections(ctx)[2])[0]).textContent, /busy routes weigh more/);
 });
+
+test('pooled persistence says "along each route"; per-route keeps "along the route"', async () => {
+  allStubs();
+  let ctx = await mountAll();
+  const pooled = sections(ctx)[1].textContent;
+  assert.match(pooled, /along each route/);
+  assert.doesNotMatch(pooled, /along the route/);
+  stubs();
+  ctx = await mount();
+  assert.match(sections(ctx)[1].textContent, /along the route/);
+});

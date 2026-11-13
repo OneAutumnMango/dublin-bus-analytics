@@ -32,7 +32,7 @@ export async function render(ctx) {
   const q = s.apiQuery, o = (signal) => ({ signal });
   await Promise.all([
     dist.load((sig) => (route ? api.labDistribution(route, q, o(sig)) : api.allLabDistribution(q, o(sig))), (d, el) => drawDist(who, d, el, s, !route), { announce: (d) => `${Who} delay distribution loaded: ${fmtCount(d.n)} arrivals` }),
-    pers.load((sig) => (route ? api.labPersistence(route, q, o(sig)) : api.allLabPersistence(q, o(sig))), (d, el) => drawPers(who, d, el), { announce: (d) => `${Who} delay persistence loaded: ${fmtCount(d.n_trips)} trips` }),
+    pers.load((sig) => (route ? api.labPersistence(route, q, o(sig)) : api.allLabPersistence(q, o(sig))), (d, el) => drawPers(who, d, el, !route), { announce: (d) => `${Who} delay persistence loaded: ${fmtCount(d.n_trips)} trips` }),
     vari.load((sig) => (route ? api.labVariance(route, q, o(sig)) : api.allLabVariance(q, o(sig))), (d, el) => drawVar(who, d, el, !route), { announce: (d) => `${Who} variance explained loaded: ${fmtCount(d.n)} arrivals` }),
   ]);
 }
@@ -81,9 +81,10 @@ function barFigure(info, keys, title, svgOpts, items, geoOpts, columns, rows, le
   return withInfo(info, [...keys, 'ci'], figure({ title, svg, table: dataTable({ caption: svgOpts.title, rows, columns }), level: 'h3', legend: h('p', { class: 'legend' }, legend) }));
 }
 
-function drawPers(who, d, el) {
+function drawPers(who, d, el, pooled) {
+  const along = pooled ? 'along each route' : 'along the route';
   // the shared "listed by stop id" notice does not apply here, so mask order_source for head()
-  put(el, head('Do late buses stay late along the route?', { ...d, order_source: 'server' }));
+  put(el, head(`Do late buses stay late ${along}?`, { ...d, order_source: 'server' }));
   if (d.routes_skipped?.length) put(el, h('p', { class: 'hint' }, `${plural(d.routes_skipped.length, 'route')} left out: stop order unavailable`));
   if (d.order_source === 'none') { put(el, emptyState('Persistence needs the stop order from the bus data server, which is unavailable right now.')); return; }
   if (!d.n_trips) { put(el, emptyState(NO_DATA)); return; }
@@ -91,7 +92,7 @@ function drawPers(who, d, el) {
   const items = lags.map((l) => { const ci = ciOf(l, e); return { label: `${l.lag} stop${l.lag === 1 ? '' : 's'} on`, value: l.r, ci_low: ci && ci[0], ci_high: ci && ci[1] }; });
   const range = (l) => { const ci = ciOf(l, e); return ci ? `${fmtNum(ci[0], 2)} to ${fmtNum(ci[1], 2)}` : NO_DAYS; };
   put(el, reading(readPersistence(d)),
-    barFigure('About the delay correlation chart', ['persistence', 'recovery'], 'Correlation of delay by distance along the route', { title: `Delay correlation by lag, ${who}`, xLabel: 'Lag (stops apart)', yLabel: 'Autocorrelation (r)',
+    barFigure('About the delay correlation chart', ['persistence', 'recovery'], `Correlation of delay by distance ${along}`, { title: `Delay correlation by lag, ${who}`, xLabel: 'Lag (stops apart)', yLabel: 'Autocorrelation (r)',
       desc: `Correlation of delay between stops ${lags.length} different distances apart, from -1 to 1. ${lags.map((l) => `${l.lag} stops: ${fmtNum(l.r, 2)}`).join('; ')}.` },
     items, { min: -1, max: 1, ...CHART }, [{ label: 'Lag (stops)', num: true, get: (l) => String(l.lag) }, { label: 'Correlation (r)', num: true, get: (l) => fmtNum(l.r, 2) },
       { label: 'Trips (n)', num: true, get: (l) => fmtCount(l.n) }, { label: 'Confidence interval', num: true, get: range }], lags, 'Bar: correlation r (1 = delay carries over fully, 0 = no link) · whisker: confidence interval.'),

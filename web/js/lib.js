@@ -242,6 +242,9 @@ export function parseHash(hash) {
   }
 }
 
+// pages that depend on the tracked set: the all-routes page and the pooled lab (#/lab, no route)
+export const usesTrackedSet = (p) => p.name === 'all' || (p.name === 'lab' && !p.params.route);
+
 // ---------- stale-response guard ----------
 // start() aborts the previous request; isCurrent() is false once superseded or once the parent aborted.
 export function makeLatest(parentSignal) {

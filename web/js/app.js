@@ -1,7 +1,7 @@
 // Hash router: one page module per view, each exporting render(ctx).
 import { isAbort } from './api.js';
 import { errorBox, h, link, setStatus } from './dom.js';
-import { parseHash } from './lib.js';
+import { parseHash, usesTrackedSet } from './lib.js';
 import { onTrackedChange, renderSidebar } from './sidebar.js';
 import { installTooltip } from './tooltip.js';
 import * as all from './pages/all.js';
@@ -72,4 +72,4 @@ settings.applyAppearance();
 onSettings(() => settings.applyAppearance());
 const sidebar = globalThis.document.getElementById('sidebar');
 if (sidebar) renderSidebar(sidebar);
-onTrackedChange(() => { if (parseHash(globalThis.location.hash).name === 'all') show(); }); // the all-routes page depends on the tracked set
+onTrackedChange(() => { if (usesTrackedSet(parseHash(globalThis.location.hash))) show(); }); // the all-routes page and pooled lab depend on the tracked set
