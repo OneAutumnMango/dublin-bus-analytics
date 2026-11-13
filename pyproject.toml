@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dublin-bus-analytics"
-version = "0.3.4"
+version = "0.3.5"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.162.2,<0.163",
