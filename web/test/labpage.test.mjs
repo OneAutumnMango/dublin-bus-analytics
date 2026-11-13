@@ -57,7 +57,8 @@ test('lab persistence without order', async () => {
   stubs({ [url('15', 'persistence')]: { ...PERS, order_source: 'none', lags: [], recovery: null } });
   const ctx = await mount();
   const sec = sections(ctx)[1];
-  assert.match(sec.textContent, /Stop order is unavailable/);
+  assert.match(sec.textContent, /Persistence needs the stop order from the bus data server, which is unavailable right now\./);
+  assert.doesNotMatch(sec.textContent, /listed by stop id/);
   assert.equal(sec.byTag('svg').length, 0);
 });
 

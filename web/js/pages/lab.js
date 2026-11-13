@@ -72,8 +72,9 @@ function barFigure(title, svgOpts, items, geoOpts, columns, rows, legend) {
 }
 
 function drawPers(route, d, el) {
-  put(el, head('Do late buses stay late along the route?', ['persistence', 'recovery'], d));
-  if (d.order_source === 'none') return; // filterNotices already explained why
+  // the shared "listed by stop id" notice does not apply here, so mask order_source for head()
+  put(el, head('Do late buses stay late along the route?', ['persistence', 'recovery'], { ...d, order_source: 'server' }));
+  if (d.order_source === 'none') { put(el, emptyState('Persistence needs the stop order from the bus data server, which is unavailable right now.')); return; }
   if (!d.n_trips) { put(el, emptyState(NO_DATA)); return; }
   const e = d.enough_days, lags = d.lags || [];
   const items = lags.map((l) => { const ci = ciOf(l, e); return { label: `${l.lag} stop${l.lag === 1 ? '' : 's'} on`, value: l.r, ci_low: ci && ci[0], ci_high: ci && ci[1] }; });
