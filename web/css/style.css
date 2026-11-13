@@ -128,6 +128,16 @@ label.inline { flex-direction: row; align-items: center; gap: var(--s2); color: 
 .controls .frow[aria-label="Hours of day"] { align-items: flex-start; }
 .controls .frow[aria-label="Hours of day"] > .row-label, .controls .frow[aria-label="Hours of day"] > .day-btns { min-height: 30px; display: inline-flex; align-items: center; }
 .controls .tr-presets { grid-column: 2; }
+/* wide screens: the hours row is one grid ('Hours', time readout, track, day chips) with the presets on a single line beneath, under 'Hours' and the time */
+@media (min-width: 1001px) {
+  .controls .frow[aria-label="Hours of day"] { display: grid; grid-template-columns: auto auto minmax(8rem, 22rem) auto; grid-template-rows: 30px auto; column-gap: var(--s3); row-gap: var(--s1); align-items: center; justify-content: start; }
+  .controls .frow[aria-label="Hours of day"] > .time-range { display: contents; }
+  .controls .frow[aria-label="Hours of day"] > .row-label { grid-area: 1 / 1; }
+  .controls .frow[aria-label="Hours of day"] .tr-label { grid-area: 1 / 2; }
+  .controls .frow[aria-label="Hours of day"] .tr-track { grid-area: 1 / 3; }
+  .controls .frow[aria-label="Hours of day"] > .day-btns { grid-area: 1 / 4; margin-left: var(--s4); }
+  .controls .frow[aria-label="Hours of day"] .tr-presets { grid-area: 2 / 1 / 3 / 4; flex-wrap: nowrap; }
+}
 .controls .tr-ticks { display: none; }
 @media (max-width: 1000px) { .controls .time-range { grid-template-columns: 1fr; width: 100%; } .controls .tr-presets { grid-column: auto; } }
 .hint { font-size: var(--fs-sm); color: var(--muted); }
