@@ -83,7 +83,8 @@ def test_distribution_tiles_match_shape_stats(env):
 
 def test_distribution_small_n_thresholds(env):
     seed(env, 1, per=2)
-    t = env.get(URL).json()["tiles"]
+    t = env.get(URL, pct_lo=0, pct_hi=1).json()["tiles"]
+    assert t["median"]["value"] is not None
     assert t["skew"]["value"] is None and t["kurtosis"]["value"] is None
 
 
@@ -490,8 +491,27 @@ def test_distribution_band_empty_route(env):
 
 
 def test_variance_and_persistence_ignore_band(env):
-    _seed_var(env)
+    _seed_dated(env, 7, 3, lambda d, k: [(d * 7 + k * 13 + i * i * (k + 1)) % 90 for i in range(6)])
+    env.add(trip="tout", stop="s0", delay=100000, scheduled=T0 + 3600, date="2026-01-01")  # trimmed by default band
+    full = {"pct_lo": 0, "pct_hi": 1}
+
+    def both(ep, q):
+        b = env.get(f"/api/routes/15/lab/{ep}", **q).json()
+        b.pop("filters")  # echoes the band params themselves
+        return b
+
+    dist = env.get(URL).json()["band"]
+    assert dist["n_kept"] < dist["n_all"]  # the default band is active on this data
     for ep in ("variance", "persistence"):
-        a, d = (env.get(ALL + ep, **q).json() for q in ({"pct_lo": 0, "pct_hi": 1}, {}))
-        a.pop("filters"), d.pop("filters")  # filters echo the band params themselves
+        a, d = both(ep, full), both(ep, {})
         assert a == d
+    assert both("persistence", {})["order_source"] == "server" and both("persistence", {})["n_trips"] == 22
+    assert both("variance", {})["n"] == dist["n_all"]
+
+
+def test_distribution_band_ties_inclusive(env):
+    vals = [10] * 3 + list(range(20, 34)) + [90] * 3  # 5th/95th percentiles land exactly on the tied values
+    seed(env, 1, per=20, delay=lambda d, i: vals[i])
+    bd = env.get(URL).json()["band"]
+    assert bd["lo"] == 10 and bd["hi"] == 90
+    assert bd["n_kept"] == bd["n_all"] == 20
