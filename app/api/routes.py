@@ -720,6 +720,51 @@ def _variance_db(request, r, p):
                                 "ci_high": (cis[f] or (None, None))[1], "levels": levels[f]} for f in _FACTORS]})
 
 
+@router.get("/routes/{r}/lab/persistence")
+async def route_lab_persistence(request: Request, r: RouteP, p: P):
+    """Do delays persist along a trip? lags [{lag 1..5, r, n, low_n, ci_low, ci_high}]: Pearson r of delays
+    `lag` stops apart, pooled over trips; recovery {slope, n, low_n, ci_low, ci_high}: slope of later-stop delay
+    on the trip's first matched stop's delay (1 = fully persists, 0 = fully recovers). Trips with no matched
+    direction are excluded; CIs resample whole service days and are null below 5 days (enough_days).
+    Server unavailable/malformed -> 200 {order_source: "none", n_trips: 0, days: 0, lags: [], recovery: null}."""
+    try:
+        lists = {k: [_sid(x) for x in v] for k, v in (await _directions(request, r)).items()}
+    except _NoOrder:
+        return {"route": r, "filters": _filters(p), "order_source": "none", "n_trips": 0, "days": 0,
+                "low_n": True, "enough_days": False, "lags": [], "recovery": None}
+    return await _heavy(request, p, "route = ?", [r], lambda p: _persistence_db(request, r, p, lists))
+
+
+_LAGS = range(1, 6)
+
+
+def _persistence_db(request, r, p, lists):
+    by_day = defaultdict(list)  # service_date -> [[(position, delay)]]
+    for sd, name, matched in _matched_trips(request, r, p, lists):
+        if name is not None and matched:
+            by_day[sd or ""].append([(pp, d) for pp, d, _ in matched])
+    days = list(by_day.values())
+
+    def stat(ds) -> dict:
+        trips = [t for d in ds for t in d]
+        ac = lab.autocorr_by_lag(trips)
+        return {**{f"lag{g}": ac[g]["r"] for g in _LAGS}, "slope": lab.recovery_slope(trips)["slope"]}
+
+    trips = [t for d in days for t in d]
+    ac, rec = lab.autocorr_by_lag(trips), lab.recovery_slope(trips)
+    vals, cis = stat(days), lab.day_bootstrap(days, stat, level=p["ci"])
+
+    def ci(k):
+        lo, hi = cis[k] or (None, None)
+        return {"ci_low": lo, "ci_high": hi}
+
+    return _clean({"route": r, "filters": _filters(p), "order_source": "server", "n_trips": len(trips),
+                   "days": len(days), "low_n": len(trips) < LOW_N, "enough_days": len(days) >= lab.MIN_DAYS,
+                   "lags": [{"lag": g, "r": vals[f"lag{g}"], "n": ac[g]["n"], "low_n": ac[g]["n"] < LOW_N,
+                             **ci(f"lag{g}")} for g in _LAGS],
+                   "recovery": {"slope": vals["slope"], "n": rec["n"], "low_n": rec["n"] < LOW_N, **ci("slope")}})
+
+
 @router.get("/routes/{r}/forecast")
 async def route_forecast(request: Request, r: RouteP, p: P):
     """horizons: always [30,20,10,5,2] in that order: {horizon_min, n, low_n, mean_error, mae,

@@ -163,3 +163,84 @@ def test_variance_matches_omega_squared(env):
         assert exp is not None
         assert x["omega2"] == pytest.approx(exp, rel=1e-9)
         assert x["ci_low"] is not None
+
+
+PER = "/api/routes/15/lab/persistence"
+STOPS = [f"s{i}" for i in range(6)]
+
+
+def _seed_dated(env, days, per, delays):
+    env.fake.set_route_stops("15", {"out": [{"id": s} for s in STOPS]})
+    out = []
+    for d in range(days):
+        for k in range(per):
+            ds = delays(d, k)
+            for i, (s, x) in enumerate(zip(STOPS, ds)):
+                env.add(trip=f"t{d}-{k}", stop=s, delay=x, scheduled=T0 + d * 86400 + k * 3600 + i * 60,
+                        date=f"2026-01-{d + 1:02d}")
+            out.append(list(enumerate(ds)))
+    return out
+
+
+def test_persistence_persistent_trips(env):
+    trips = _seed_dated(env, 10, 4, lambda d, k: [60 + 37 * (d * 4 + k) % 300] * 6)
+    b = env.get(PER).json()
+    finite(b)
+    assert b["n_trips"] == len(trips) == 40 and b["order_source"] == "server"
+    assert [x["lag"] for x in b["lags"]] == [1, 2, 3, 4, 5]
+    assert all(x["r"] > 0.9 for x in b["lags"])
+    assert abs(b["recovery"]["slope"] - 1.0) < 0.1
+
+
+def test_persistence_recovering_trips(env):
+    _seed_dated(env, 10, 4, lambda d, k: [x := 2 * (20 + 29 * (d * 4 + k) % 150)] + [x // 2] * 5)
+    b = env.get(PER).json()
+    assert abs(b["recovery"]["slope"] - 0.5) < 0.1
+
+
+def test_persistence_loop_route(env):
+    env.fake.set_route_stops("15", {"loop": [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "a"}]})
+    env.trip("t1", [("a", 0), ("b", 30), ("c", 90), ("a", 100)])
+    b = env.get(PER).json()
+    assert b["n_trips"] == 1 and b["lags"][0]["n"] == 3 and b["lags"][2]["n"] == 1
+
+
+def test_persistence_three_days_no_ci(env):
+    _seed_dated(env, 3, 4, lambda d, k: [10 * k + i * (d + 1) for i in range(6)])
+    b = env.get(PER).json()
+    assert b["enough_days"] is False and b["days"] == 3
+    assert all(x["ci_low"] is None and x["ci_high"] is None for x in b["lags"])
+    assert b["recovery"]["ci_low"] is None and b["recovery"]["ci_high"] is None
+    assert b["lags"][0]["r"] is not None and b["recovery"]["slope"] is not None
+
+
+def test_persistence_server_unavailable(env):
+    env.trip("t1", [("a", 0), ("b", 60)])
+    env.fake.set_down(True)
+    r = env.get(PER)
+    b = r.json()
+    assert r.status_code == 200 and b["order_source"] == "none" and b["lags"] == [] and b["recovery"] is None
+    assert b["n_trips"] == 0 and b["low_n"] is True and b["enough_days"] is False
+
+
+def test_persistence_empty(env):
+    env.fake.set_route_stops("15", {"out": [{"id": s} for s in STOPS]})
+    r = env.get(PER)
+    b = r.json()
+    finite(b)
+    assert r.status_code == 200 and b["n_trips"] == 0
+    assert len(b["lags"]) == 5 and all(x["r"] is None for x in b["lags"])
+
+
+def test_persistence_matches_lab_functions(env):
+    import pytest
+    from app.analysis import lab
+    trips = _seed_dated(env, 7, 3, lambda d, k: [(d * 7 + k * 13 + i * i * (k + 1)) % 90 for i in range(6)])
+    b = env.get(PER).json()
+    ac, rec = lab.autocorr_by_lag(trips), lab.recovery_slope(trips)
+    for x in b["lags"]:
+        assert ac[x["lag"]]["r"] is not None
+        assert x["r"] == pytest.approx(ac[x["lag"]]["r"]) and x["n"] == ac[x["lag"]]["n"]
+        assert x["ci_low"] is not None
+    assert b["recovery"]["slope"] == pytest.approx(rec["slope"]) and b["recovery"]["n"] == rec["n"]
+    assert b == env.get(PER).json()
