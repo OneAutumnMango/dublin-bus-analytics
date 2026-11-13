@@ -39,7 +39,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
-from app.analysis import stats
+from app.analysis import lab, stats
 from app.core.db import open_meta, open_samples_readonly
 from app.collect.poller import ROUTE_RE
 from app.collect.serverclient import RouteNotFound, ServerUnavailable
@@ -623,6 +623,51 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
     groups, p = await _heavy(request, p, "route = ?", [r],
                              lambda p: _accumulation_db(request, r, p, lists, direction))
     return _clean({"route": r, "filters": _filters(p), "order_source": "server", "groups": groups})
+
+
+@router.get("/routes/{r}/lab/distribution")
+async def route_lab_distribution(request: Request, r: RouteP, p: P):
+    """Delay distribution in seconds: ecdf [{x, p}], qq [{z, y}] and tiles {median|p95|buffer|skew|kurtosis:
+    {value, ci_low, ci_high}}; CIs resample whole service days and are null below 5 days (enough_days)."""
+    return await _heavy(request, p, "route = ?", [r], lambda p: _distribution_db(request, r, p))
+
+
+_TILES = ("median", "p95", "buffer", "skew", "kurtosis")
+
+
+def _tile_stats(days) -> dict:
+    """The five tiles from ONE concatenation and ONE sort (same formulas as lab.shape_stats)."""
+    x = np.sort(np.concatenate(days)) if days else np.empty(0)
+    n = len(x)
+    if n == 0:
+        return dict.fromkeys(_TILES)
+    med, p95 = np.percentile(x, [50, 95])
+    sd = x.std()
+    z = (x - x.mean()) / sd if sd > 0 else None
+    return {"median": float(med), "p95": float(p95), "buffer": float(p95 - med),
+            "skew": float((z**3).mean()) if z is not None and n >= 3 else None,
+            "kurtosis": float((z**4).mean() - 3) if z is not None and n >= 4 else None}
+
+
+def _distribution_db(request, r, p):
+    buckets = defaultdict(lambda: array("d"))  # service_date -> delays; "" when service_date is null
+
+    def fn(rows):
+        for sd, d, _ in rows:  # scheduled is appended last by _scan_arrivals
+            buckets[sd or ""].append(d)
+
+    _scan_arrivals(request, p, "route = ?", [r], "service_date, delay", fn)
+    days = [np.frombuffer(b, dtype=float) for b in buckets.values()]
+    n = sum(len(d) for d in days)
+    allx = np.concatenate(days) if days else np.empty(0)
+    vals = _tile_stats(days)
+    cis = lab.day_bootstrap(days, _tile_stats, level=p["ci"])
+    tiles = {k: {"value": vals[k], "ci_low": (cis[k] or (None, None))[0], "ci_high": (cis[k] or (None, None))[1]}
+             for k in _TILES}
+    return _clean({"route": r, "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
+                   "enough_days": len(days) >= lab.MIN_DAYS,
+                   "ecdf": [{"x": x, "p": q} for x, q in lab.ecdf_points(allx)],
+                   "qq": [{"z": z, "y": y} for z, y in lab.qq_points(allx)], "tiles": tiles})
 
 
 @router.get("/routes/{r}/forecast")
