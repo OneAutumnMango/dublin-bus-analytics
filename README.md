@@ -63,9 +63,15 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `BACKUP_TIME` | `03:00` | `HH:MM`, Europe/Dublin local time |
 | `BACKUP_KEEP` | `7` | Backups to keep (positive integer) |
 | `BACKUP_DIR` | `<DATA_DIR>/backups` | Backup directory (a relative path is relative to the working directory) |
+| `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | One copy of each finished month (`samples-YYYY-MM.db.gz`), never overwritten or pruned; set to an empty string to turn the archive copy off |
+| `ALLOWED_HOSTS` | unset | Comma list of accepted `Host` names (wildcards like `*.example.com` work). Unset or blank: any Host is accepted. When set, only those plus `localhost`, `127.0.0.1` and `[::1]` are accepted; anything else gets `400 Invalid host header`. A bad wildcard such as `a*.com` stops the app at startup |
 | `WEB_DIR` | `web/` next to `app/` | Directory of the static UI (read by `app/api/static.py`) |
 
 Invalid values stop the app at startup with a message naming the variable. See `analytics.env.example`.
+
+**One process only.** Never run with `--workers`: the poller, the export gate, the SQLite lock, the backup lock and the removal jobs are all per process, so a second worker would poll twice and bypass the locks.
+
+**Upgrading.** The first start after upgrading builds the `service_date` index on `arrivals`; on a database with millions of rows polling can pause for a few seconds, once.
 
 ### Troubleshooting
 
@@ -131,7 +137,7 @@ Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYT
 
 Under `DATA_DIR`: `meta.db` (tracked routes, stops, trips, arrivals; kept forever), `samples-YYYY-MM.db` (raw prediction samples, one file per month, stored only when a prediction changes), and `backups/`. A month's file is gzipped (`.db.gz`, still readable) once it has been closed for 2 days.
 
-A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of all databases into the backup directory, keeps the newest `BACKUP_KEEP` (7), then gzips closed months. If none is under 24 h old at startup, one runs straight away.
+A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, keeps the newest `BACKUP_KEEP` (7), then gzips closed months. Every finished `samples-YYYY-MM.db.gz` is copied once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned, so old months are not in the tars. If none is under 24 h old at startup, one runs straight away.
 
 Manual: the Backup card on the Routes page, or
 
@@ -145,9 +151,13 @@ Restore:
 1. Stop the app.
 2. Delete any stale `meta.db-wal`, `meta.db-shm`, `samples-*.db-wal` and `samples-*.db-shm` in `DATA_DIR` (a crash-leftover WAL would otherwise be replayed over the restored database).
 3. A local `samples-YYYY-MM.db.gz` takes precedence over an extracted plain `samples-YYYY-MM.db`: delete the `.gz` for every month you want restored from the backup.
-4. Check the tar contents with `tar -tf`, extract with `tar -xf analytics-<stamp>.tar -C "$DATA_DIR"`, and start the app.
+4. Check the tar contents with `tar -tf`, extract the latest tar with `tar -xf analytics-<stamp>.tar -C "$DATA_DIR"`, copy the `.gz` files from the archive folder next to the databases, and start the app.
 
-Copies kept off the host are your responsibility. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
+Copies kept off the host (including the archive folder) are your responsibility.
+
+### Tunnels and LAN access
+
+**The app has no login.** A public tunnel must have a login in front of it (for example Cloudflare Access). `ALLOWED_HOSTS` only protects once it is set, for example `ALLOWED_HOSTS=192.168.1.20,mypi.local,analytics.example.com`. Loopback names are always allowed, so a proxy or tunnel that rewrites the Host header to `localhost` (for example cloudflared with an `httpHostHeader` override) bypasses the allow-list: leave the original Host header intact. The rejected-host response does not name the host; check what Host your proxy sends with `curl -v`. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
 
 ### JSON export
 

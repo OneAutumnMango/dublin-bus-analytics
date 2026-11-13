@@ -33,6 +33,10 @@ services:
       BACKUP_TIME: "${ANALYTICS_BACKUP_TIME:-03:00}"
       BACKUP_KEEP: "${ANALYTICS_BACKUP_KEEP:-7}"
       BACKUP_DIR: "${ANALYTICS_BACKUP_DIR:-/data/backups}"
+      # Empty = no Host check. Example: ANALYTICS_ALLOWED_HOSTS=192.168.1.20,mypi.local
+      ALLOWED_HOSTS: "${ANALYTICS_ALLOWED_HOSTS:-}"
+      # Archive of finished months; default is $BACKUP_DIR/archive. Uncomment only to move it elsewhere:
+      # BACKUP_ARCHIVE_DIR: "/data/backups/archive"
     volumes:
       - analytics-data:/data
       # Keep backups off the data volume: uncomment, and set ANALYTICS_BACKUP_DIR=/backups.
