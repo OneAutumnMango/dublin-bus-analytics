@@ -187,3 +187,34 @@ test('lab passes the exact axis labels to every chart', async () => {
   assert.deepEqual(axes(s[1]), ['Lag (stops apart)', 'Autocorrelation (r)']);
   assert.deepEqual(axes(s[2]), ['Factor', 'Adjusted ω² (share of variance explained)']);
 });
+
+const vb = (svg) => svg.getAttribute('viewBox');
+
+test('lab: persistence and variance charts sit side by side, each pair has identical chart size', async () => {
+  stubs();
+  const ctx = await mount();
+  const s = sections(ctx);
+  const wrap = ctx.main.all((n) => n.getAttribute('class') === 'lab-pair' && n.byTag('section').length)[0];
+  assert.deepEqual(wrap.byTag('section'), [s[1], s[2]]);
+  const bars = wrap.byTag('svg');
+  assert.deepEqual(bars.map((v) => v.getAttribute('class')), ['chart bar-chart', 'chart bar-chart']);
+  assert.equal(vb(bars[0]), vb(bars[1]));
+  const [e, q] = s[0].all((n) => n.getAttribute('class') === 'lab-pair')[0].byTag('svg');
+  assert.equal(vb(e), vb(q));
+});
+
+test('lab: sections in the bar pair load independently', async () => {
+  stubs({ [url('15', 'persistence')]: fail(500, 'boom') });
+  const ctx = await mount();
+  const s = sections(ctx);
+  assert.match(s[1].textContent, /HTTP 500/);
+  assert.equal(s[2].byTag('svg').length, 1);
+});
+
+test('lab: hover targets are on the ECDF and Q-Q charts', async () => {
+  stubs();
+  const ctx = await mount();
+  const d = sections(ctx)[0];
+  assert.equal(d.all((n) => n.getAttribute('class') === 'hover-area').length, 1);
+  assert.equal(d.all((n) => n.getAttribute('class') === 'qq-hit').length, DIST.qq.length);
+});

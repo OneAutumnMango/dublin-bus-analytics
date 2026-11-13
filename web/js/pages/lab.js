@@ -10,7 +10,7 @@ import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js
 
 const NO_DATA = 'No data for this selection.';
 const NO_DAYS = 'not enough days yet';
-const PAIR = { width: 560, height: 340 }; // ECDF and Q-Q share one size so the side-by-side columns match
+const CHART = { width: 560, height: 340 }; // every chart shares one size so each side-by-side pair renders at equal height
 const FACTORS = { hour: 'Hour of day', weekday: 'Day of week', stop: 'Stop', date: 'Calendar date' };
 
 export async function render(ctx) {
@@ -22,7 +22,7 @@ export async function render(ctx) {
     crumbs(link('#/', '← All routes'), link(buildHash('route', { route }, s.linkQuery), `Route ${route} stops`), link(buildHash('analytics', { route }, s.linkQuery), 'Analytics for this route')),
     h('h1', {}, `Stats lab for route ${route}`),
     h('p', { class: 'subtitle' }, 'Delay = actual minus scheduled: negative = early, positive = late. Statistics use confirmed arrivals unless you change the filter.'),
-    ...filterBar(ctx, 'lab', { route }, s), ...sections);
+    ...filterBar(ctx, 'lab', { route }, s), sections[0], h('div', { class: 'lab-pair' }, sections[1], sections[2]));
   const [dist, pers, vari] = sections.map((el) => region(el, ctx.signal));
   const q = s.apiQuery, o = (signal) => ({ signal });
   await Promise.all([
@@ -50,13 +50,13 @@ function drawDist(route, d, el, s) {
   put(el, head('How are delays distributed?', d));
   if (!d.n) { put(el, emptyState(NO_DATA)); return; }
   const pts = d.ecdf.map((p) => ({ x: p.x / 60, p: p.p }));
-  const geo = ecdfGeometry(pts, PAIR);
+  const geo = ecdfGeometry(pts, CHART);
   const lo = Math.max(geo.x0, geo.sx(s.controls.winLo)), hi = Math.min(geo.x1, geo.sx(s.controls.winHi));
   const svg = renderEcdf(geo, { xLabel: 'Delay (minutes; negative = early)', yLabel: 'Share of arrivals at or below this delay', title: `Cumulative delay distribution, route ${route}`, band: { x0: lo, x1: hi },
     desc: `Share of ${fmtCount(d.n)} arrivals at or below each delay in minutes. The shaded band is the on-time window (${s.controls.winLo} to ${s.controls.winHi} min); circles mark the median (p50) and the 95th percentile (p95).` });
   const table = dataTable({ caption: 'Share of arrivals at or below each delay (negative = early)', rows: d.ecdf, columns: [
     { label: 'Delay', num: true, get: (p) => fmtDelay(p.x) }, { label: 'Share at or below', num: true, get: (p) => pct(p.p) }] });
-  const qg = qqGeometry(d.qq.map((p) => ({ z: p.z, y: p.y / 60 })), PAIR);
+  const qg = qqGeometry(d.qq.map((p) => ({ z: p.z, y: p.y / 60 })), CHART);
   const qsvg = renderQq(qg, { xLabel: 'Normal quantile (standard deviations)', yLabel: 'Observed delay (minutes)', title: `Normal Q-Q plot of delays, route ${route}`, desc: `${d.qq.length} quantile points of observed delay in minutes against a normal distribution; a straight line would mean normal delays.` });
   const qtable = dataTable({ caption: 'Observed delay against the normal-distribution quantile', rows: d.qq, columns: [
     { label: 'Std. deviations (normal)', num: true, get: (p) => fmtNum(p.z, 2) }, { label: 'Observed delay', num: true, get: (p) => fmtDelay(p.y) }] });
@@ -86,7 +86,7 @@ function drawPers(route, d, el) {
   put(el, reading(readPersistence(d)),
     barFigure('About the delay correlation chart', ['persistence', 'recovery'], 'Correlation of delay by distance along the route', { title: `Delay correlation by lag, route ${route}`, xLabel: 'Lag (stops apart)', yLabel: 'Autocorrelation (r)',
       desc: `Correlation of delay between stops ${lags.length} different distances apart, from -1 to 1. ${lags.map((l) => `${l.lag} stops: ${fmtNum(l.r, 2)}`).join('; ')}.` },
-    items, { min: -1, max: 1 }, [{ label: 'Lag (stops)', num: true, get: (l) => String(l.lag) }, { label: 'Correlation (r)', num: true, get: (l) => fmtNum(l.r, 2) },
+    items, { min: -1, max: 1, ...CHART }, [{ label: 'Lag (stops)', num: true, get: (l) => String(l.lag) }, { label: 'Correlation (r)', num: true, get: (l) => fmtNum(l.r, 2) },
       { label: 'Trips (n)', num: true, get: (l) => fmtCount(l.n) }, { label: 'Confidence interval', num: true, get: range }], lags, 'Bar: correlation r (1 = delay carries over fully, 0 = no link) · whisker: confidence interval.'),
     h('div', { class: 'tiles' }, ciTile('Recovery slope', d.recovery, e, (v) => fmtNum(v, 2), d.recovery?.n)),
     h('p', { class: 'hint' }, windowText({ ...d, n: d.n_trips })));
@@ -101,7 +101,7 @@ function drawVar(route, d, el) {
   put(el, reading(readVariance(d)),
     barFigure('About the variance explained chart', ['variance'], 'Share of delay variation explained', { title: `Variance explained by factor, route ${route}`, xLabel: 'Factor', yLabel: 'Adjusted ω² (share of variance explained)',
       desc: `Share of delay variation explained by each factor: ${fs.map((f) => `${FACTORS[f.factor] || f.factor} ${pct(f.omega2)}`).join('; ')}.` },
-    items, { height: 320 }, [{ label: 'Factor', get: (f) => FACTORS[f.factor] || f.factor }, { label: 'Share explained', num: true, get: (f) => pct(f.omega2) },
+    items, CHART, [{ label: 'Factor', get: (f) => FACTORS[f.factor] || f.factor }, { label: 'Share explained', num: true, get: (f) => pct(f.omega2) },
       { label: 'Groups', num: true, get: (f) => fmtCount(f.levels) }, { label: 'Confidence interval', num: true, get: (f) => { const ci = ciOf(f, e); return ci ? `${pct(ci[0])} to ${pct(ci[1])}` : NO_DAYS; } }], fs,
     'Bar: share of the variation in delay that the factor explains · whisker: confidence interval.'),
     h('p', { class: 'hint' }, windowText(d)));
