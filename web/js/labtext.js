@@ -1,6 +1,6 @@
 // Plain-English explanations and one-line readings for the Stats lab. Pure text, no DOM.
 // API delays are SECONDS (actual minus scheduled; negative = early); the UI shows minutes.
-import { fmtNum, describeDelay, isNum } from './lib.js';
+import { fmtNum, fmtMinutes, describeDelay, isNum } from './lib.js';
 
 const NONE = 'No data for this selection.';
 
@@ -31,7 +31,7 @@ export const EXPLAIN = {
   buffer: {
     title: 'Reliability buffer',
     paragraphs: [
-      'The buffer is the 95th percentile delay minus the median delay. It is the extra time a passenger must allow, beyond the typical journey, to arrive on time 19 times out of 20.',
+      'The buffer is the 95th percentile delay minus the median delay. It is the extra time a passenger must allow, beyond the median delay, to arrive on time 19 times out of 20.',
       'A small buffer means the service is predictable. A large buffer means the typical bus can look fine while the bad days are costly.',
     ],
   },
@@ -45,7 +45,7 @@ export const EXPLAIN = {
   recovery: {
     title: 'Recovery slope',
     paragraphs: [
-      'The slope regresses the delay at a later stop on the delay at an earlier stop of the same trip. A slope near 1 means delay persists: whatever lateness a bus has, it keeps.',
+      'The slope regresses the delay at a later stop on the delay at an earlier stop of the same trip. A slope near 1 means delay persists: whatever lateness a bus has, it keeps. A slope above 1 means delay grows along the trip: late buses fall even further behind.',
       'A slope near 0 means buses recover and the earlier delay is forgotten. Between roughly 0.3 and 0.7 the delay partly recovers.',
     ],
   },
@@ -67,17 +67,22 @@ export const EXPLAIN = {
 
 const FACTOR = { hour: 'hour of day', weekday: 'day of week', stop: 'stop', date: 'calendar date' };
 
+// Cautions appended to a reading: few observations, and no intervals yet.
+const caveats = (d) => [d.low_n ? ' Based on few observations; treat as rough.' : '', d.enough_days === false ? ' Confidence intervals are not shown yet (not enough days).' : ''].join('');
+
 export function readDistribution(d) {
   if (!d || !d.n) return NONE;
   const t = d.tiles || {};
   const v = (k) => (t[k] && isNum(t[k].value) ? t[k].value : null);
   const parts = [];
   if (v('median') !== null) parts.push(`Half of buses are ${describeDelay(v('median'))} or better`);
-  if (v('p95') !== null) parts.push(`1 in 20 are more than ${describeDelay(v('p95'))}`);
-  if (v('buffer') !== null) parts.push(`allow ${describeDelay(v('buffer')).replace(/ late$/, '')} extra for the buffer`);
-  if (v('skew') !== null) parts.push(`skew ${fmtNum(v('skew'), 2)}`);
-  if (v('kurtosis') !== null) parts.push(`excess kurtosis ${fmtNum(v('kurtosis'), 2)}`);
-  return parts.length ? `${parts.join('; ')}.` : NONE;
+  const p95 = v('p95');
+  if (p95 !== null) parts.push(`1 in 20 buses are ${Math.abs(p95) < 1 ? 'later than the scheduled time' : p95 > 0 ? `later than ${fmtMinutes(p95)}` : `less than ${fmtMinutes(-p95)} early (or are late)`}`);
+  if (v('buffer') !== null) parts.push(`allow ${fmtMinutes(Math.abs(v('buffer')))} beyond the median delay for the buffer`);
+  const sk = v('skew'), ku = v('kurtosis');
+  if (sk !== null) parts.push(`skew ${fmtNum(sk, 2)} (${Math.abs(sk) < 0.1 ? 'roughly symmetric' : sk > 0 ? 'right-tailed: a long tail of late buses' : 'left-tailed: a long tail of early buses'})`);
+  if (ku !== null) parts.push(`excess kurtosis ${fmtNum(ku, 2)} (${Math.abs(ku) < 0.1 ? 'normal-like tails' : ku > 0 ? 'heavier tails than normal' : 'lighter tails than normal'})`);
+  return parts.length ? `${parts.join('; ')}.${caveats(d)}` : NONE;
 }
 
 export function readPersistence(d) {
@@ -87,16 +92,20 @@ export function readPersistence(d) {
   const parts = [];
   if (lag1) parts.push(`Delay at one stop correlates ${fmtNum(lag1.r, 2)} with the next`);
   if (s !== null) {
-    const w = s >= 0.7 ? 'persists: late buses mostly stay late' : s <= 0.3 ? 'recovers: buses mostly recover' : 'partly recovers';
+    const w = s > 1 ? 'grows: late buses fall further behind along the trip' : s >= 0.7 ? 'persists: late buses mostly stay late' : s <= 0.3 ? 'recovers: buses mostly recover' : 'partly recovers';
     parts.push(`delay ${w} (slope ${fmtNum(s, 2)})`);
   }
-  return parts.length ? `${parts.join('; ')}.` : NONE;
+  return parts.length ? `${parts.join('; ')}.${caveats(d)}` : NONE;
 }
 
 export function readVariance(d) {
   if (!d || !d.n) return NONE;
+  // omega squared can be slightly negative (bias adjustment): treat <= 0 as no effect
   const fs = (d.factors || []).filter((f) => isNum(f.omega2));
   if (!fs.length) return NONE;
-  const top = fs.reduce((a, b) => (b.omega2 > a.omega2 ? b : a));
-  return `${FACTOR[top.factor] || top.factor} explains the most delay variation (${fmtNum(top.omega2 * 100, 0)}%).`;
+  const pos = fs.filter((f) => f.omega2 > 0);
+  const main = pos.length
+    ? (({ factor, omega2 }) => `${FACTOR[factor] || factor} explains the most delay variation (${fmtNum(omega2 * 100, 0)}%).`)(pos.reduce((a, b) => (b.omega2 > a.omega2 ? b : a)))
+    : 'No factor explains a meaningful share of delay variation.';
+  return main + caveats(d);
 }
