@@ -18,7 +18,7 @@ def seed(env, days, per=20, delay=lambda d, i: i * 10 + d * 5, route="15"):
 
 def test_distribution_basic(env):
     delays = seed(env, 6)
-    r = env.get(URL)
+    r = env.get(URL, pct_lo=0, pct_hi=1)
     assert r.status_code == 200
     b = r.json()
     finite(b)
@@ -74,7 +74,7 @@ def test_distribution_tiles_match_shape_stats(env):
     import pytest
     from app.analysis import lab
     delays = seed(env, 6, per=15, delay=lambda d, i: i * i + d)
-    t = env.get(URL).json()["tiles"]
+    t = env.get(URL, pct_lo=0, pct_hi=1).json()["tiles"]
     want = lab.shape_stats(delays)
     for k in ("median", "p95", "buffer", "skew", "kurtosis"):
         assert want[k] is not None
@@ -89,7 +89,7 @@ def test_distribution_small_n_thresholds(env):
 
 def test_distribution_n3_skew_only(env):
     seed(env, 1, per=3, delay=lambda d, i: i * i)
-    t = env.get(URL).json()["tiles"]
+    t = env.get(URL, pct_lo=0, pct_hi=1).json()["tiles"]
     assert t["skew"]["value"] is not None and t["kurtosis"]["value"] is None
 
 
@@ -285,7 +285,7 @@ def test_all_distribution_matches_pooled_rows(env):
     import pytest
     from app.analysis import lab
     delays = _seed_all(env)
-    b = env.get(ALL + "distribution").json()
+    b = env.get(ALL + "distribution", pct_lo=0, pct_hi=1).json()
     finite(b)
     assert b["routes"] == 3 and b["n"] == len(delays) == 180 and "route" not in b
     want = lab.shape_stats(delays)
@@ -303,7 +303,7 @@ def test_all_distribution_no_tracked_routes(env):
 def test_all_distribution_ignores_untracked(env):
     _seed_all(env, days=2, per=2)
     seed(env, 2, per=2, route="99")
-    assert env.get(ALL + "distribution").json()["n"] == 12
+    assert env.get(ALL + "distribution", pct_lo=0, pct_hi=1).json()["n"] == 12
 
 
 def _seed_var(env):
@@ -428,3 +428,70 @@ def test_all_pooled_scan_truncation_echoed(env, monkeypatch):
     for ep in ("distribution", "variance"):
         b = env.get(ALL + ep).json()
         assert b["filters"]["truncated"] is True and b["filters"]["since"] and 0 < b["n"] < 12  # ties on `since` may keep a few extra
+
+
+def _kept(delays, lo, hi):
+    return [x for x in delays if lo <= x <= hi]
+
+
+def _check_tiles(b, kept):
+    import pytest
+    from app.analysis import lab
+    want = lab.shape_stats(kept)
+    for k in ("median", "p95", "buffer", "skew", "kurtosis"):
+        assert b["tiles"][k]["value"] == pytest.approx(want[k], rel=1e-9, abs=1e-9)
+
+
+def test_distribution_band_trims_outliers(env):
+    delays = seed(env, 6, per=20, delay=lambda d, i: (i * 5 + d) % 100)
+    delays += seed(env, 1, per=1, delay=lambda d, i: 86400)  # 1 outlier on day 1
+    delays += seed(env, 2, per=1, delay=lambda d, i: 86400 + d)
+    b = env.get(URL, pct_lo=0.05, pct_hi=0.95).json()
+    finite(b)
+    bd = b["band"]
+    assert bd["pct_lo"] == 0.05 and bd["pct_hi"] == 0.95
+    kept = _kept(delays, bd["lo"], bd["hi"])
+    assert bd["n_all"] == len(delays) and bd["n_kept"] == len(kept) == b["n"] < len(delays)
+    xs = [e["x"] for e in b["ecdf"]]
+    assert bd["lo"] <= min(xs) and max(xs) <= bd["hi"] < 86400
+    assert np.isclose(bd["lo"], np.percentile(delays, 5)) and np.isclose(bd["hi"], np.percentile(delays, 95))
+    _check_tiles(b, kept)
+
+
+def test_distribution_band_full_range_is_no_trim(env):
+    seed(env, 6, per=15, delay=lambda d, i: i * i + d)
+    b = env.get(URL, pct_lo=0, pct_hi=1).json()
+    assert b["band"]["n_kept"] == b["band"]["n_all"] == b["n"] == 90
+    assert b["band"]["lo"] == 0 and b["band"]["hi"] == 14 * 14 + 5
+    _check_tiles(b, [i * i + d for d in range(6) for i in range(15)])
+
+
+def test_distribution_band_applies_to_all_routes(env):
+    delays = _seed_all(env)
+    b = env.get(ALL + "distribution", pct_lo=0.1, pct_hi=0.9).json()
+    finite(b)
+    bd = b["band"]
+    assert np.isclose(bd["lo"], np.percentile(delays, 10)) and np.isclose(bd["hi"], np.percentile(delays, 90))
+    kept = _kept(delays, bd["lo"], bd["hi"])
+    assert bd["n_all"] == 180 and bd["n_kept"] == len(kept) == b["n"] < 180
+    _check_tiles(b, kept)
+
+
+def test_distribution_band_drops_empty_days(env):
+    seed(env, 6, per=20, delay=lambda d, i: i if d else 100000 + i)  # day 1 is all outliers
+    b = env.get(URL, pct_lo=0, pct_hi=0.8).json()
+    assert b["days"] == 5 and b["n"] == b["band"]["n_kept"]
+
+
+def test_distribution_band_empty_route(env):
+    b = env.get("/api/routes/99/lab/distribution").json()
+    finite(b)
+    assert b["n"] == 0 and b["band"] is None
+
+
+def test_variance_and_persistence_ignore_band(env):
+    _seed_var(env)
+    for ep in ("variance", "persistence"):
+        a, d = (env.get(ALL + ep, **q).json() for q in ({"pct_lo": 0, "pct_hi": 1}, {}))
+        a.pop("filters"), d.pop("filters")  # filters echo the band params themselves
+        assert a == d

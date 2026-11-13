@@ -628,7 +628,8 @@ async def route_accumulation(request: Request, r: RouteP, p: P, direction: QStr 
 @router.get("/routes/{r}/lab/distribution")
 async def route_lab_distribution(request: Request, r: RouteP, p: P):
     """Delay distribution in seconds: ecdf [{x, p}], qq [{z, y}] and tiles {median|p95|buffer|skew|kurtosis:
-    {value, ci_low, ci_high}}; CIs resample whole service days and are null below 5 days (enough_days)."""
+    {value, ci_low, ci_high}}, computed only from arrivals inside the pct_lo..pct_hi percentile band of the
+    filtered delays (`band` {pct_lo, pct_hi, lo, hi, n_all, n_kept}, null when no data); CIs resample whole service days and are null below 5 days (enough_days)."""
     return await _heavy(request, p, "route = ?", [r], lambda p: _distribution_db(request, r, p))
 
 
@@ -680,8 +681,15 @@ def _distribution_db(request, r, p, where="route = ?", args=None):
 
     _scan_arrivals(request, p, where, [r] if args is None else args, "service_date, delay, route", fn)
     days = [np.frombuffer(b, dtype=float) for b in buckets.values()]
-    n = sum(len(d) for d in days)
     allx = np.concatenate(days) if days else np.empty(0)
+    n_all, band = len(allx), None
+    if n_all:  # keep only arrivals inside the percentile band of the filtered delays
+        lo, hi = (float(np.percentile(allx, p[k] * 100)) for k in ("pct_lo", "pct_hi"))
+        days = [d[(d >= lo) & (d <= hi)] for d in days]
+        days = [d for d in days if len(d)]
+        allx = np.concatenate(days) if days else np.empty(0)
+        band = {"pct_lo": p["pct_lo"], "pct_hi": p["pct_hi"], "lo": lo, "hi": hi, "n_all": n_all, "n_kept": len(allx)}
+    n = len(allx)
     vals = _tile_stats(days)
     cis = lab.day_bootstrap(days, _tile_stats, level=p["ci"])
     tiles = {k: {"value": vals[k], "ci_low": (cis[k] or (None, None))[0], "ci_high": (cis[k] or (None, None))[1]}
@@ -689,7 +697,7 @@ def _distribution_db(request, r, p, where="route = ?", args=None):
     return _clean({**_head(r, seen), "filters": _filters(p), "n": n, "days": len(days), "low_n": n < LOW_N,
                    "enough_days": len(days) >= lab.MIN_DAYS,
                    "ecdf": [{"x": x, "p": q} for x, q in lab.ecdf_points(allx)],
-                   "qq": [{"z": z, "y": y} for z, y in lab.qq_points(allx)], "tiles": tiles})
+                   "qq": [{"z": z, "y": y} for z, y in lab.qq_points(allx)], "tiles": tiles, "band": band})
 
 
 @router.get("/routes/{r}/lab/variance")
