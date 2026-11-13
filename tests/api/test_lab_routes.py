@@ -153,10 +153,14 @@ def test_variance_matches_omega_squared(env):
             s = T0 + d * 86400 + i * 3000
             rows.append((f"2026-01-{d + 1:02d}", f"S{i % 3}", (i * 7 + d * 13) % 50 + (i % 3) * 20, s))
             env.add(route="15", delay=rows[-1][2], stop=rows[-1][1], scheduled=s, date=rows[-1][0])
+    late = T0 - (8 * 3600 + 53 * 60 + 20) + 22 * 3600 + 1800  # 23:30 Dublin (BST): hour 23 must be a level
+    rows.append(("2026-01-01", "S1", 33, late))
+    env.add(route="15", delay=33, stop="S1", scheduled=late, date="2026-01-01")
     y = np.array([r[2] for r in rows], float)
     loc = [stats._local(r[3]) for r in rows]
     want = {"hour": [t.hour for t in loc], "weekday": [t.weekday() for t in loc],
             "stop": [r[1] for r in rows], "date": [r[0] for r in rows]}
+    assert 23 in want["hour"]
     b = env.get(VAR).json()
     for x in b["factors"]:
         exp = lab.omega_squared(np.unique(want[x["factor"]], return_inverse=True)[1], y)
@@ -230,6 +234,18 @@ def test_persistence_empty(env):
     finite(b)
     assert r.status_code == 200 and b["n_trips"] == 0
     assert len(b["lags"]) == 5 and all(x["r"] is None for x in b["lags"])
+    assert b["recovery"]["slope"] is None and b["recovery"]["n"] == 0 and b["recovery"]["low_n"] is True
+    assert b["recovery"]["ci_low"] is None and b["recovery"]["ci_high"] is None
+
+
+def test_persistence_excludes_fallback_direction_trip(env):
+    env.fake.set_route_stops("15", {"out": [{"id": s} for s in STOPS]})
+    env.trip("good", [(s, 10 * i) for i, s in enumerate(STOPS)])
+    env.trip("odd", [(f"x{i}", 500 + i) for i in range(6)])  # no stop on any server direction
+    b = env.get(PER).json()
+    assert b["n_trips"] == 1
+    assert [x["n"] for x in b["lags"]] == [5, 4, 3, 2, 1]
+    assert b["recovery"]["n"] == 5
 
 
 def test_persistence_matches_lab_functions(env):
