@@ -35,7 +35,7 @@ export function controlsForm(initial, onApply) {
     return { i, btn };
   });
   const confirmed = h('input', { type: 'checkbox', id: f('conf'), checked: initial.confirmed, 'aria-label': 'Confirmed arrivals only (confirmed by a due-now reading)' });
-  slider.el.setAttribute('aria-label', 'Hours of day (Dublin time)');
+  slider.el.removeAttribute('role'); slider.el.removeAttribute('aria-label'); // the labelled hours row is the group
   const errors = h('div', { class: 'error', role: 'alert', hidden: true });
 
   function read() {
@@ -61,9 +61,11 @@ export function controlsForm(initial, onApply) {
   h('fieldset', { class: 'frow' }, h('legend', { class: 'sr-only' }, 'Period'),
     fld('From (UTC)', 'since', since), fld('To (UTC)', 'until', until),
     h('span', { class: 'hint' }, `Blank start = last ${DEFAULT_DAYS} days`),
-    h('span', { class: 'day-btns', title: 'None selected = every day' }, days.map((d) => d.btn))),
-  h('div', { class: 'frow', role: 'group', 'aria-label': 'Hours (Dublin time)', title: 'Whole hours; drag the start past the end to wrap midnight' },
-    h('span', { class: 'row-label' }, 'Hours (Dublin time)'), slider.el),
+    h('span', { class: 'day-btns', role: 'group', 'aria-label': 'Days of week', 'aria-describedby': f('days-hint'), title: 'None selected = every day' }, days.map((d) => d.btn)),
+    h('span', { id: f('days-hint'), class: 'sr-only' }, 'None selected = every day')),
+  h('div', { class: 'frow', role: 'group', 'aria-label': 'Hours (Dublin time)', 'aria-describedby': f('hours-hint'), title: 'Whole hours; drag the start past the end to wrap midnight' },
+    h('span', { class: 'row-label' }, 'Hours (Dublin time)'), slider.el,
+    h('span', { id: f('hours-hint'), class: 'sr-only' }, 'Whole hours; drag the start past the end to wrap midnight')),
   h('fieldset', { class: 'frow' }, h('legend', { class: 'sr-only' }, 'Statistics'),
     fld('Confidence', 'ci', parts.ci.input, unit('%')),
     h('span', { id: f('ci-hint'), class: 'sr-only' }, 'Confidence level of the interval around the mean delay, e.g. 90, 95 or 99'),

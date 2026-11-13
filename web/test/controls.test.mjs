@@ -136,3 +136,20 @@ test('controls: validation errors show in the alert box and block apply', () => 
   assert.equal(alert.hasAttribute('hidden'), false);
   assert.match(alert.textContent, /Confidence level must be/);
 });
+
+test('controls: days group is named and described; hours group is named once and described', () => {
+  const { form, dayBtns } = build();
+  const byId = (id) => form.all((n) => attrs(n, 'id') === id);
+  const days = form.all((n) => attrs(n, 'aria-label') === 'Days of week');
+  assert.equal(days.length, 1);
+  assert.equal(attrs(days[0], 'role'), 'group');
+  assert.equal(days[0].byTag('button').length, 7);
+  assert.equal(dayBtns().length, 7);
+  const hours = form.all((n) => /Hours/.test(attrs(n, 'aria-label')));
+  assert.deepEqual(hours.map((n) => attrs(n, 'aria-label')), ['Hours (Dublin time)']);
+  for (const [g, re] of [[days[0], /None selected = every day/], [hours[0], /wrap midnight/]]) {
+    const t = byId(attrs(g, 'aria-describedby'));
+    assert.equal(t.length, 1);
+    assert.match(t[0].textContent, re);
+  }
+});

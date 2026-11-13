@@ -115,7 +115,8 @@ label.inline { flex-direction: row; align-items: center; gap: var(--s2); color: 
 .controls .row-label { font-size: var(--fs-sm); color: var(--muted); font-weight: 500; }
 .controls .actions { display: inline-flex; gap: var(--s2); margin-left: auto; }
 .controls .inline { align-self: center; }
-@media (max-width: 720px) { .controls .frow, .controls .fld { align-items: flex-start; flex-direction: column; } .controls .fld { flex-direction: row; flex-wrap: wrap; align-items: center; } .controls .actions { margin-left: 0; } }
+/* 1000px: viewport width, but the 260px sidebar plus padding leaves ~330px of content at 721px */
+@media (max-width: 1000px) { .controls .frow, .controls .fld { align-items: flex-start; flex-direction: column; } .controls .fld { flex-direction: row; flex-wrap: wrap; align-items: center; } .controls .actions { margin-left: 0; } }
 .day-btns { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .day-btn { font: inherit; font-weight: 500; min-height: 30px; min-width: 3.1em; padding: 0 var(--s3); border-radius: 999px; border: 1px solid var(--control-border); background: var(--bg); color: var(--text); cursor: pointer; transition: background-color .15s, border-color .15s; }
 .day-btn:hover { border-color: var(--accent); background: var(--hover); }
@@ -124,7 +125,7 @@ label.inline { flex-direction: row; align-items: center; gap: var(--s2); color: 
 .day-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .controls .time-range { flex: 1 1 24rem; grid-template-columns: auto minmax(8rem, 1fr) auto; align-items: center; column-gap: var(--s3); }
 .controls .tr-ticks { display: none; }
-@media (max-width: 720px) { .controls .time-range { grid-template-columns: 1fr; width: 100%; } }
+@media (max-width: 1000px) { .controls .time-range { grid-template-columns: 1fr; width: 100%; } }
 .hint { font-size: var(--fs-sm); color: var(--muted); }
 
 .notice, .error { border-radius: var(--radius-sm); padding: var(--s3) var(--s4); margin: 0 0 var(--s4); border: 1px solid var(--border); border-left-width: 4px; }
