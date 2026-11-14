@@ -1220,12 +1220,14 @@ async def _each_tracked(request, p, worker, delay=True):
     MAX_ROWS cap. Returns ([(route, result)...], routes whose scan was truncated)."""
     routes = sorted(await run_in_threadpool(request.app.state.poller.tracked))
     out, truncated = [], []
-    for r in routes:
-        res, trunc = await _heavy(request, p, "route = ?", [r],
-                                  lambda p2, r=r: (worker(request, r, p2), p2["truncated"]), delay)
-        out.append((r, res))
-        if trunc:
-            truncated.append(r)
+    # one overview scan at a time: the page fires three at once and they only fight over _DB_LOCK and the GIL
+    async with _gate("all"):
+        for r in routes:
+            res, trunc = await _heavy(request, p, "route = ?", [r],
+                                      lambda p2, r=r: (worker(request, r, p2), p2["truncated"]), delay)
+            out.append((r, res))
+            if trunc:
+                truncated.append(r)
     return out, truncated
 
 
