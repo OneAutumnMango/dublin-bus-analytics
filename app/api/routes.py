@@ -30,7 +30,7 @@ from bisect import bisect_right
 from collections import defaultdict, deque
 from contextlib import closing
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, NamedTuple
 from urllib.parse import unquote
 
 import numpy as np
@@ -228,7 +228,7 @@ def _cap(request, p, where: str, args: list, delay=True) -> tuple[dict, bool]:
     heavy is true when more than HEAVY_ROWS match. The probes ignore NULL-delay rows (delay=True) exactly
     as the scan does."""
     cond, cargs = _cond(p)
-    probe = (f"select scheduled from arrivals where {where} and {cond}"
+    probe = (f"select scheduled from arrivals{_idx(where)} where {where} and {cond}"
              f"{' and delay is not null' if delay else ''} order by scheduled desc limit 2 offset ?")
     rows = _fetch(request, probe, args + cargs + [MAX_ROWS - 1])
     if len(rows) == 2:
@@ -265,7 +265,7 @@ def _scan_arrivals(request, p, where: str, args: list, cols: str, fn) -> None:
         if rows:
             fn(rows)
 
-    _scan(request, f"select {cols}, scheduled from arrivals where {where} and {cond} "
+    _scan(request, f"select {cols}, scheduled from arrivals{_idx(where)} where {where} and {cond} "
           "and delay is not null order by scheduled", args + cargs, apply)
 
 
@@ -504,7 +504,7 @@ async def route_heatmap(request: Request, r: RouteP, p: P):
     return await _heavy(request, p, "route = ?", [r], lambda p: _heatmap_db(request, r, p))
 
 
-def _heatmap_db(request, r, p, rolled=()):
+def _heatmap_db(request, r, p, rolled=None):
     cnt, tot = defaultdict(int), defaultdict(float)
     where, args = _rwhere(r, rolled)
     for k, (n, t) in (_rollup_read(request, rollup.read_heat, r, rolled, p["min_confidence"], p["weekdays"], p["hours"]) if rolled else {}).items():
@@ -1231,25 +1231,42 @@ def _eligible(p, kind) -> bool:
     return kind != "delay" or (-rollup.CLAMP < p["window_lo"] and p["window_hi"] < rollup.CLAMP)
 
 
-def _rolled(request, r, p, kind) -> list[str]:
+_SEEK = "json_each"  # marks a where-clause that names its days explicitly
+
+
+def _idx(where: str) -> str:
+    """A where-clause naming its days must read through the (service_date, route) index: left alone, SQLite
+    prefers (route, scheduled) and walks the route's whole history (9x slower on 30 days of data)."""
+    return " indexed by ix_arr_date" if _SEEK in where else ""
+
+
+class Rolled(NamedTuple):
+    days: list[str]  # service days answered from rollups
+    rest: list[str]  # every other day of the route's span: read raw (usually just recent/partial days)
+
+
+def _rolled(request, r, p, kind) -> "Rolled | None":
     """Closed days of route r answerable from rollups for this request (built on first use)."""
     if not _eligible(p, kind):
-        return []
+        return None
     with _DB_LOCK, closing(open_meta(request.app.state.settings.data_dir)) as c:
         rollup.ensure_route(c, r)
-        return rollup.rolled_days(c, r, p["since"], p["until"])
+        days = rollup.rolled_days(c, r, p["since"], p["until"])
+        if not days:
+            return None
+        return Rolled(days, rollup.rest_days(c, days))
 
 
 def _rwhere(r, rolled):
-    """WHERE for the raw part of a route scan: everything not already covered by `rolled` days."""
+    """WHERE for the raw part of a route scan: only the days that are not covered by rollups."""
     if not rolled:
         return "route = ?", [r]
-    return "route = ? and service_date not in (select value from json_each(?))", [r, json.dumps(rolled)]
+    return f"route = ? and service_date in (select value from {_SEEK}(?))", [r, json.dumps(rolled.rest)]
 
 
 def _rollup_read(request, fn, r, rolled, *args):
     with _DB_LOCK, closing(open_meta(request.app.state.settings.data_dir)) as c:
-        return fn(c, r, json.dumps(rolled), *args)
+        return fn(c, r, json.dumps(rolled.days), *args)
 
 
 async def _each_tracked(request, p, worker, delay=True, kind=None):
@@ -1260,7 +1277,7 @@ async def _each_tracked(request, p, worker, delay=True, kind=None):
     # one overview scan at a time: the page fires three at once and they only fight over _DB_LOCK and the GIL
     async with _gate("all"):
         for r in routes:
-            rolled = await run_in_threadpool(_rolled, request, r, p, kind) if kind else []
+            rolled = await run_in_threadpool(_rolled, request, r, p, kind) if kind else None
             where, args = _rwhere(r, rolled)
             res, trunc = await _heavy(request, p, where, args,
                                       lambda p2, r=r, rolled=rolled: (worker(request, r, p2, rolled) if rolled
@@ -1274,7 +1291,7 @@ async def _each_tracked(request, p, worker, delay=True, kind=None):
 _ROUTE_FIELDS = ("n", "low_n", "mean", "median", "on_time_pct", "reliability", "p_low", "p_high")
 
 
-def _route_stats_db(request, r, p, rolled=()):
+def _route_stats_db(request, r, p, rolled=None):
     where, args = _rwhere(r, rolled)
     if rolled:  # closed days from rollups + raw rest, summarised from (n, sum, sum2, histogram)
         acc = _rollup_read(request, rollup.read_delay, r, rolled, p["min_confidence"])
@@ -1313,7 +1330,7 @@ async def all_heatmap(request: Request, p: P):
 FC_CLAMP = 3600  # forecast errors are histogrammed per second within +/- this; sums stay exact
 
 
-def _forecast_parts_db(request, r, p, rolled=()):
+def _forecast_parts_db(request, r, p, rolled=None):
     """{horizon: (n, sum, abs_sum, counts)}; counts has length 2*FC_CLAMP+1, indexed by clamp(error)+FC_CLAMP."""
     cond, cargs = _cond(p, "a.")
     marks = ",".join("?" * len(HORIZONS))
@@ -1334,7 +1351,7 @@ def _forecast_parts_db(request, r, p, rolled=()):
             s[2] += int(np.abs(a).sum())
             s[3] += np.bincount(np.clip(a, -FC_CLAMP, FC_CLAMP) + FC_CLAMP, minlength=size)
 
-    _scan(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
+    _scan(request, f"select f.horizon_min, f.error_s, a.scheduled from arrivals a{_idx(where)} "
           "join forecast f on f.arrival_id = a.id "
           f"where a.{where} and {cond} and f.error_s is not null "
           f"and f.horizon_min in ({marks})", wargs + cargs + list(HORIZONS), fn)

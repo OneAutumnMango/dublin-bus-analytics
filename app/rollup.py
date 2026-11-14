@@ -122,14 +122,23 @@ def build_day(c, route: str, day: str) -> None:
                   (route, day, cf, h, len(a), int(a.sum()), int(np.abs(a).sum()), _pack(_hist(a))))
 
 
+def span(c) -> tuple[date, date] | None:
+    """First and last service day of ALL data (O(1) on the date index; a per-route min/max walks the route)."""
+    # two statements: min() and max() together make SQLite scan the table instead of seeking the index ends
+    lo = c.execute("select min(service_date) from arrivals").fetchone()[0]
+    if lo is None:
+        return None
+    return date.fromisoformat(lo), date.fromisoformat(c.execute("select max(service_date) from arrivals").fetchone()[0])
+
+
 def ensure_route(c, route: str, today: date | None = None) -> None:
     """Build every closed day of `route` that has arrivals and no rollup yet (one transaction per day)."""
-    cut = date.fromisoformat(closed_before(today))
-    first = c.execute("select min(service_date) from arrivals where route=?", (route,)).fetchone()[0]
-    if first is None:
+    sp = span(c)
+    if sp is None:
         return
+    cut = date.fromisoformat(closed_before(today))
     done = {r[0] for r in c.execute("select service_date from ru_done where route=?", (route,))}
-    d = date.fromisoformat(first)
+    d = sp[0]
     while d < cut:
         day = d.isoformat()
         if day not in done and c.execute("select 1 from arrivals where service_date=? and route=? limit 1",
@@ -144,6 +153,20 @@ def rolled_days(c, route: str, since, until) -> list[str]:
     return [r[0] for r in c.execute(
         "select service_date from ru_done where route=? and (? is null or min_s >= ?) and (? is null or max_s <= ?) "
         "order by 1", (route, since, since, until, until))]
+
+
+def rest_days(c, rolled: list[str]) -> list[str]:
+    """Every calendar day of the data's span not in `rolled` (days without data for the route are harmless):
+    the raw scan reads exactly these through the (service_date, route) index."""
+    sp = span(c)
+    if sp is None:
+        return []
+    skip, out, d = set(rolled), [], sp[0]
+    while d <= sp[1]:
+        if d.isoformat() not in skip:
+            out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
 
 
 def drop_days(c, days, route: str | None = None) -> None:
