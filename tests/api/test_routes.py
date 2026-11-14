@@ -2489,8 +2489,8 @@ def test_all_routes_no_tracked(env):
 def test_all_routes_reports_truncated_routes(env, monkeypatch):
     monkeypatch.setattr("app.api.routes.MAX_ROWS", 2)
     env.app.state.poller.track("15"); env.app.state.poller.track("46A")
-    for i in range(4): env.add(route="15", delay=i, scheduled=T0 + i)
-    env.add(route="46A", delay=1)
+    for i in range(4): env.add(route="15", delay=i, scheduled=T0 + i, date="2099-01-01")
+    env.add(route="46A", delay=1, date="2099-01-01")
     j = env.get("/api/all/routes").json()
     assert j["filters"]["truncated_routes"] == ["15"]
 
@@ -2517,8 +2517,8 @@ def test_all_heatmap_pools_two_routes_by_arrival(env):
 def test_all_heatmap_reports_truncated_routes(env, monkeypatch):
     monkeypatch.setattr("app.api.routes.MAX_ROWS", 2)
     env.app.state.poller.track("15"); env.app.state.poller.track("46A")
-    for i in range(4): env.add(route="15", delay=i, scheduled=T0 + i)
-    env.add(route="46A", delay=1)
+    for i in range(4): env.add(route="15", delay=i, scheduled=T0 + i, date="2099-01-01")
+    env.add(route="46A", delay=1, date="2099-01-01")
     j = env.get("/api/all/heatmap").json()
     assert j["filters"]["truncated_routes"] == ["15"]
     assert j["n"] == 3   # 2 newest of route 15 + 1 of 46A (5 without the cap)
@@ -2592,8 +2592,8 @@ def test_all_forecast_pools_two_routes_and_clamps(env):
 def test_all_forecast_reports_truncated_routes(env, monkeypatch):
     monkeypatch.setattr("app.api.routes.MAX_ROWS", 2)
     env.app.state.poller.track("15"); env.app.state.poller.track("46A")
-    for i in range(4): env.fc(env.add(route="15", delay=0, scheduled=T0 + i), 10, 60)
-    env.fc(env.add(route="46A", delay=0), 10, 60)
+    for i in range(4): env.fc(env.add(route="15", delay=0, scheduled=T0 + i, date="2099-01-01"), 10, 60)
+    env.fc(env.add(route="46A", delay=0, date="2099-01-01"), 10, 60)
     j = env.get("/api/all/forecast").json()
     assert j["filters"]["truncated_routes"] == ["15"]
     h = {x["horizon_min"]: x for x in j["horizons"]}[10]

@@ -425,3 +425,17 @@ def test_remove_progress_callback(data, monkeypatch):
         vals = [o[k] for _, o in calls]
         assert vals == sorted(vals)
     assert calls[-1][1]["samples"] == 4 and calls[-1][1]["arrivals"] == 3
+
+
+def test_remove_drops_rollups_of_the_day(data):
+    from app import rollup
+    m = open_meta(data)
+    rollup.ensure_route(m, "15", date(2026, 12, 25))
+    rollup.ensure_route(m, "7", date(2026, 12, 25))
+    assert {r[:2] for r in m.execute("select route, service_date from ru_done")} >= {("15", "2026-11-05"), ("7", "2026-11-05")}
+    m.close()
+    D.remove(data, DAY, "15")
+    m = open_meta(data)
+    left = {r[:2] for r in m.execute("select route, service_date from ru_done")}
+    m.close()
+    assert ("15", "2026-11-05") not in left and ("7", "2026-11-05") in left and ("15", "2026-11-04") in left

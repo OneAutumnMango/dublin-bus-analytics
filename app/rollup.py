@@ -162,10 +162,16 @@ def read_delay(c, route: str, days_json: str, mc: int) -> Acc:
     return a
 
 
-def read_heat(c, route: str, days_json: str, mc: int) -> dict:
+def read_heat(c, route: str, days_json: str, mc: int, weekdays=None, hours=None) -> dict:
+    """{(weekday, hour): (n, sum)}; weekdays/hours are optional Dublin-local filters (lists or None)."""
+    args = {"r": route, "mc": mc, "days": days_json,
+            "wd": None if weekdays is None else json.dumps(list(weekdays)),
+            "hr": None if hours is None else json.dumps(list(hours))}
     return {(wd, hr): (n, s) for wd, hr, n, s in c.execute(
-        "select wd, hr, sum(n), sum(sum_d) from ru_heat where route=? and conf>=? "
-        "and service_date in (select value from json_each(?)) group by wd, hr", (route, mc, days_json))}
+        "select wd, hr, sum(n), sum(sum_d) from ru_heat where route=:r and conf>=:mc "
+        "and service_date in (select value from json_each(:days)) "
+        "and (:wd is null or wd in (select value from json_each(:wd))) "
+        "and (:hr is null or hr in (select value from json_each(:hr))) group by wd, hr", args)}
 
 
 def read_fc(c, route: str, days_json: str, mc: int, horizons=HORIZONS) -> dict:

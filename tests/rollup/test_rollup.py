@@ -122,3 +122,13 @@ def test_rolled_days_respects_since_until_and_drop(db):
     assert db.execute("select count(*) from ru_delay where service_date='2026-01-02'").fetchone() == (0,)
     rollup.drop_days(db, ["2026-01-01"], route="99")
     assert "2026-01-01" in rollup.rolled_days(db, "15", None, None)
+
+
+def test_read_heat_weekday_hour_filters(db):
+    _fill(db, random.Random(11), ["2026-01-01", "2026-01-02"])
+    rollup.ensure_route(db, "15", date(2026, 11, 14))
+    js = json.dumps(["2026-01-01", "2026-01-02"])
+    full = rollup.read_heat(db, "15", js, 0)
+    wd = sorted({k[0] for k in full})[:2]
+    sub = rollup.read_heat(db, "15", js, 0, weekdays=wd, hours=[8, 9])
+    assert sub == {k: v for k, v in full.items() if k[0] in wd and k[1] in (8, 9)} and sub

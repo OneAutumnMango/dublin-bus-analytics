@@ -15,6 +15,7 @@ stop order comes only from the server's route_stops (`order_source` 'server' | '
 """
 import asyncio
 import functools
+import json
 import logging
 import math
 import os
@@ -39,6 +40,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
+from app import rollup
 from app.analysis import lab, stats
 from app.core.db import open_meta, open_samples_readonly
 from app.collect.poller import ROUTE_RE
@@ -502,15 +504,19 @@ async def route_heatmap(request: Request, r: RouteP, p: P):
     return await _heavy(request, p, "route = ?", [r], lambda p: _heatmap_db(request, r, p))
 
 
-def _heatmap_db(request, r, p):
+def _heatmap_db(request, r, p, rolled=()):
     cnt, tot = defaultdict(int), defaultdict(float)
+    where, args = _rwhere(r, rolled)
+    for k, (n, t) in (_rollup_read(request, rollup.read_heat, r, rolled, p["min_confidence"], p["weekdays"], p["hours"]) if rolled else {}).items():
+        cnt[k] += n
+        tot[k] += t
 
     def fn(rows):  # per-chunk heatmap merged by (n, sum): no per-row objects survive the chunk
         for k, v in stats.heatmap([{"delay": d, "scheduled": s} for d, s in rows]).items():
             cnt[k] += v["n"]
             tot[k] += v["mean_delay"] * v["n"]
 
-    _scan_arrivals(request, p, "route = ?", [r], "delay", fn)
+    _scan_arrivals(request, p, where, args, "delay", fn)
     cells = [{"weekday": wd, "hour": hr, "n": cnt[k], "low_n": cnt[k] < LOW_N, "mean_delay": tot[k] / cnt[k]}
              for k in sorted(cnt) for wd, hr in [k]]
     return _clean({"route": r, "filters": _filters(p), "n": sum(cnt.values()), "cells": cells})
@@ -1215,7 +1221,38 @@ async def map_shapes(request: Request):
 
 # ---- all routes ----
 
-async def _each_tracked(request, p, worker, delay=True):
+def _eligible(p, kind) -> bool:
+    """Can the closed-day rollups answer this request? Rollups are per day, so any filter finer than a
+    day (weekday/hour/minute) only works where the rollup keeps that grain (heatmap: weekday and hour)."""
+    if p["minutes"] is not None:
+        return False
+    if kind != "heat" and (p["weekdays"] is not None or p["hours"] is not None):
+        return False
+    return kind != "delay" or (-rollup.CLAMP < p["window_lo"] and p["window_hi"] < rollup.CLAMP)
+
+
+def _rolled(request, r, p, kind) -> list[str]:
+    """Closed days of route r answerable from rollups for this request (built on first use)."""
+    if not _eligible(p, kind):
+        return []
+    with _DB_LOCK, closing(open_meta(request.app.state.settings.data_dir)) as c:
+        rollup.ensure_route(c, r)
+        return rollup.rolled_days(c, r, p["since"], p["until"])
+
+
+def _rwhere(r, rolled):
+    """WHERE for the raw part of a route scan: everything not already covered by `rolled` days."""
+    if not rolled:
+        return "route = ?", [r]
+    return "route = ? and service_date not in (select value from json_each(?))", [r, json.dumps(rolled)]
+
+
+def _rollup_read(request, fn, r, rolled, *args):
+    with _DB_LOCK, closing(open_meta(request.app.state.settings.data_dir)) as c:
+        return fn(c, r, json.dumps(rolled), *args)
+
+
+async def _each_tracked(request, p, worker, delay=True, kind=None):
     """Run worker(request, route, p) (sync, in a thread under _heavy) for every tracked route, each with its own
     MAX_ROWS cap. Returns ([(route, result)...], routes whose scan was truncated)."""
     routes = sorted(await run_in_threadpool(request.app.state.poller.tracked))
@@ -1223,8 +1260,11 @@ async def _each_tracked(request, p, worker, delay=True):
     # one overview scan at a time: the page fires three at once and they only fight over _DB_LOCK and the GIL
     async with _gate("all"):
         for r in routes:
-            res, trunc = await _heavy(request, p, "route = ?", [r],
-                                      lambda p2, r=r: (worker(request, r, p2), p2["truncated"]), delay)
+            rolled = await run_in_threadpool(_rolled, request, r, p, kind) if kind else []
+            where, args = _rwhere(r, rolled)
+            res, trunc = await _heavy(request, p, where, args,
+                                      lambda p2, r=r, rolled=rolled: (worker(request, r, p2, rolled) if rolled
+                                                                      else worker(request, r, p2), p2["truncated"]), delay)
             out.append((r, res))
             if trunc:
                 truncated.append(r)
@@ -1234,9 +1274,15 @@ async def _each_tracked(request, p, worker, delay=True):
 _ROUTE_FIELDS = ("n", "low_n", "mean", "median", "on_time_pct", "reliability", "p_low", "p_high")
 
 
-def _route_stats_db(request, r, p):
+def _route_stats_db(request, r, p, rolled=()):
+    where, args = _rwhere(r, rolled)
+    if rolled:  # closed days from rollups + raw rest, summarised from (n, sum, sum2, histogram)
+        acc = _rollup_read(request, rollup.read_delay, r, rolled, p["min_confidence"])
+        _scan_arrivals(request, p, where, args, "delay", lambda rows: acc.add_delays([d for d, _ in rows]))
+        s = acc.summary(p)
+        return {"route": r, **s, "low_n": s["n"] < LOW_N}
     delays = array("q")
-    _scan_arrivals(request, p, "route = ?", [r], "delay", lambda rows: delays.extend(d for d, _ in rows))
+    _scan_arrivals(request, p, where, args, "delay", lambda rows: delays.extend(d for d, _ in rows))
     s = _summ(delays, p)
     return {"route": r, **{k: s[k] for k in _ROUTE_FIELDS}}
 
@@ -1245,14 +1291,14 @@ def _route_stats_db(request, r, p):
 async def all_routes(request: Request, p: P):
     """Per-route delay stats for every tracked route: route, n, low_n, mean, median, on_time_pct, reliability,
     p_low, p_high. `filters.truncated_routes` lists routes whose scan hit MAX_ROWS."""
-    res, trunc = await _each_tracked(request, p, _route_stats_db)
+    res, trunc = await _each_tracked(request, p, _route_stats_db, kind="delay")
     return _clean({"filters": {**_filters(p), "truncated_routes": trunc}, "routes": [x for _, x in res]})
 
 
 @router.get("/all/heatmap")
 async def all_heatmap(request: Request, p: P):
     """Heatmap cells pooled by arrival across every tracked route: [{weekday, hour, n, low_n, mean_delay}]."""
-    res, trunc = await _each_tracked(request, p, _heatmap_db)
+    res, trunc = await _each_tracked(request, p, _heatmap_db, kind="heat")
     cnt, tot = defaultdict(int), defaultdict(float)
     for _, h in res:
         for c in h["cells"]:
@@ -1267,12 +1313,14 @@ async def all_heatmap(request: Request, p: P):
 FC_CLAMP = 3600  # forecast errors are histogrammed per second within +/- this; sums stay exact
 
 
-def _forecast_parts_db(request, r, p):
+def _forecast_parts_db(request, r, p, rolled=()):
     """{horizon: (n, sum, abs_sum, counts)}; counts has length 2*FC_CLAMP+1, indexed by clamp(error)+FC_CLAMP."""
     cond, cargs = _cond(p, "a.")
     marks = ",".join("?" * len(HORIZONS))
     size = 2 * FC_CLAMP + 1
-    acc = {h: [0, 0, 0, np.zeros(size, dtype=np.int64)] for h in HORIZONS}
+    acc = (_rollup_read(request, rollup.read_fc, r, rolled, p["min_confidence"], HORIZONS) if rolled
+           else {h: [0, 0, 0, np.zeros(size, dtype=np.int64)] for h in HORIZONS})
+    where, wargs = _rwhere(r, rolled)
 
     def fn(rows):
         by = defaultdict(list)
@@ -1288,8 +1336,8 @@ def _forecast_parts_db(request, r, p):
 
     _scan(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
           "join forecast f on f.arrival_id = a.id "
-          f"where a.route = ? and {cond} and f.error_s is not null "
-          f"and f.horizon_min in ({marks})", [r] + cargs + list(HORIZONS), fn)
+          f"where a.{where} and {cond} and f.error_s is not null "
+          f"and f.horizon_min in ({marks})", wargs + cargs + list(HORIZONS), fn)
     return {h: (s[0], s[1], s[2], s[3]) for h, s in acc.items()}
 
 
@@ -1308,7 +1356,7 @@ def _hist_percentile(counts, n, q):
 async def all_forecast(request: Request, p: P):
     """Forecast error pooled by arrival across every tracked route; same horizon rows as the per-route endpoint.
     Percentiles are exact within +/-FC_CLAMP seconds (errors beyond are clamped); mean and mae are exact."""
-    res, trunc = await _each_tracked(request, p, _forecast_parts_db, delay=False)
+    res, trunc = await _each_tracked(request, p, _forecast_parts_db, delay=False, kind="fc")
     hs = []
     for h in HORIZONS:
         n, tot, abs_tot = 0, 0, 0

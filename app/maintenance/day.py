@@ -28,6 +28,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from app import rollup
 from app.api.routes import _DB_LOCK
 
 DUBLIN = ZoneInfo("Europe/Dublin")
@@ -274,6 +275,12 @@ def remove(data_dir: Path, d: date, route: str | None,
         out.pop("_progress", None)
 
 
+def _drop_rollups(c, d: date, route: str | None) -> None:
+    with _DB_LOCK:
+        rollup.drop_days(c, [d.isoformat()], route)
+        c.commit()
+
+
 def _remove(data_dir, d, route, w, out, progress) -> dict:
     _scan_months(data_dir, d, route, w, True, out)
     meta = data_dir / "meta.db"
@@ -283,6 +290,7 @@ def _remove(data_dir, d, route, w, out, progress) -> dict:
             return out
         with closing(c):
             where, args = _arrival_where(d, route)
+            _drop_rollups(c, d, route)  # first, so no stale rollup is served while the day is being emptied
             ids = [r[0] for r in c.execute(f"select id from arrivals where {where}", args).fetchall()]
             for i in range(0, len(ids), CHUNK):
                 part = ids[i:i + CHUNK]
@@ -296,6 +304,7 @@ def _remove(data_dir, d, route, w, out, progress) -> dict:
                 _between_chunks()
                 if progress:
                     progress("arrivals", out)
+            _drop_rollups(c, d, route)  # again: a request mid-removal may have rebuilt it from partial data
             if not route:
                 while True:
                     with _DB_LOCK:
