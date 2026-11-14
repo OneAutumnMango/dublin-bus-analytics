@@ -22,6 +22,14 @@ create index if not exists ix_arr_route_sched on arrivals(route, scheduled);
 create index if not exists ix_arr_stop_sched on arrivals(stop_id, scheduled);
 create index if not exists ix_arr_date on arrivals(service_date, route);
 create table if not exists gaps(start int, end int);
+-- Per-day rollups of closed service days (see app/rollup.py); derived data, safe to delete (rebuilt lazily).
+create table if not exists ru_done(route text, service_date text, min_s int, max_s int, primary key(route, service_date)) without rowid;
+create table if not exists ru_delay(route text, service_date text, conf int, n int, sum_d int, sum_d2 int, hist blob,
+  primary key(route, service_date, conf)) without rowid;
+create table if not exists ru_heat(route text, service_date text, wd int, hr int, conf int, n int, sum_d int,
+  primary key(route, service_date, wd, hr, conf)) without rowid;
+create table if not exists ru_fc(route text, service_date text, conf int, horizon int, n int, sum_e int, abs_e int, hist blob,
+  primary key(route, service_date, conf, horizon)) without rowid;
 """
 
 SAMPLES_SCHEMA = """
