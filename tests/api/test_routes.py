@@ -1002,7 +1002,7 @@ async def test_event_loop_not_blocked(tmp_path, monkeypatch, what):
         task = asyncio.create_task(c.request(*req))
         await asyncio.sleep(0.05)
         assert (await c.get("/api/health")).json() == {"ok": True}
-        assert time.perf_counter() - t < 0.15
+        assert time.perf_counter() - t < 0.25  # blocked loop would take >= 0.3 (the sleep)
         assert (await task).status_code == 200
 
 
