@@ -49,6 +49,14 @@ def test_store_lookup_roundtrip(tmp_path):
     assert lookup(c, "missing") is None
 
 
+def test_lookup_with_ms(tmp_path):
+    c = open_meta(tmp_path)
+    store(c, "k", b"x", 42, None, now=1000)
+    assert lookup(c, "k", now=1000, with_ms=True) == (b"x", 1000, 42)
+    assert lookup(c, "k", now=1000) == (b"x", 1000)
+    assert lookup(c, "missing", with_ms=True) is None
+
+
 def test_lookup_bumps_last_used_only_when_old(tmp_path):
     c = open_meta(tmp_path)
     store(c, "k", b"x", 1, None, now=1000)

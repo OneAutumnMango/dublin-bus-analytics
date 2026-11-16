@@ -54,6 +54,27 @@ def test_fresh_recomputes_and_overwrites(tmp_path, monkeypatch):
     assert r.headers["x-cache"] == "hit" and int(r.headers["x-computed-at"]) > old
 
 
+def _stored_ms(env):
+    c = open_meta(env.s.data_dir)
+    try:
+        return c.execute("select ms from result_cache where key not like 'srv:%'").fetchone()[0]
+    finally:
+        c.close()
+
+
+def test_compute_ms_header_on_miss_hit_and_bypass(tmp_path, monkeypatch):
+    env, _ = _env(tmp_path, monkeypatch)
+    a = env.c.get(URL)
+    assert a.headers["x-cache"] == "miss" and a.headers["x-compute-ms"].isdigit()
+    assert int(a.headers["x-compute-ms"]) == _stored_ms(env)
+    b = env.c.get(URL)
+    assert b.headers["x-cache"] == "hit" and b.headers["x-compute-ms"] == a.headers["x-compute-ms"]
+    c = env.c.get(URL, params={"fresh": 1})
+    assert c.headers["x-cache"] == "bypass" and c.headers["x-compute-ms"].isdigit()
+    assert int(c.headers["x-compute-ms"]) == _stored_ms(env)
+    assert env.c.get(URL).headers["x-compute-ms"] == c.headers["x-compute-ms"]
+
+
 def test_since_within_same_hour_shares_entry(tmp_path, monkeypatch):
     env, n = _env(tmp_path, monkeypatch)
     env.c.get(URL, params={"since": 3600 * 100 + 5})
@@ -64,6 +85,7 @@ def test_since_within_same_hour_shares_entry(tmp_path, monkeypatch):
 def test_uncached_paths_untouched(tmp_path, monkeypatch):
     env, _ = _env(tmp_path, monkeypatch)
     assert "x-cache" not in env.c.get("/api/routes/tracked").headers
+    assert "x-compute-ms" not in env.c.get("/api/routes/tracked").headers
 
 
 def test_degraded_responses_not_stored(tmp_path, monkeypatch):

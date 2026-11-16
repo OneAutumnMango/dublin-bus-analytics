@@ -36,15 +36,16 @@ def generation(c):
     return int(r[0]) if r else 0
 
 
-def lookup(c, key, now=None):
+def lookup(c, key, now=None, with_ms=False):
     now = int(time.time()) if now is None else now
-    r = c.execute("select body, computed_at, last_used from result_cache where key=?", (key,)).fetchone()
+    r = c.execute("select body, computed_at, last_used, ms from result_cache where key=?", (key,)).fetchone()
     if r is None:
         return None
     if now - r[2] > 600:
         c.execute("update result_cache set last_used=? where key=?", (now, key))
         c.commit()
-    return gzip.decompress(r[0]), r[1]
+    out = gzip.decompress(r[0]), r[1]
+    return out + (r[3],) if with_ms else out
 
 
 def store(c, key, body, ms, gen, now=None, keep_last_used=False):

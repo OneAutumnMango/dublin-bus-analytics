@@ -39,8 +39,9 @@ def install(app: FastAPI) -> None:
             log.exception("result cache unavailable; computing live")
             return _FAIL
 
-    def hit_response(body, at):
-        return Response(body, media_type="application/json", headers={"X-Cache": "hit", "X-Computed-At": str(at)})
+    def hit_response(body, at, ms):
+        return Response(body, media_type="application/json",
+                        headers={"X-Cache": "hit", "X-Computed-At": str(at), "X-Compute-Ms": str(ms)})
 
     def done(t):
         tasks.discard(t)
@@ -67,7 +68,7 @@ def install(app: FastAPI) -> None:
         try:
             async with lock:
                 if not fresh:  # a concurrent request may have stored it while we waited
-                    hit = await db(lambda c: cache.lookup(c, key))
+                    hit = await db(lambda c: cache.lookup(c, key, with_ms=True))
                     if hit not in (None, _FAIL):
                         return hit_response(*hit)
                 gen = await db(cache.generation)  # before computing: a clear meanwhile makes store refuse
@@ -80,6 +81,7 @@ def install(app: FastAPI) -> None:
                 out.headers["content-length"] = str(len(body))
                 out.headers["X-Cache"] = "bypass" if fresh else "miss"
                 out.headers["X-Computed-At"] = str(int(time.time()))
+                out.headers["X-Compute-Ms"] = str(ms)
                 # x-cache-skip: the handler flagged a degraded result: never store, never send
                 if (b"x-cache-skip" not in hdr and gen is not _FAIL and status == 200
                         and hdr.get(b"content-type", b"").startswith(b"application/json")):
@@ -107,7 +109,7 @@ def install(app: FastAPI) -> None:
                 return await self.inner(scope, receive, send)
             fresh = "fresh" in request.query_params
             if not fresh:
-                hit = await db(lambda c: cache.lookup(c, key))
+                hit = await db(lambda c: cache.lookup(c, key, with_ms=True))
                 if hit not in (None, _FAIL):
                     return await hit_response(*hit)(scope, receive, send)
             # detached: a client that gives up (the UI aborts after a while) must not cancel the compute or the
