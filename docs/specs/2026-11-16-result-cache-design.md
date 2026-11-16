@@ -50,9 +50,10 @@ Opening any data page or switching tabs returns a stored result at once. Raw dat
 - **Stop lists / shapes:** raise `STOPS_TTL` 300 s -> 24 h and persist route stop lists in the same cache table
   (key `srv:stops:{r}`), so a cold Pi page no longer waits on the server (static GTFS). Failures stay uncached.
   Shapes TTL 1 h -> 24 h.
-- **UI** (`web/js/pages/common.js`, shared get helper): read `X-Computed-At`; show "Computed 14:05 · Refresh"
-  beside the filters on each data page. Refresh calls the same request with `fresh=1` and re-renders.
-  While the first-ever compute runs the existing loading state is used.
+- **UI** (`web/js/app.js`, `web/js/sidebar.js`, `web/js/recompute.js`): read `X-Computed-At`; show "Data computed 14:05" above the page.
+  "Refresh data" at the bottom of the sidebar recomputes the page's cached endpoints in the background with `fresh=1`
+  (progress ring estimated from `X-Compute-Ms`), then "Load new data" re-renders normally. GET timeout is 15 s; a slow
+  first load shows the error box with Retry and the server still stores the result.
 
 ## Interfaces
 

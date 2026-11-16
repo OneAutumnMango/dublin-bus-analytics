@@ -3,6 +3,7 @@
 import { api, isAbort } from './api.js';
 import { emptyState, errorBox, h, link, setStatus } from './dom.js';
 import { buildHash, makeLatest, parseHash } from './lib.js';
+import { createRecomputer } from './recompute.js';
 
 const MAX_RESULTS = 50;
 const DEBOUNCE_MS = 200;
@@ -150,4 +151,59 @@ export async function renderSidebar(root, { signal } = {}) {
   } catch (e) {
     if (!isAbort(e)) trackedBox.replaceChildren(errorBox(e, () => renderSidebar(root, { signal })));
   }
+}
+
+// Refresh control pinned at the bottom of the sidebar. Built once; survives navigation. The caller decides when it is
+// visible (sync) and when a running recompute is dropped (reset).
+const NS = 'http://www.w3.org/2000/svg';
+const R = 10, CIRC = 2 * Math.PI * R;
+function ring(progress) {
+  const doc = globalThis.document;
+  const mk = (t, a) => { const e = doc.createElementNS(NS, t); for (const [k, v] of Object.entries(a)) e.setAttribute(k, String(v)); return e; };
+  const svg = mk('svg', { class: `ring${progress === null ? ' spin' : ''}`, viewBox: '0 0 28 28', width: 28, height: 28, role: 'progressbar', 'aria-label': 'Recomputing', 'aria-valuemin': 0, 'aria-valuemax': 100 });
+  if (progress === null) svg.setAttribute('aria-busy', 'true'); else svg.setAttribute('aria-valuenow', Math.round(progress * 100));
+  const frac = progress === null ? 0.25 : progress; // indeterminate: a static quarter arc, spun by CSS unless reduced motion
+  svg.append(mk('circle', { class: 'ring-track', cx: 14, cy: 14, r: R }),
+    mk('circle', { class: 'ring-arc', cx: 14, cy: 14, r: R, 'stroke-dasharray': CIRC.toFixed(2), 'stroke-dashoffset': (CIRC * (1 - frac)).toFixed(2) }));
+  return svg;
+}
+
+export function mountRecompute(root, { paths, run, reload }) {
+  const doc = globalThis.document;
+  let timer = null, prev = 'idle', box = null;
+  const rc = createRecomputer({ paths, run, now: () => Date.now(), onState: draw });
+  const hadFocus = () => !!root.contains?.(doc.activeElement) && doc.activeElement !== doc.body;
+  const stopTimer = () => { clearInterval(timer); timer = null; };
+
+  function draw(s) {
+    const focused = hadFocus();
+    let kids;
+    if (s.phase === 'running') {
+      if (!timer) timer = setInterval(() => rc.tick(), 250);
+      box = h('div', { class: 'recompute-run', tabindex: '-1' }, ring(s.progress), h('span', {}, 'Recomputing… ', h('span', { class: 'muted' }, `${Math.round(s.elapsedMs / 1000)} s`)));
+      kids = box;
+    } else {
+      stopTimer();
+      box = null;
+      if (s.phase === 'done') {
+        kids = h('button', { type: 'button', class: 'btn', on: { click: () => { reload(); rc.reset(); } } }, 'Load new data');
+      } else if (s.phase === 'failed') {
+        kids = [h('span', { class: 'recompute-msg', role: 'alert' }, 'Recompute failed'), h('button', { type: 'button', class: 'btn btn-quiet', on: { click: () => rc.start() } }, 'Try again')];
+      } else {
+        kids = h('button', { type: 'button', class: 'btn btn-quiet', on: { click: () => rc.start() } }, 'Refresh data');
+      }
+    }
+    root.replaceChildren(...[kids].flat());
+    if (focused) (box || root.querySelector?.('button'))?.focus?.(); // the clicked control was rebuilt: keep focus in the footer
+    if (s.phase !== prev) {
+      if (s.phase === 'done') setStatus('New data is ready, choose Load new data');
+      else if (s.phase === 'failed') setStatus('Recompute failed');
+    }
+    prev = s.phase;
+  }
+  draw(rc.state());
+  return {
+    reset: () => rc.reset(),
+    sync: () => { root.hidden = rc.state().phase === 'idle' && paths().length === 0; },
+  };
 }

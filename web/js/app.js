@@ -1,8 +1,8 @@
 // Hash router: one page module per view, each exporting render(ctx).
-import { computedAt, isAbort, refresh, resetComputed } from './api.js';
+import { computedAt, isAbort, pageRequests, request, resetComputed } from './api.js';
 import { errorBox, h, link, setStatus } from './dom.js';
 import { dateTime, parseHash, usesTrackedSet } from './lib.js';
-import { onTrackedChange, renderSidebar } from './sidebar.js';
+import { mountRecompute, onTrackedChange, renderSidebar } from './sidebar.js';
 import { installTooltip } from './tooltip.js';
 import * as all from './pages/all.js';
 import * as analytics from './pages/analytics.js';
@@ -26,21 +26,15 @@ function markNav(name) { // highlight the current section in the top bar
   for (const a of links) { if (a.getAttribute('data-nav') === NAV[name]) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
 }
 
-function updateBar() { // shows the oldest computed-at time of this render, plus Refresh
+let recompute = null; // sidebar footer control, mounted once below
+
+function updateBar() { // shows the oldest computed-at time of this render
+  recompute?.sync();
   const bar = globalThis.document.getElementById('cache-bar');
   if (!bar) return;
   const t = computedAt();
   if (t === null) { bar.hidden = true; bar.replaceChildren(); return; }
-  const btn = h('button', { type: 'button', class: 'btn btn-quiet' }, 'Refresh');
-  btn.addEventListener('click', async () => {
-    btn.disabled = true; btn.textContent = 'Refreshing…';
-    refresh.on = true;
-    const doc = globalThis.document;
-    const keep = doc.activeElement === btn || doc.activeElement === doc.body; // never steal focus the user moved elsewhere
-    try { await show(); } finally { refresh.on = false; }
-    if (keep && (doc.activeElement === doc.body || doc.activeElement === btn)) bar.querySelector('button')?.focus();
-  });
-  bar.replaceChildren(`Data computed ${dateTime(t)} · `, btn);
+  bar.replaceChildren(`Data computed ${dateTime(t)}`);
   bar.hidden = false;
 }
 
@@ -48,6 +42,7 @@ async function show() {
   if (ctl) ctl.abort(); // anything still loading for the previous view is cancelled and ignored
   ctl = new AbortController();
   const { signal } = ctl;
+  recompute?.reset(); // drop waiting recompute fetches; the server still stores their results
   resetComputed();
   const r = parseHash(globalThis.location.hash);
   markNav(r.name);
@@ -91,6 +86,8 @@ show();
 installTooltip();
 settings.applyAppearance();
 onSettings(() => settings.applyAppearance());
-const sidebar = globalThis.document.getElementById('sidebar');
+const sidebar = globalThis.document.getElementById('sidebar-main');
 if (sidebar) renderSidebar(sidebar);
+const foot = globalThis.document.getElementById('recompute');
+if (foot) recompute = mountRecompute(foot, { paths: pageRequests, run: (p, signal) => request(p, { fresh: true, signal, timeout: 300000 }), reload: () => show() });
 onTrackedChange(() => { if (usesTrackedSet(parseHash(globalThis.location.hash))) show(); }); // the all-routes page and pooled lab depend on the tracked set

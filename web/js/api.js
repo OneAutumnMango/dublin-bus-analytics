@@ -27,11 +27,14 @@ export function errorMessage(status, bodyText) {
 
 let oldest = null; // oldest X-Computed-At (epoch s) seen since resetComputed()
 export const computedAt = () => oldest;
-export const resetComputed = () => { oldest = null; };
-export const refresh = { on: false }; // while true, GETs carry fresh=1 (recompute server-side)
+const pages = new Map(); // path (as requested, no fresh param) -> compute ms, for GETs of this page render
+export const resetComputed = () => { oldest = null; pages.clear(); };
+export const pageRequests = () => [...pages].map(([path, ms]) => ({ path, ms }));
 
-export async function request(path, { method = 'GET', signal, timeout = method === 'GET' ? 90000 : 15000, fetchFn = globalThis.fetch } = {}) {
-  if (refresh.on && method === 'GET') path += `${path.includes('?') ? '&' : '?'}fresh=1`;
+export async function request(path, { method = 'GET', signal, timeout = 15000, fresh = false, fetchFn = globalThis.fetch } = {}) {
+  const asked = path;
+  const useFresh = fresh && method === 'GET';
+  if (useFresh) path += `${path.includes('?') ? '&' : '?'}fresh=1`;
   const ctl = new AbortController();
   let timedOut = false;
   const onAbort = () => ctl.abort();
@@ -56,7 +59,13 @@ export async function request(path, { method = 'GET', signal, timeout = method =
       throw new ApiError('http', errorMessage(res.status, text), res.status, body && typeof body === 'object' ? body : null);
     }
     const t = Number(res.headers?.get?.('X-Computed-At'));
-    if (Number.isFinite(t) && t > 0 && (oldest === null || t < oldest)) oldest = t;
+    if (Number.isFinite(t) && t > 0) {
+      if (oldest === null || t < oldest) oldest = t;
+      if (method === 'GET' && !useFresh) { // a background recompute must not alter the page's own list
+        const ms = Number(res.headers.get('X-Compute-Ms'));
+        pages.set(asked, res.headers.get('X-Compute-Ms') !== null && Number.isFinite(ms) && ms >= 0 ? ms : null);
+      }
+    }
     try { return JSON.parse(text); } catch { throw new ApiError('parse', 'The API returned an unreadable response'); }
   } finally {
     clearTimeout(timer);

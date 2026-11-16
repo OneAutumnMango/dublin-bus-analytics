@@ -169,7 +169,7 @@ test('all-routes lab endpoints request /all/lab/{distribution|variance|persisten
 });
 
 const withHdr = (v, body = { ok: true }) => ({ ...resp(200, body), headers: { get: (n) => (n.toLowerCase() === 'x-computed-at' ? v : null) } });
-const reset = () => { A.resetComputed(); A.refresh.on = false; };
+const reset = () => { A.resetComputed(); };
 
 test('request records X-Computed-At (oldest wins)', async () => {
   reset();
@@ -183,18 +183,32 @@ test('request records X-Computed-At (oldest wins)', async () => {
   assert.equal(A.computedAt(), null);
 });
 
-test('request adds fresh=1 only while refresh.on', async () => {
+test('request adds fresh=1 only with fresh:true, GET only', async () => {
   reset();
   const urls = [];
   const f = async (u, init) => { urls.push([u, init.method]); return resp(200, {}); };
   await A.request('/api/map', { fetchFn: f });
-  A.refresh.on = true;
-  await A.request('/api/map', { fetchFn: f });
-  await A.request('/api/map?a=1', { fetchFn: f });
-  for (const m of ['POST', 'PUT', 'DELETE']) await A.request('/api/x', { method: m, fetchFn: f });
-  reset();
+  await A.request('/api/map', { fresh: true, fetchFn: f });
+  await A.request('/api/map?a=1', { fresh: true, fetchFn: f });
+  for (const m of ['POST', 'PUT', 'DELETE']) await A.request('/api/x', { method: m, fresh: true, fetchFn: f });
   assert.deepEqual(urls, [['/api/map', 'GET'], ['/api/map?fresh=1', 'GET'], ['/api/map?a=1&fresh=1', 'GET'],
     ['/api/x', 'POST'], ['/api/x', 'PUT'], ['/api/x', 'DELETE']]);
+});
+
+const withH = (h) => async () => ({ ...resp(200, {}), headers: { get: (n) => h[n.toLowerCase()] ?? null } });
+
+test('pageRequests records path and ms, dedupes, resets, skips fresh paths', async () => {
+  reset();
+  await A.request('/a', { fetchFn: withH({ 'x-computed-at': '1000', 'x-compute-ms': '1200' }) });
+  await A.request('/b?x=1', { fetchFn: withH({ 'x-computed-at': '1000' }) });
+  await A.request('/c', { fetchFn: withH({ 'x-computed-at': '1000', 'x-compute-ms': 'abc' }) });
+  await A.request('/d', { fetchFn: withH({ 'x-computed-at': '1000', 'x-compute-ms': '-5' }) });
+  await A.request('/nohdr', { fetchFn: withH({}) });
+  await A.request('/a', { fetchFn: withH({ 'x-computed-at': '1000', 'x-compute-ms': '300' }) });
+  await A.request('/e', { fresh: true, fetchFn: withH({ 'x-computed-at': '1000', 'x-compute-ms': '9' }) });
+  assert.deepEqual(A.pageRequests(), [{ path: '/a', ms: 300 }, { path: '/b?x=1', ms: null }, { path: '/c', ms: null }, { path: '/d', ms: null }]);
+  A.resetComputed();
+  assert.deepEqual(A.pageRequests(), []);
 });
 
 test('request without headers still works', async () => {
@@ -203,11 +217,11 @@ test('request without headers still works', async () => {
   assert.equal(A.computedAt(), null);
 });
 
-test('request default timeout is 90 s for GET and the message reflects it', async () => {
+test('request default timeout is 15 s for GET and the message reflects it', async () => {
   const real = globalThis.setTimeout, ms = [];
   globalThis.setTimeout = (fn, t, ...a) => { ms.push(t); return real(fn, t, ...a); };
   try {
     await A.request('/x', { fetchFn: async () => resp(200, {}) });
   } finally { globalThis.setTimeout = real; }
-  assert.ok(ms.includes(90000), String(ms));
+  assert.ok(ms.includes(15000), String(ms));
 });
