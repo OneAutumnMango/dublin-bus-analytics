@@ -30,6 +30,9 @@ create table if not exists ru_heat(route text, service_date text, wd int, hr int
   primary key(route, service_date, wd, hr, conf)) without rowid;
 create table if not exists ru_fc(route text, service_date text, conf int, horizon int, n int, sum_e int, abs_e int, hist blob,
   primary key(route, service_date, conf, horizon)) without rowid;
+-- Cached API responses; derived data, safe to delete.
+create table if not exists result_cache(
+  key text primary key, body blob not null, computed_at int not null, last_used int not null, ms int not null default 0);
 """
 
 SAMPLES_SCHEMA = """

@@ -74,6 +74,8 @@ class Settings:
     server_timeout_seconds: int = 45  # read timeout for calls to the server (connect stays 5 s)
     server_concurrency: int = 2  # routes fetched at once
     allowed_hosts: tuple[str, ...] = ()  # empty -> no Host check
+    result_cache: bool = True
+    result_cache_refresh_seconds: int = 3600
 
     @property
     def backup_path(self) -> Path:
@@ -102,4 +104,6 @@ class Settings:
             server_timeout_seconds=_pos_int("SERVER_TIMEOUT_SECONDS", 45),
             server_concurrency=_pos_int("SERVER_CONCURRENCY", 2),
             allowed_hosts=_hosts(),
+            result_cache=_bool("RESULT_CACHE", True),
+            result_cache_refresh_seconds=_pos_int("RESULT_CACHE_REFRESH_SECONDS", 3600),
         )

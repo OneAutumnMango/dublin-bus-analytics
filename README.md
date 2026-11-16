@@ -66,6 +66,8 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `BACKUP_DIR` | `<DATA_DIR>/backups` | Backup directory (a relative path is relative to the working directory) |
 | `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | One copy of each finished month (`samples-YYYY-MM.db.gz`), never overwritten or pruned; set to an empty string to turn the archive copy off. The nightly tar excludes finished `.gz` months, so a finished month lives only here, in `DATA_DIR` and in the one tar made before it was compacted; with the archive off, that tar rotates out after `BACKUP_KEEP` nights and the month exists only in `DATA_DIR` |
 | `ALLOWED_HOSTS` | unset | Comma list of accepted `Host` names (wildcards like `*.example.com` work). Unset or blank: any Host is accepted. When set, only those plus `localhost`, `127.0.0.1` and `[::1]` are accepted; anything else gets `400 Invalid host header`. A bad wildcard such as `a*.com` stops the app at startup |
+| `RESULT_CACHE` | `true` | Cache API responses in `meta.db` (derived data, safe to delete). `false` computes every request live |
+| `RESULT_CACHE_REFRESH_SECONDS` | `3600` | How often cached responses are recomputed (positive integer) |
 | `WEB_DIR` | `web/` next to `app/` | Directory of the static UI (read by `app/api/static.py`) |
 
 Invalid values stop the app at startup with a message naming the variable. See `analytics.env.example`.
