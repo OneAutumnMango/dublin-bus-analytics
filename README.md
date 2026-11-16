@@ -129,7 +129,7 @@ Or both services with compose (create `server.env` with `GTFSR_API_KEY` first, a
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
-The image serves the UI as well as the API (`WEB_DIR=/srv/web`) and has a healthcheck.
+The image serves the UI as well as the API (`WEB_DIR=/srv/web`) and has a healthcheck. This compose file passes `ANALYTICS_BACKUP_KEEP` (default 3) and `ANALYTICS_BACKUP_KEEP_WEEKLY` (default 4) through.
 
 ### Run the released image
 
@@ -147,7 +147,7 @@ The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this servi
 cd ../dublin-bus-server && docker compose --profile analytics up -d --build
 ```
 
-Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_KEEP_WEEKLY`, `ANALYTICS_BACKUP_DIR`, `ANALYTICS_ALLOWED_HOSTS`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
+Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR`, `ANALYTICS_ALLOWED_HOSTS`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
 
 ## Data and backups
 
@@ -155,14 +155,21 @@ Under `DATA_DIR`: `meta.db` (tracked routes, stops, trips, arrivals; kept foreve
 
 A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin) and writes `analytics-<UTC timestamp>.tar.gz` (gzip level 3) of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, then gzips closed samples months. Older plain `.tar` backups are still listed, downloadable and restorable (`tar -xf` handles both) and are pruned by the same retention. If no backup is under 24 h old at startup, one runs straight away.
 
-Retention keeps the newest `BACKUP_KEEP` (default 3) nightly backups plus, for each of the previous `BACKUP_KEEP_WEEKLY` (default 4, `0` turns it off) ISO weeks, the newest backup of that week. The current week does not use a weekly slot.
+Retention keeps the newest `BACKUP_KEEP` (default 3) nightly backups plus, the newest backup of each of the `BACKUP_KEEP_WEEKLY` (default 4, `0` turns it off) most recent ISO weeks (UTC) before the newest backup's week that contain at least one backup not already kept. Weeks with no backups do not use a slot, and the newest backup's own week never does.
+
+Upgrade note: the default `BACKUP_KEEP` is now 3 (it was 7), and both compose files in this repo set it explicitly to 3 (the example compose default is `${ANALYTICS_BACKUP_KEEP:-3}`). Updating the compose file therefore reduces nightly retention unless you set `ANALYTICS_BACKUP_KEEP` / `BACKUP_KEEP` yourself; the weekly backups (default 4) add older history.
 
 Finished months are archived once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned except by removing a day:
 
 - Samples: each finished `samples-YYYY-MM.db.gz` is copied there once and left out of the nightly tar. Closed samples months are immutable.
-- Arrivals and forecast: once a month has been finished for 2 days, its arrivals and forecast rows are written once to `meta-YYYY-MM.db.gz` in the same folder and left out of the nightly tar. The tar's `meta.db` then lacks those months and has a small `archived_months` table. The live database is not shrunk or changed by backups. A month is only left out of a tar when its archive exists, passes `integrity_check` and its row counts and highest id match; otherwise that month stays whole in the tar and a warning is logged. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`) nothing is left out.
+- Arrivals and forecast: once a month has been finished for 2 days, its arrivals and forecast rows are written once to `meta-YYYY-MM.db.gz` in the same folder and left out of the nightly tar. The tar's `meta.db` then lacks those months and has a small `archived_months` table. The live database is not shrunk or changed by backups. `integrity_check` and a SHA check run when an archive is written. Each night, before a month is left out of a tar, the whole archive file is read (gzip CRC) and must record that month, and its arrival and forecast counts and highest arrival id must equal the tar copy's; otherwise that month stays whole in the tar and a warning is logged. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`) nothing is left out.
 - The stored-results cache (`result_cache`) is emptied in backups (it is derived data).
-- Disk space: building one month's archive temporarily needs about 2x that month's size in the archive folder (temp database, gzip and a verification copy; about 1.6-1.8 GB for a 700 MB month).
+- Disk space and time:
+  - Building one month's archive temporarily needs about 2x that month's size in the archive folder (temp database, gzip and a verification copy; about 1.6-1.8 GB for a 700 MB month).
+  - Every night the backup stages a full copy of `meta.db` inside the backup folder, deletes archived months from the copy, empties the result cache and runs `VACUUM` on the copy (it runs whenever anything was removed, including the cache). Free space about the size of the live `meta.db` is needed in the backup folder while it runs.
+  - Every night each existing month archive is read in full (decompressed next to the archive file, in the archive folder, or in the system temp folder if that folder is read-only), so the nightly work and the temporary space (about one month) grow with the number of archived months.
+
+If a month never gets slimmed: when the live rows of an archived month no longer match its archive (manual SQL, a removal that stopped part way, an old whole tar restored over newer data), the nightly tar keeps that whole month and logs a warning every night. This is safe. Re-running the failed removal completes it; otherwise stop the app, delete that `meta-YYYY-MM.db.gz` from the archive folder (a new one is built from the live data at the next backup once the month is finished), and keep an off-host copy first.
 
 If archiving keeps failing (check the log), those months stay in the tars and rotate out with them, so keep your own copy of the archive folder.
 
@@ -178,9 +185,9 @@ Restore:
 1. Stop the app.
 2. Delete any stale `meta.db-wal`, `meta.db-shm`, `samples-*.db-wal` and `samples-*.db-shm` in `DATA_DIR` (a crash-leftover WAL would otherwise be replayed over the restored database).
 3. A local `samples-YYYY-MM.db.gz` takes precedence over an extracted plain `samples-YYYY-MM.db`: delete the `.gz` for every month you want restored from the backup.
-4. Check the tar contents with `tar -tf`, extract the latest tar with `tar -xf analytics-<stamp>.tar.gz -C "$DATA_DIR"` (or `.tar` for an older backup), copy the `.gz` files from the archive folder next to the databases, and put the archive folder back (its `meta-*.db.gz` files, next to or under `DATA_DIR`) before starting the app.
+4. Check the tar contents with `tar -tf`, extract the latest tar with `tar -xf analytics-<stamp>.tar.gz -C "$DATA_DIR"` (or `.tar` for an older backup), copy the `.gz` files from the archive folder next to the databases, and put the archive folder back (its `meta-*.db.gz` files; they are looked for only in the archive folder and at the top level of `DATA_DIR`) before starting the app.
 
-At startup the app imports every month listed in `archived_months` (archive folder first, then `DATA_DIR`), one transaction per month, verified against the archive's recorded counts. A missing or damaged archive file is logged at ERROR naming the month and file; that month stays absent, the marker is kept and the app still starts. Fix the file and restart to complete the restore. A long import on a Raspberry Pi can take minutes (the Docker health check start period is 15 minutes), and restoring needs about one month's decompressed size free in `DATA_DIR`.
+At startup the app imports every month listed in `archived_months` (archive folder first, then `DATA_DIR`), one transaction per month, verified against the archive's recorded counts. A missing or damaged archive file is logged at ERROR naming the month and file; that month stays absent, the marker is kept and the app still starts. Fix the file and restart to complete the restore. The restore runs before the app serves requests, and a long import on a Raspberry Pi can take minutes, so the Docker health check allows 15 minutes (`start_period: 15m`). Restoring needs about one month decompressed in `DATA_DIR`, plus the imported rows (`meta.db` grows by about a month, plus WAL), plus temp space next to the archive.
 
 One-way: an older app version restoring a slim backup would silently lack the archived months. Old backups restore fine in the new version.
 
