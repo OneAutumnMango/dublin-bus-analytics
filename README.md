@@ -62,7 +62,8 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `PORT` | `8081` | Parsed into settings only; the listen port is uvicorn's `--port` |
 | `BACKUP_ENABLED` | `true` | Nightly backup on/off (`true/false/1/0/yes/no`) |
 | `BACKUP_TIME` | `03:00` | `HH:MM`, Europe/Dublin local time |
-| `BACKUP_KEEP` | `7` | Backups to keep (positive integer) |
+| `BACKUP_KEEP` | `3` | Newest nightly backups to keep (positive integer) |
+| `BACKUP_KEEP_WEEKLY` | `4` | Also keep the newest backup of each of the previous N ISO weeks; `0` turns weekly retention off |
 | `BACKUP_DIR` | `<DATA_DIR>/backups` | Backup directory (a relative path is relative to the working directory) |
 | `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | One copy of each finished month (`samples-YYYY-MM.db.gz`), never overwritten or pruned; set to an empty string to turn the archive copy off. The nightly tar excludes finished `.gz` months, so a finished month lives only here, in `DATA_DIR` and in the one tar made before it was compacted; with the archive off, that tar rotates out after `BACKUP_KEEP` nights and the month exists only in `DATA_DIR` |
 | `ALLOWED_HOSTS` | unset | Comma list of accepted `Host` names (wildcards like `*.example.com` work). Unset or blank: any Host is accepted. When set, only those plus `localhost`, `127.0.0.1` and `[::1]` are accepted; anything else gets `400 Invalid host header`. A bad wildcard such as `a*.com` stops the app at startup |
@@ -152,7 +153,7 @@ Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYT
 
 Under `DATA_DIR`: `meta.db` (tracked routes, stops, trips, arrivals; kept forever), `samples-YYYY-MM.db` (raw prediction samples, one file per month, stored only when a prediction changes), and `backups/`. A month's file is gzipped (`.db.gz`, still readable) once it has been closed for 2 days.
 
-A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, keeps the newest `BACKUP_KEEP` (7), then gzips closed months. Every finished `samples-YYYY-MM.db.gz` is copied once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned, so old months are not in the tars. A finished month therefore lives only in the archive folder, in `DATA_DIR`, and in the one tar made before it was compacted. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`), or if archiving keeps failing (check the log for "archiving"), that tar rotates out after `BACKUP_KEEP` nights and the month then exists only in `DATA_DIR`: keep your own copy of the `.gz` files. If none is under 24 h old at startup, one runs straight away.
+A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, keeps the newest `BACKUP_KEEP` (3), then gzips closed months. Every finished `samples-YYYY-MM.db.gz` is copied once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned, so old months are not in the tars. A finished month therefore lives only in the archive folder, in `DATA_DIR`, and in the one tar made before it was compacted. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`), or if archiving keeps failing (check the log for "archiving"), that tar rotates out after `BACKUP_KEEP` nights and the month then exists only in `DATA_DIR`: keep your own copy of the `.gz` files. If none is under 24 h old at startup, one runs straight away.
 
 Manual: the Backup card on the Routes page, or
 

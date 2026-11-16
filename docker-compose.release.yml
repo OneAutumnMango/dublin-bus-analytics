@@ -16,7 +16,8 @@ services:
       POLL_SECONDS: "30"
       BACKUP_ENABLED: "true"
       BACKUP_TIME: "03:00"
-      BACKUP_KEEP: "7"
+      BACKUP_KEEP: "3"
+      BACKUP_KEEP_WEEKLY: "4"
       BACKUP_DIR: /data/backups
     volumes:
       - analytics-data:/data

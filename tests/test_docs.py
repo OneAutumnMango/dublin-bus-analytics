@@ -13,7 +13,7 @@ CONFIG_TXT = (ROOT / "app" / "core" / "config.py").read_text()
 STATIC_TXT = (ROOT / "app" / "api" / "static.py").read_text()
 
 # app-level names read by the code: config.py via os.environ, static.py for WEB_DIR
-APP_VARS = set(re.findall(r'(?:_pos_int|_bool|_hhmm|environ\.get)\(\s*"([A-Z_]+)"', CONFIG_TXT)) | {"WEB_DIR"}
+APP_VARS = set(re.findall(r'(?:_pos_int|_nonneg_int|_bool|_hhmm|environ\.get)\(\s*"([A-Z_]+)"', CONFIG_TXT)) | {"WEB_DIR"}
 
 
 def env_example():
@@ -30,7 +30,7 @@ def env_example():
 
 def test_app_vars_detected():
     assert {"SERVER_URL", "DATA_DIR", "POLL_SECONDS", "PORT", "BACKUP_ENABLED", "BACKUP_TIME",
-            "BACKUP_KEEP", "BACKUP_DIR", "BACKUP_ARCHIVE_DIR", "ALLOWED_HOSTS", "WEB_DIR", "SERVER_TIMEOUT_SECONDS", "SERVER_CONCURRENCY",
+            "BACKUP_KEEP", "BACKUP_KEEP_WEEKLY", "BACKUP_DIR", "BACKUP_ARCHIVE_DIR", "ALLOWED_HOSTS", "WEB_DIR", "SERVER_TIMEOUT_SECONDS", "SERVER_CONCURRENCY",
             "RESULT_CACHE", "RESULT_CACHE_REFRESH_SECONDS"} == APP_VARS
     assert "WEB_DIR" in STATIC_TXT
 
@@ -53,7 +53,8 @@ def test_env_example_app_level_names_parse_into_settings(monkeypatch):
 def test_env_example_compose_names_used_and_valid(monkeypatch):
     active, _ = env_example()
     assert set(active) == {"ANALYTICS_PORT", "ANALYTICS_POLL_SECONDS", "ANALYTICS_BACKUP_ENABLED",
-                           "ANALYTICS_BACKUP_TIME", "ANALYTICS_BACKUP_KEEP", "ANALYTICS_BACKUP_DIR"}
+                           "ANALYTICS_BACKUP_TIME", "ANALYTICS_BACKUP_KEEP", "ANALYTICS_BACKUP_KEEP_WEEKLY",
+                           "ANALYTICS_BACKUP_DIR"}
     for k in active:
         assert f"${{{k}:-{active[k]}}}" in COMPOSE_TXT
     # the values, mapped to the app names compose uses, must pass the app's validation
@@ -61,7 +62,7 @@ def test_env_example_compose_names_used_and_valid(monkeypatch):
         if k != "ANALYTICS_PORT":
             monkeypatch.setenv(k.removeprefix("ANALYTICS_"), v)
     s = Settings.from_env()
-    assert s.poll_seconds == 30 and s.backup_keep == 7 and s.backup_time == "03:00"
+    assert s.poll_seconds == 30 and s.backup_keep == 3 and s.backup_keep_weekly == 4 and s.backup_time == "03:00"
 
 
 def services():

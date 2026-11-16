@@ -4,6 +4,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _nonneg_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer >= 0, got {raw!r}") from None
+    if v < 0:
+        raise ValueError(f"{name} must be an integer >= 0, got {raw!r}")
+    return v
+
+
 def _pos_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -67,7 +80,8 @@ class Settings:
     port: int = 8081
     backup_enabled: bool = True
     backup_time: str = "03:00"  # HH:MM Europe/Dublin local time
-    backup_keep: int = 7
+    backup_keep: int = 3
+    backup_keep_weekly: int = 4
     backup_dir: Path | None = None  # None -> <data_dir>/backups; a relative path is kept as given (cwd-relative)
     backup_archive_dir: Path | None = None  # None -> <backup_path>/archive
     backup_archive_enabled: bool = True
@@ -97,7 +111,8 @@ class Settings:
             port=_pos_int("PORT", 8081),
             backup_enabled=_bool("BACKUP_ENABLED", True),
             backup_time=_hhmm("BACKUP_TIME", "03:00"),
-            backup_keep=_pos_int("BACKUP_KEEP", 7),
+            backup_keep=_pos_int("BACKUP_KEEP", 3),
+            backup_keep_weekly=_nonneg_int("BACKUP_KEEP_WEEKLY", 4),
             backup_dir=_backup_dir(),
             backup_archive_dir=archive_dir,
             backup_archive_enabled=archive_on,

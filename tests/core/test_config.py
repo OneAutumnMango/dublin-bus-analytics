@@ -42,7 +42,7 @@ def test_invalid_int_raises(clean_env, name, bad):
         Settings.from_env()
 
 
-BENV = ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR", "BACKUP_ARCHIVE_DIR")
+BENV = ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_KEEP_WEEKLY", "BACKUP_DIR", "BACKUP_ARCHIVE_DIR")
 
 
 @pytest.fixture
@@ -54,8 +54,26 @@ def benv(clean_env):
 
 def test_backup_defaults(benv):
     s = Settings.from_env()
-    assert (s.backup_enabled, s.backup_time, s.backup_keep, s.backup_dir) == (True, "03:00", 7, None)
+    assert (s.backup_enabled, s.backup_time, s.backup_keep, s.backup_dir) == (True, "03:00", 3, None)
     assert s.backup_path == Path("/data/backups")
+
+
+def test_backup_keep_defaults(benv):
+    s = Settings("http://x", Path("/x"))
+    assert (s.backup_keep, s.backup_keep_weekly) == (3, 4)
+
+
+def test_backup_keep_weekly_env(benv):
+    for raw, exp in (("0", 0), ("2", 2)):
+        benv.setenv("BACKUP_KEEP_WEEKLY", raw)
+        assert Settings.from_env().backup_keep_weekly == exp
+    for bad in ("-1", "abc"):
+        benv.setenv("BACKUP_KEEP_WEEKLY", bad)
+        with pytest.raises(ValueError, match="BACKUP_KEEP_WEEKLY"):
+            Settings.from_env()
+    benv.delenv("BACKUP_KEEP_WEEKLY")
+    benv.setenv("BACKUP_KEEP", "7")
+    assert Settings.from_env().backup_keep == 7
 
 
 def test_env_roundtrip_all_backup_vars(benv):
