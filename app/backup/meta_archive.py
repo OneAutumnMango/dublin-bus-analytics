@@ -35,7 +35,11 @@ def finished_months(meta_db: Path, now: int) -> list[str]:
 
 def archive_info(gz: Path) -> dict | None:
     try:
-        with tempfile.TemporaryDirectory(prefix="meta-info-", dir=Path(gz).parent) as t:
+        try:  # next to the archive (same volume as the data), else the system temp (read-only archive dir)
+            tmpdir = tempfile.TemporaryDirectory(prefix="meta-info-", dir=Path(gz).parent)
+        except OSError:
+            tmpdir = tempfile.TemporaryDirectory(prefix="meta-info-")
+        with tmpdir as t:
             db = Path(t) / "i.db"
             with gzip.open(gz, "rb") as src, open(db, "wb") as out:
                 shutil.copyfileobj(src, out)

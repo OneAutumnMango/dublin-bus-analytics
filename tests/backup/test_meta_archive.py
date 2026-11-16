@@ -973,3 +973,29 @@ def test_snapshot_cleans_stale_leftovers_in_archive_dir(dirs):
     backup.snapshot(d, d / "bk", archive_dir=a, now=ts(2026, 11, 1))
     assert not any((a / n).exists() for n in stale)
     assert all((a / n).exists() for n in fresh + ["keep-me.txt"])
+
+
+def test_read_only_archive_dir_still_readable(dirs, tmp_path, monkeypatch):
+    import os
+    import tempfile
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-11"])
+    archive_meta_months(d, a, NOW)
+    fresh = restored(tmp_path, d, a)
+    sys_tmp = tmp_path / "systmp"
+    sys_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(sys_tmp))
+    a.chmod(0o555)
+    try:
+        if os.access(a, os.W_OK):
+            pytest.skip("chmod ineffective (root)")
+        info = archive_info(a / "meta-2026-09.db.gz")
+        assert info and info["month"] == "2026-09" and info["arrivals"] == 3
+        copy = staged(d, tmp_path)
+        assert meta_archive.slim_meta_copy(copy, a, NOW) == ["2026-08", "2026-09"]
+        assert meta_archive.restore_archived_months(fresh, a) == ["2026-08", "2026-09"]
+        assert archive_info(a / "meta-2026-09.db.gz") is not None
+    finally:
+        a.chmod(0o755)
+    assert sorted(p.name for p in a.iterdir()) == ["meta-2026-08.db.gz", "meta-2026-09.db.gz"]
+    assert list(sys_tmp.iterdir()) == []
