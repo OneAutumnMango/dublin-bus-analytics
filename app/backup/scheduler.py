@@ -66,7 +66,7 @@ class BackupScheduler:
         s = self.settings
         try:
             path = await asyncio.to_thread(self.snapshot_fn, s.data_dir, s.backup_path, s.backup_keep,
-                                           archive_dir=s.archive_path)
+                                           archive_dir=s.archive_path, keep_weekly=s.backup_keep_weekly)
         except Exception:
             log.exception("backup snapshot failed; compaction skipped")
             return None

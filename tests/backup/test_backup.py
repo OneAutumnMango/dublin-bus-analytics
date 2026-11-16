@@ -1124,3 +1124,36 @@ def test_download_gz_media_type(client, data):
     assert client.get("/api/backup/download", params={"file": gz}).headers["content-type"] == "application/gzip"
     r = client.get("/api/backup/download", params={"file": "analytics-20200101T000000Z.tar"})
     assert r.headers["content-type"] == "application/x-tar"
+
+
+def _old_names(bk, names):
+    bk.mkdir(exist_ok=True)
+    for n in names:
+        (bk / n).write_bytes(b"x")
+
+
+def test_snapshot_never_deletes_new_file_and_ignores_future_dated(data, tmp_path):
+    bk = tmp_path / "bk"
+    _old_names(bk, ["analytics-20990101T000000Z.tar", "analytics-20200101T000000Z.tar"])
+    p = snapshot(data, bk, keep=1)
+    assert p.exists() and (bk / "analytics-20990101T000000Z.tar").exists()
+    assert not (bk / "analytics-20200101T000000Z.tar").exists()
+
+
+def test_snapshot_prunes_with_weekly(data, tmp_path):
+    bk = tmp_path / "bk"
+    # Mondays 2020-01-06, -13, -20 plus a Wednesday in the last week: three old ISO weeks
+    _old_names(bk, [f"analytics-202001{d:02d}T000000Z.tar" for d in (6, 8, 13, 20)])
+    p = snapshot(data, bk, keep=2, keep_weekly=1)
+    # newest 2 = final + 01-20; weekly=1 adds the newest of the next week with an unkept item (01-13)
+    assert [q.name for q in list_backups(bk)] == [
+        "analytics-20200113T000000Z.tar", "analytics-20200120T000000Z.tar", p.name]
+
+
+def test_snapshot_prunes_mixed_tar_and_tar_gz_population(data, tmp_path):
+    bk = tmp_path / "bk"
+    _old_names(bk, ["analytics-20200101T000000Z.tar", "analytics-20200102T000000Z.tar.gz",
+                    "analytics-20200103T000000Z.tar", "analytics-20200104T000000Z.tar.gz"])
+    p = snapshot(data, bk, keep=3)
+    assert [q.name for q in list_backups(bk)] == [
+        "analytics-20200103T000000Z.tar", "analytics-20200104T000000Z.tar.gz", p.name]

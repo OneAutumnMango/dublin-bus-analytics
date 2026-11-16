@@ -160,7 +160,7 @@ class Spy:
     def __init__(self, fail_snapshot=False, fail_compact=False, skip=()):
         self.calls, self.fail_snapshot, self.fail_compact, self.skip = [], fail_snapshot, fail_compact, skip
 
-    def snap(self, data_dir, backup_dir, keep, archive_dir=None):
+    def snap(self, data_dir, backup_dir, keep, archive_dir=None, keep_weekly=0):
         self.archive_dir = archive_dir
         self.calls.append(("snapshot", data_dir, backup_dir, keep))
         if self.fail_snapshot:
@@ -388,7 +388,7 @@ def mk_data(data_dir, month=(2020, 1)):
 
 async def test_retention_uses_backup_keep_and_backup_dir(tmp_path):
     mk_data(tmp_path / "data")
-    sc = BackupScheduler(S(tmp_path, backup_keep=3))
+    sc = BackupScheduler(S(tmp_path, backup_keep=3, backup_keep_weekly=0))
     paths = [await sc.run_once() for _ in range(6)]
     assert all(p is not None and p.parent == tmp_path / "bk" for p in paths)
     kept = backup.list_backups(tmp_path / "bk")

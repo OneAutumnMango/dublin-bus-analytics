@@ -21,6 +21,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.backup.retention import choose_keep
+
 log = logging.getLogger(__name__)
 _lock = threading.Lock()  # serialises snapshot vs compaction
 _MONTH = re.compile(r"^samples-(\d{4})-(\d{2})\.db$")
@@ -127,9 +129,12 @@ def _reserve(tmp_tar: Path, backup_dir: Path, stamp: str) -> Path:
 
 
 def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
-             archive_dir: Path | None = None) -> Path:
+             archive_dir: Path | None = None, keep_weekly: int = 0, now: float | None = None) -> Path:
     if keep < 1:
         raise ValueError("keep must be >= 1")
+    if keep_weekly < 0:
+        raise ValueError("keep_weekly must be >= 0")
+    now = time.time() if now is None else now
     data_dir = Path(data_dir)
     backup_dir = Path(backup_dir) if backup_dir is not None else data_dir / "backups"
     with _lock:
@@ -154,11 +159,13 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
                 os.close(fd)
             final = _reserve(tmp_tar, backup_dir, stamp)
         _fsync_dir(backup_dir)
-        # never delete the tar just made (clock behind) nor future-dated files (they would crowd out real ones)
-        now = time.time()
-        others = [p for p in list_backups(backup_dir) if p != final and not _is_future(p, now)]
-        for old in others[:max(0, len(others) - (keep - 1))]:
-            old.unlink()
+        # future-dated files are neither counted nor deleted; the tar just made is never deleted (clock behind)
+        listed = [p for p in list_backups(backup_dir) if p != final and not _is_future(p, now)]
+        items = sorted([(p, _stamp(p)) for p in listed] + [(final, _stamp(final))], key=lambda x: (x[1], x[0].name))
+        chosen = choose_keep(items, keep, keep_weekly) | {final}
+        for old in listed:
+            if old not in chosen:
+                old.unlink()
         if archive_dir is not None:
             try:  # the archive copy must never fail the snapshot
                 archive_dir = Path(archive_dir)
