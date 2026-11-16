@@ -442,7 +442,7 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 /* refresh control pinned to the bottom of the sidebar (flex column: it also sits at the bottom when the list is short) */
 .sidebar { display: flex; flex-direction: column; }
 #sidebar-main { flex: 1 0 auto; }
-.sidebar-foot { position: sticky; bottom: 0; margin: var(--s4) calc(-1 * var(--s3)) calc(-1 * var(--s4)); padding: var(--s3); border-top: 1px solid var(--border); background: var(--surface);
+.sidebar-foot { position: sticky; bottom: calc(-1 * var(--s4)); margin: var(--s4) calc(-1 * var(--s3)) calc(-1 * var(--s4)); padding: var(--s3); border-top: 1px solid var(--border); background: var(--surface);
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--fs-sm); }
 .sidebar-foot[hidden] { display: none; }
 .sidebar-foot .btn { min-height: 32px; font-size: var(--fs-sm); padding: 0 var(--s3); }
