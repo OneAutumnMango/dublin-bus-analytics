@@ -155,7 +155,7 @@ Under `DATA_DIR`: `meta.db` (tracked routes, stops, trips, arrivals; kept foreve
 
 A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin) and writes `analytics-<UTC timestamp>.tar.gz` (gzip level 3) of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, then gzips closed samples months. Older plain `.tar` backups are still listed, downloadable and restorable (`tar -xf` handles both) and are pruned by the same retention. If no backup is under 24 h old at startup, one runs straight away.
 
-Retention keeps the newest `BACKUP_KEEP` (default 3) nightly backups plus, the newest backup of each of the `BACKUP_KEEP_WEEKLY` (default 4, `0` turns it off) most recent ISO weeks (UTC) before the newest backup's week that contain at least one backup not already kept. Weeks with no backups do not use a slot, and the newest backup's own week never does.
+Retention keeps the newest `BACKUP_KEEP` (default 3) nightly backups, plus the newest backup of each of the `BACKUP_KEEP_WEEKLY` (default 4, `0` turns it off) most recent ISO weeks (UTC) before the newest backup's week that contain at least one backup not already kept. Weeks with no backups do not use a slot, and the newest backup's own week never does.
 
 Upgrade note: the default `BACKUP_KEEP` is now 3 (it was 7), and both compose files in this repo set it explicitly to 3 (the example compose default is `${ANALYTICS_BACKUP_KEEP:-3}`). Updating the compose file therefore reduces nightly retention unless you set `ANALYTICS_BACKUP_KEEP` / `BACKUP_KEEP` yourself; the weekly backups (default 4) add older history.
 
@@ -171,7 +171,7 @@ Finished months are archived once into the archive folder (`BACKUP_ARCHIVE_DIR`,
 
 If a month never gets slimmed: when the live rows of an archived month no longer match its archive (manual SQL, a removal that stopped part way, an old whole tar restored over newer data), the nightly tar keeps that whole month and logs a warning every night. This is safe. Re-running the failed removal completes it; otherwise stop the app, delete that `meta-YYYY-MM.db.gz` from the archive folder (a new one is built from the live data at the next backup once the month is finished), and keep an off-host copy first.
 
-If archiving keeps failing (check the log), those months stay in the tars and rotate out with them, so keep your own copy of the archive folder.
+If archiving keeps failing (check the log for "archiving"): arrivals and forecast months simply stay whole in the nightly tars; but a finished samples month is already left out of the tars, so it then exists only in `DATA_DIR` and in the one tar made before it was gzipped, which rotates out after a few nights. Keep your own copy of the finished `samples-YYYY-MM.db.gz` files and of the archive folder.
 
 Manual: the Backup card on the Routes page, or
 
