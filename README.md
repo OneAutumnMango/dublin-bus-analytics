@@ -27,6 +27,15 @@ This writes 14 days of synthetic data for routes 15 and 46A into `./data/demo` a
 SERVER_URL=http://127.0.0.1:8765 DATA_DIR=./data/demo uvicorn app.main:app --reload --port 8081
 ```
 
+Browser tests (Chromium via Playwright, seeded demo data and a fake bus server, no internet needed; the map basemap is blocked on purpose):
+
+```bash
+python -m playwright install chromium   # once
+python -m pytest -m e2e --no-cov
+```
+
+They are left out of the default `pytest` run. Each page must load without console errors, page errors or failed requests, and there is one filter-change test.
+
 Open http://127.0.0.1:8081. The pages (hash routes):
 
 - **Sidebar** (on every page): **Find a route** (searches as you type, exact matches first; Enter on an exact route number starts tracking it) above the list of tracked routes. Click a tracked route to open its analytics; **Untrack** stops polling (stored data is kept).
