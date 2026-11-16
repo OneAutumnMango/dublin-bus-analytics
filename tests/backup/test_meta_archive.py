@@ -827,3 +827,20 @@ def test_restore_removes_temp_file_when_import_fails(dirs, tmp_path):
     _tamper_info(a / "meta-2026-08.db.gz", tmp_path, "update info set arrivals = 0")
     assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
     assert not list(fresh.glob("restore-*"))
+
+
+def test_restore_stale_cleanup_touches_only_own_temp_files(dirs, tmp_path):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    notes, points, pfile = fresh / "restore-notes.txt", fresh / "restore-points", fresh / "restore-points" / "f"
+    dbdir = fresh / "restore-dir.db"
+    own = [fresh / "restore-abc.db", fresh / "restore-abc.db-wal"]
+    points.mkdir()
+    dbdir.mkdir()
+    for p in (notes, pfile, *own):
+        p.write_bytes(b"x")
+    for p in (notes, pfile, points, dbdir, *own):
+        os.utime(p, (1, 1))
+    (fresh / "restore-new.db").write_bytes(b"x")
+    meta_archive.restore_archived_months(fresh, a)
+    assert not any(p.exists() for p in own)
+    assert notes.exists() and pfile.exists() and dbdir.is_dir() and (fresh / "restore-new.db").exists()

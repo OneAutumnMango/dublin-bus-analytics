@@ -7,11 +7,12 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 # backup.py imports this module lazily (inside snapshot), so this top-level import is not circular
-from app.backup.backup import COMPACT_GRACE_S, _clean_stale, _fsync_dir, _integrity, _ro_uri, _sha, _verify_gz
+from app.backup.backup import COMPACT_GRACE_S, STALE_S, _fsync_dir, _integrity, _ro_uri, _sha, _verify_gz
 
 log = logging.getLogger(__name__)
 
@@ -209,7 +210,13 @@ def restore_archived_months(data_dir: Path, archive_dir: Path | None) -> list[st
     meta = data_dir / "meta.db"
     if not meta.exists():
         return done
-    _clean_stale(data_dir, ("restore-*",))  # crashed earlier runs; fresh files may belong to another process
+    for sfx in ("", "-wal", "-shm", "-journal"):  # crashed earlier runs; fresh files may belong to another process
+        for p in data_dir.glob(f"restore-*.db{sfx}"):
+            try:
+                if p.is_file() and p.stat().st_mtime < time.time() - STALE_S:
+                    p.unlink()
+            except OSError:
+                log.warning("could not remove stale temp file %s", p)
     c = sqlite3.connect(meta, isolation_level=None)
     try:
         c.execute("pragma busy_timeout=60000")
