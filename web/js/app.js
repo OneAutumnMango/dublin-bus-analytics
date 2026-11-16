@@ -44,6 +44,7 @@ async function show() {
   const { signal } = ctl;
   recompute?.reset(); // drop waiting recompute fetches; the server still stores their results
   resetComputed();
+  recompute?.sync(); // idle with no requests yet: hide until this render finishes
   const r = parseHash(globalThis.location.hash);
   markNav(r.name);
   const main = globalThis.document.getElementById('main');

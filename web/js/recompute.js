@@ -16,7 +16,10 @@ export function progressFraction(elapsedMs, estimate) {
 export function createRecomputer({ paths, run, now, onState }) {
   let st = { phase: 'idle', progress: null, elapsedMs: 0, failed: 0 };
   let ctl = null, t0 = 0, est = null, gen = 0;
-  const set = (s) => { st = s; onState?.(st); };
+  const set = (s) => {
+    st = s;
+    try { onState?.(st); } catch (e) { console.error(e); } // a throwing listener must not stop the runs or later states
+  };
 
   function start() {
     if (st.phase !== 'idle' && st.phase !== 'failed') return;
@@ -51,3 +54,6 @@ export function createRecomputer({ paths, run, now, onState }) {
   }
   return { start, cancel, reset, tick, state: () => st };
 }
+
+// true when the footer must be rebuilt: phase changed, or the ring flipped between determinate and indeterminate
+export const needsRebuild = (prev, next) => !prev || prev.phase !== next.phase || (prev.progress === null) !== (next.progress === null);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRecomputer, estimateMs, progressFraction } from '../js/recompute.js';
+import { createRecomputer, estimateMs, needsRebuild, progressFraction } from '../js/recompute.js';
 
 test('estimateMs sums, null on any null or empty', () => {
   assert.equal(estimateMs([{ path: 'a', ms: 100 }, { path: 'b', ms: 250 }]), 350);
@@ -28,7 +28,7 @@ function setup(paths = [{ path: '/a', ms: 1000 }, { path: '/b', ms: 1000 }], fai
   });
   const r = createRecomputer({ paths: () => paths, run, now: () => t, onState: (s) => states.push(s) });
   const settle = async () => { for (const x of pend.splice(0)) (failing.has(x.p) ? x.rej : x.res)(); await new Promise((r2) => setTimeout(r2, 0)); };
-  return { r, calls, states, settle, at: (v) => { t = v; } };
+  return { r, calls, states, pend, settle, at: (v) => { t = v; } };
 }
 
 test('idle -> running -> done with progress 1; start while running ignored; tick after done is inert', async () => {
@@ -65,4 +65,54 @@ test('cancel aborts, returns to idle without failed; empty paths stay idle', asy
   const e = setup([]);
   e.r.start();
   assert.equal(e.r.state().phase, 'idle'); assert.equal(e.calls.length, 0);
+});
+
+test('needsRebuild: only on phase or determinacy change', () => {
+  const r = (phase, progress) => ({ phase, progress });
+  assert.equal(needsRebuild(null, r('idle', null)), true);
+  assert.equal(needsRebuild(r('running', 0.1), r('running', 0.2)), false);
+  assert.equal(needsRebuild(r('running', null), r('running', null)), false);
+  assert.equal(needsRebuild(r('running', null), r('running', 0.2)), true);
+  assert.equal(needsRebuild(r('running', 0.2), r('done', 1)), true);
+});
+
+test('a throwing onState does not stop the recompute', async () => {
+  const orig = console.error; console.error = () => {};
+  try {
+    let calls = 0;
+    const r = createRecomputer({ paths: () => [{ path: '/a', ms: 1 }], run: async () => { calls++; }, now: () => 0, onState: () => { throw new Error('boom'); } });
+    r.start();
+    await new Promise((x) => setTimeout(x, 0));
+    assert.equal(calls, 1);
+    assert.equal(r.state().phase, 'done');
+  } finally { console.error = orig; }
+});
+
+test('old runs settling after cancel+start do not touch the new run', async () => {
+  const { r, calls, settle } = setup(undefined, new Set(['/a']));
+  r.start();
+  const old = calls.length;
+  r.cancel();
+  r.start();
+  await new Promise((x) => setTimeout(x, 0)); // the aborted old runs reject now
+  assert.equal(r.state().phase, 'running');
+  await settle(); // settles old (aborted, rejected) and new runs; /a fails in the new run only
+  assert.equal(calls.length, old * 2);
+  assert.equal(r.state().phase, 'failed');
+  assert.equal(r.state().failed, 1); // not 2: the aborted old /a is ignored
+});
+
+test('cancel after a failure returns to idle; reset from done and failed returns to idle', async () => {
+  const a = setup([{ path: '/a', ms: 1 }, { path: '/b', ms: 1 }], new Set(['/a']));
+  a.r.start();
+  a.pend[0].rej(); // /a already failed, /b still in flight
+  await new Promise((x) => setTimeout(x, 0));
+  a.r.cancel();
+  await a.settle();
+  assert.equal(a.r.state().phase, 'idle');
+  assert.ok(!a.states.some((s) => s.phase === 'failed'));
+  const d = setup(); d.r.start(); await d.settle(); d.r.reset();
+  assert.equal(d.r.state().phase, 'idle');
+  const f = setup(undefined, new Set(['/a'])); f.r.start(); await f.settle(); assert.equal(f.r.state().phase, 'failed'); f.r.reset();
+  assert.equal(f.r.state().phase, 'idle');
 });

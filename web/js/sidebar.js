@@ -3,7 +3,7 @@
 import { api, isAbort } from './api.js';
 import { emptyState, errorBox, h, link, setStatus } from './dom.js';
 import { buildHash, makeLatest, parseHash } from './lib.js';
-import { createRecomputer } from './recompute.js';
+import { createRecomputer, needsRebuild } from './recompute.js';
 
 const MAX_RESULTS = 50;
 const DEBOUNCE_MS = 200;
@@ -170,17 +170,29 @@ function ring(progress) {
 
 export function mountRecompute(root, { paths, run, reload }) {
   const doc = globalThis.document;
-  let timer = null, prev = 'idle', box = null;
+  let timer = null, prev = null, box = null, svg = null, arc = null, secs = null;
   const rc = createRecomputer({ paths, run, now: () => Date.now(), onState: draw });
   const hadFocus = () => !!root.contains?.(doc.activeElement) && doc.activeElement !== doc.body;
   const stopTimer = () => { clearInterval(timer); timer = null; };
 
   function draw(s) {
+    if (s.phase === 'running' && !needsRebuild(prev, s)) { // tick: update in place so the spin animation and focus are not disturbed
+      prev = s;
+      secs.textContent = `${Math.round(s.elapsedMs / 1000)} s`;
+      if (s.progress !== null) {
+        svg.setAttribute('aria-valuenow', Math.round(s.progress * 100));
+        arc.setAttribute('stroke-dashoffset', (CIRC * (1 - s.progress)).toFixed(2));
+      }
+      return;
+    }
     const focused = hadFocus();
     let kids;
     if (s.phase === 'running') {
       if (!timer) timer = setInterval(() => rc.tick(), 250);
-      box = h('div', { class: 'recompute-run', tabindex: '-1' }, ring(s.progress), h('span', {}, 'Recomputing… ', h('span', { class: 'muted' }, `${Math.round(s.elapsedMs / 1000)} s`)));
+      svg = ring(s.progress);
+      arc = svg.children[1];
+      secs = h('span', { class: 'muted' }, `${Math.round(s.elapsedMs / 1000)} s`);
+      box = h('div', { class: 'recompute-run', tabindex: '-1' }, svg, h('span', {}, 'Recomputing… ', secs));
       kids = box;
     } else {
       stopTimer();
@@ -188,22 +200,26 @@ export function mountRecompute(root, { paths, run, reload }) {
       if (s.phase === 'done') {
         kids = h('button', { type: 'button', class: 'btn', on: { click: () => { reload(); rc.reset(); } } }, 'Load new data');
       } else if (s.phase === 'failed') {
-        kids = [h('span', { class: 'recompute-msg', role: 'alert' }, 'Recompute failed'), h('button', { type: 'button', class: 'btn btn-quiet', on: { click: () => rc.start() } }, 'Try again')];
+        kids = [h('span', { class: 'recompute-msg' }, 'Recompute failed'), h('button', { type: 'button', class: 'btn btn-quiet', on: { click: () => rc.start() } }, 'Try again')];
       } else {
         kids = h('button', { type: 'button', class: 'btn btn-quiet', on: { click: () => rc.start() } }, 'Refresh data');
       }
     }
     root.replaceChildren(...[kids].flat());
     if (focused) (box || root.querySelector?.('button'))?.focus?.(); // the clicked control was rebuilt: keep focus in the footer
-    if (s.phase !== prev) {
+    if (s.phase !== prev?.phase) {
       if (s.phase === 'done') setStatus('New data is ready, choose Load new data');
       else if (s.phase === 'failed') setStatus('Recompute failed');
     }
-    prev = s.phase;
+    prev = s;
   }
   draw(rc.state());
   return {
     reset: () => rc.reset(),
-    sync: () => { root.hidden = rc.state().phase === 'idle' && paths().length === 0; },
+    sync: () => {
+      const hide = rc.state().phase === 'idle' && paths().length === 0;
+      if (hide && !root.hidden && hadFocus()) doc.getElementById('main')?.focus?.(); // never drop focus to <body>
+      root.hidden = hide;
+    },
   };
 }
