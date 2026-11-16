@@ -17,6 +17,7 @@ from app.backup.scheduler import BackupScheduler
 from app.collect.serverclient import ServerClient
 from app.api.static import static_app
 from app.cache_http import install as install_result_cache
+from app.cache_warm import CacheWarmer
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     async def lifespan(app: FastAPI):
         tasks = ([asyncio.create_task(app.state.poller.run()),
                   asyncio.create_task(app.state.scheduler.run())] if start_background else [])
+        if app.state.warmer is not None:
+            tasks.append(asyncio.create_task(app.state.warmer.run()))
         try:
             yield
         finally:
@@ -64,6 +67,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.include_router(export_router)
     app.include_router(maintenance_router)
     install_result_cache(app)
+    app.state.warmer = CacheWarmer(app) if (start_background and settings.result_cache) else None
     # added last = outermost: the Host check must run before the result cache can serve anything
     if settings.allowed_hosts:  # loopback stays allowed so the Docker healthcheck works
         app.add_middleware(TrustedHostMiddleware,
