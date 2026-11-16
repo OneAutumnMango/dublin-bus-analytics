@@ -107,3 +107,52 @@ def archive_meta_months(data_dir: Path, archive_dir: Path, now: int) -> list[Pat
         except Exception:
             log.exception("archiving meta month %s failed", mo)
     return written
+
+
+_MONTH_ARR = "select id from arrivals where substr(service_date, 1, 7) = ?"
+
+
+def _slim_month(c: sqlite3.Connection, mo: str, info: dict) -> None:
+    c.execute(f"delete from forecast where arrival_id in ({_MONTH_ARR})", (mo,))
+    c.execute("delete from arrivals where substr(service_date, 1, 7) = ?", (mo,))
+    c.execute("insert into archived_months values(?, ?, ?)", (mo, info["arrivals"], info["forecast"]))
+
+
+def slim_meta_copy(copy: Path, archive_dir: Path | None, now: int) -> list[str]:
+    """Remove verified-archived finished months from the staged COPY (never the live db); returns them."""
+    copy, removed = Path(copy), []
+    months = finished_months(copy, now) if archive_dir is not None else []
+    with contextlib.closing(sqlite3.connect(copy, isolation_level=None)) as c:
+        cache_rows = 0
+        if c.execute("select 1 from sqlite_master where type='table' and name='result_cache'").fetchone():
+            cache_rows = c.execute("delete from result_cache").rowcount
+        for mo in months:
+            gz = Path(archive_dir) / f"meta-{mo}.db.gz"
+            if not gz.exists():
+                log.warning("meta month %s kept in backup: no archive file", mo)
+                continue
+            info = archive_info(gz)
+            if info is None:
+                log.warning("meta month %s kept in backup: archive unreadable", mo)
+                continue
+            n_arr, max_id = c.execute("select count(*), coalesce(max(id), 0) from arrivals where substr(service_date, 1, 7) = ?", (mo,)).fetchone()
+            n_fc = c.execute(f"select count(*) from forecast where arrival_id in ({_MONTH_ARR})", (mo,)).fetchone()[0]
+            if (info["arrivals"], info["forecast"]) != (n_arr, n_fc):
+                log.warning("meta month %s kept in backup: count mismatch (archive %s/%s, copy %s/%s)",
+                            mo, info["arrivals"], info["forecast"], n_arr, n_fc)
+                continue
+            if info["max_id"] != max_id:
+                log.warning("meta month %s kept in backup: max_id mismatch (archive %s, copy %s)", mo, info["max_id"], max_id)
+                continue
+            c.execute("create table if not exists archived_months(month TEXT PRIMARY KEY, arrivals INT, forecast INT)")
+            c.execute("begin")
+            try:
+                _slim_month(c, mo, info)
+                c.execute("commit")
+            except BaseException:
+                c.execute("rollback")
+                raise
+            removed.append(mo)
+        if removed or cache_rows:
+            c.execute("vacuum")
+    return removed

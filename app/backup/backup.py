@@ -140,6 +140,15 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
     with _lock:
         backup_dir.mkdir(parents=True, exist_ok=True)
         _clean_stale(backup_dir, (".snap-*",))
+        if archive_dir is not None:
+            try:  # archive first so the tar made the night a month finishes is already slim
+                archive_dir = Path(archive_dir)
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                _clean_stale(archive_dir, ("meta-*.db.tmp", "meta-*.db.gz.tmp", "verify-*.db"))
+                from app.backup import meta_archive  # lazy: meta_archive imports this module
+                meta_archive.archive_meta_months(data_dir, archive_dir, int(now))
+            except Exception:
+                log.exception("archiving finished meta months to %s failed", archive_dir)
         # only top-level db files are collected, so a backup_dir inside data_dir is never included
         files = [p for p in sorted(data_dir.iterdir())
                  if p.is_file() and (p.name == "meta.db" or re.fullmatch(r"samples-.*\.db", p.name))]
@@ -150,6 +159,15 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
                 for p in files:
                     copy = Path(stage) / p.name
                     _copy_db(p, copy)
+                    if p.name == "meta.db":
+                        try:
+                            from app.backup import meta_archive
+                            meta_archive.slim_meta_copy(copy, archive_dir, int(now))
+                        except Exception:  # data safety beats size: ship the full copy
+                            log.exception("slimming meta.db copy failed; tar gets the full meta.db")
+                            for sfx in ("", "-journal", "-wal", "-shm"):
+                                Path(str(copy) + sfx).unlink(missing_ok=True)
+                            _copy_db(p, copy)
                     tar.add(copy, arcname=p.name)
                     copy.unlink()
             fd = os.open(tmp_tar, os.O_RDONLY)
@@ -170,10 +188,8 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
             try:  # the archive copy must never fail the snapshot
                 archive_dir = Path(archive_dir)
                 archive_dir.mkdir(parents=True, exist_ok=True)
-                _clean_stale(archive_dir, ("samples-????-??.db.gz.tmp", "meta-*.db.tmp", "meta-*.db.gz.tmp", "verify-*.db"))
+                _clean_stale(archive_dir, ("samples-????-??.db.gz.tmp", "verify-*.db"))
                 archive_months(data_dir, archive_dir)
-                from app.backup.meta_archive import archive_meta_months  # lazy: meta_archive imports this module
-                archive_meta_months(data_dir, archive_dir, int(now))
             except Exception:
                 log.exception("archiving closed months to %s failed; finished months are not yet in the archive", archive_dir)
         return final

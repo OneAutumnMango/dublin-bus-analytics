@@ -277,3 +277,216 @@ def test_missing_or_bad_meta_db_returns_empty(dirs, caplog):
         assert archive_meta_months(d, a, ts(2026, 11, 1)) == []
     assert list(a.iterdir()) == []
     assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+# ---- slim copy for the nightly tar ----
+import shutil
+import tarfile
+
+NOW = ts(2026, 11, 20)  # Sep, Oct finished (+ Aug, Jul); Nov current
+
+
+def staged(d, tmp_path):
+    copy = tmp_path / "copy.db"
+    backup._copy_db(d / "meta.db", copy)
+    return copy
+
+
+def rows(db, sql):
+    c = sqlite3.connect(db)
+    try:
+        return c.execute(sql).fetchall()
+    finally:
+        c.close()
+
+
+def months_in(db):
+    return [r[0] for r in rows(db, "select distinct substr(service_date,1,7) from arrivals order by 1")]
+
+
+def test_slim_removes_only_verified_months(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-06", "2026-07", "2026-08", "2026-09", "2026-11"])
+    archive_meta_months(d, a, NOW)
+    (a / "meta-2026-06.db.gz").unlink()  # finished but unarchived
+    copy = staged(d, tmp_path)
+    assert meta_archive.slim_meta_copy(copy, a, NOW) == ["2026-07", "2026-08", "2026-09"]
+    assert months_in(copy) == ["2026-06", "2026-11"]
+    assert rows(copy, "select * from archived_months order by 1") == [("2026-07", 3, 6), ("2026-08", 3, 6), ("2026-09", 3, 6)]
+    assert rows(copy, "select count(*) from forecast")[0][0] == 12  # 06 + 11 intact
+    assert len(rows(d / "meta.db", "select 1 from arrivals")) == 15
+
+
+def test_slim_keeps_month_on_count_mismatch(dirs, tmp_path, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    archive_meta_months(d, a, NOW)
+    copy = staged(d, tmp_path)
+    c = sqlite3.connect(copy)
+    c.execute("insert into arrivals(id, trip_id, stop_id, seq, service_date, scheduled, actual, delay, confidence, realtime, route)"
+              " values(9999,'late','s',0,'2026-09-30',1,2,1,3,1,'r')")
+    c.commit()
+    c.close()
+    with caplog.at_level(logging.WARNING):
+        assert meta_archive.slim_meta_copy(copy, a, NOW) == []
+    assert months_in(copy) == ["2026-09"] and "2026-09" in caplog.text
+
+
+def test_slim_keeps_month_on_max_id_mismatch(dirs, tmp_path, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    archive_meta_months(d, a, NOW)
+    copy = staged(d, tmp_path)
+    c = sqlite3.connect(copy)  # same count, different id
+    c.execute("update arrivals set id = id + 1000000 where id = (select max(id) from arrivals)")
+    c.execute("update forecast set arrival_id = arrival_id + 1000000 where arrival_id = (select max(arrival_id) from forecast)")
+    c.commit()
+    c.close()
+    with caplog.at_level(logging.WARNING):
+        assert meta_archive.slim_meta_copy(copy, a, NOW) == []
+    assert months_in(copy) == ["2026-09"] and "max_id" in caplog.text
+
+
+def test_slim_keeps_month_when_archive_corrupt_or_missing(dirs, tmp_path, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-10"])
+    archive_meta_months(d, a, ts(2026, 12, 5))
+    g = a / "meta-2026-08.db.gz"
+    g.write_bytes(g.read_bytes()[:50])
+    (a / "meta-2026-09.db.gz").unlink()
+    copy = staged(d, tmp_path)
+    with caplog.at_level(logging.WARNING):
+        assert meta_archive.slim_meta_copy(copy, a, ts(2026, 12, 5)) == ["2026-10"]
+    assert months_in(copy) == ["2026-08", "2026-09"]
+    assert "2026-08" in caplog.text and "2026-09" in caplog.text
+
+
+def _fill_cache(db):
+    c = sqlite3.connect(db)
+    cols = [r[1] for r in c.execute("pragma table_info(result_cache)")]
+    c.execute(f"insert into result_cache({','.join(cols)}) values ({','.join('?' * len(cols))})", ["k" if i == 0 else 1 for i in range(len(cols))])
+    c.commit()
+    c.close()
+
+
+def test_slim_archive_dir_none_changes_only_result_cache(dirs, tmp_path):
+    d, _ = dirs
+    make_meta(d, ["2026-09"])
+    _fill_cache(d / "meta.db")
+    copy = staged(d, tmp_path)
+    before = rows(copy, "select count(*) from arrivals")
+    assert meta_archive.slim_meta_copy(copy, None, NOW) == []
+    assert rows(copy, "select count(*) from arrivals") == before
+    assert not rows(copy, "select name from sqlite_master where name='archived_months'")
+    assert rows(copy, "select count(*) from result_cache")[0][0] == 0
+
+
+def test_slim_empties_result_cache(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    _fill_cache(d / "meta.db")
+    copy = staged(d, tmp_path)
+    assert rows(copy, "select count(*) from result_cache")[0][0] == 1
+    meta_archive.slim_meta_copy(copy, None, NOW)
+    assert rows(copy, "select count(*) from result_cache")[0][0] == 0
+    assert rows(d / "meta.db", "select count(*) from result_cache")[0][0] == 1
+
+
+def test_slim_handles_copy_without_result_cache_table(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    archive_meta_months(d, a, NOW)
+    copy = staged(d, tmp_path)
+    c = sqlite3.connect(copy)
+    c.execute("drop table result_cache")
+    c.commit()
+    c.close()
+    assert meta_archive.slim_meta_copy(copy, a, NOW) == ["2026-09"]
+
+
+def test_slim_is_transactional_per_month(dirs, tmp_path, monkeypatch):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09"])
+    archive_meta_months(d, a, NOW)
+    copy = staged(d, tmp_path)
+    real = meta_archive._slim_month
+    calls = []
+
+    def boom(c, mo, info):
+        calls.append(mo)
+        if len(calls) == 2:
+            c.execute("delete from forecast where arrival_id in (select id from arrivals where substr(service_date,1,7)=?)", (mo,))
+            raise RuntimeError("boom")
+        real(c, mo, info)
+
+    monkeypatch.setattr(meta_archive, "_slim_month", boom)
+    with pytest.raises(RuntimeError):
+        meta_archive.slim_meta_copy(copy, a, NOW)
+    assert months_in(copy) == ["2026-09"]
+    assert rows(copy, "select month from archived_months") == [("2026-08",)]
+    assert rows(copy, "select count(*) from forecast")[0][0] == 6
+
+
+def tar_meta(bk, tmp_path):
+    t = sorted(bk.glob("analytics-*.tar.gz"))[-1]
+    out = tmp_path / ("x" + t.name)
+    out.mkdir()
+    with tarfile.open(t) as tf:
+        tf.extract("meta.db", out)
+    return out / "meta.db"
+
+
+def test_snapshot_tar_meta_is_slim_and_live_db_untouched(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-11"])
+    live = content_hash(d)
+    backup.snapshot(d, d / "bk", archive_dir=a, now=NOW)
+    m = tar_meta(d / "bk", tmp_path)
+    assert months_in(m) == ["2026-11"]
+    assert rows(m, "select * from archived_months order by 1") == [("2026-08", 3, 6), ("2026-09", 3, 6)]
+    assert content_hash(d) == live
+
+
+def test_same_snapshot_archives_and_slims_new_finished_month(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-10"])
+    backup.snapshot(d, d / "bk", archive_dir=a, now=ts(2026, 11, 2))  # grace not over
+    assert months_in(tar_meta(d / "bk", tmp_path)) == ["2026-10"]
+    backup.snapshot(d, d / "bk", archive_dir=a, now=ts(2026, 11, 3))
+    assert (a / "meta-2026-10.db.gz").exists()
+    assert months_in(tar_meta(d / "bk", tmp_path)) == []
+
+
+def test_second_snapshot_idempotent(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    backup.snapshot(d, d / "bk", archive_dir=a, now=NOW)
+    g = a / "meta-2026-09.db.gz"
+    st = g.stat()
+    backup.snapshot(d, d / "bk", archive_dir=a, now=NOW)
+    assert (g.stat().st_mtime_ns, g.stat().st_size) == (st.st_mtime_ns, st.st_size)
+    assert months_in(tar_meta(d / "bk", tmp_path)) == ["2026-11"]
+
+
+def test_archive_disabled_snapshot_keeps_full_meta(dirs, tmp_path):
+    d, _ = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    backup.snapshot(d, d / "bk", archive_dir=None, now=NOW)
+    m = tar_meta(d / "bk", tmp_path)
+    assert months_in(m) == ["2026-09", "2026-11"]
+    assert not rows(m, "select name from sqlite_master where name='archived_months'")
+
+
+def test_slim_failure_falls_back_to_full_copy(dirs, tmp_path, monkeypatch, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+
+    def boom(copy, *_):
+        sqlite3.connect(copy).execute("drop table forecast").connection.commit()  # half-modified
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(meta_archive, "slim_meta_copy", boom)
+    backup.snapshot(d, d / "bk", archive_dir=a, now=NOW)
+    m = tar_meta(d / "bk", tmp_path)
+    assert months_in(m) == ["2026-09", "2026-11"]
+    assert rows(m, "select count(*) from forecast")[0][0] == 12
