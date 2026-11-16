@@ -106,15 +106,32 @@ def test_archive_info_unreadable(tmp_path):
     assert archive_info(tmp_path / "nope.db.gz") is None
 
 
-def test_archive_never_overwrites(dirs, caplog):
+def test_archive_never_overwrites(dirs, monkeypatch):
     d, a = dirs
     make_meta(d, ["2026-09"])
     gz = a / "meta-2026-09.db.gz"
     gz.write_bytes(b"not a gzip")
-    with caplog.at_level(logging.WARNING):
-        assert archive_meta_months(d, a, ts(2026, 11, 1)) == []
+
+    calls = []  # existing files are skipped by name only; slim is the one validator
+    monkeypatch.setattr(meta_archive, "archive_info", lambda *a, **k: calls.append(a))
+    assert archive_meta_months(d, a, ts(2026, 11, 1)) == []
     assert gz.read_bytes() == b"not a gzip"
-    assert any("meta-2026-09.db.gz" in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
+    assert [p.name for p in a.iterdir()] == ["meta-2026-09.db.gz"]
+    assert calls == []
+
+
+def test_snapshot_with_corrupt_archive_keeps_month_whole_and_warns(dirs, tmp_path, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    (a / "meta-2026-09.db.gz").write_bytes(b"not a gzip")
+    with caplog.at_level(logging.WARNING):
+        final = backup.snapshot(d, d / "bk", archive_dir=a, now=ts(2026, 11, 1))
+    assert (a / "meta-2026-09.db.gz").read_bytes() == b"not a gzip"
+    import tarfile
+    with tarfile.open(final) as t:
+        t.extract("meta.db", tmp_path / "x")
+    assert months_in(tmp_path / "x" / "meta.db") == ["2026-09"]
+    assert any(r.levelno == logging.WARNING and "2026-09" in r.getMessage() for r in caplog.records)
 
 
 def test_archive_skips_empty_month_and_failures_do_not_raise(dirs, monkeypatch, caplog):

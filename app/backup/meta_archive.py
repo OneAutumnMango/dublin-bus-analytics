@@ -143,9 +143,7 @@ def archive_meta_months(data_dir: Path, archive_dir: Path, now: int) -> list[Pat
     for mo in months:
         final = archive_dir / f"meta-{mo}.db.gz"
         try:
-            if final.exists():
-                if archive_info(final) is None:
-                    log.warning("meta archive %s exists but is unreadable; left untouched", final)
+            if final.exists():  # never overwritten; slim_meta_copy validates it (and warns) on every snapshot
                 continue
             _archive_one(meta_db, archive_dir, mo, final)
             written.append(final)
