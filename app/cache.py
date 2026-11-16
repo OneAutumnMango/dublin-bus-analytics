@@ -47,8 +47,9 @@ def lookup(c, key, now=None):
     return gzip.decompress(r[0]), r[1]
 
 
-def store(c, key, body, ms, gen, now=None):
-    """Store a gzipped body. A pending caller transaction is committed first."""
+def store(c, key, body, ms, gen, now=None, keep_last_used=False):
+    """Store a gzipped body. A pending caller transaction is committed first. keep_last_used (warmer):
+    an existing row keeps its last_used, so a background refresh does not count as use."""
     if c.in_transaction:
         c.commit()
     now = int(time.time()) if now is None else now
@@ -57,8 +58,9 @@ def store(c, key, body, ms, gen, now=None):
         if gen is not None and gen != generation(c):
             c.rollback()
             return False
+        r = c.execute("select last_used from result_cache where key=?", (key,)).fetchone() if keep_last_used else None
         c.execute("insert or replace into result_cache(key, body, computed_at, last_used, ms) values(?,?,?,?,?)",
-                  (key, gzip.compress(body), now, now, ms))
+                  (key, gzip.compress(body), now, r[0] if r else now, ms))
         c.commit()
         return True
     except BaseException:

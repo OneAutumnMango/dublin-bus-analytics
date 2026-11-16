@@ -137,3 +137,25 @@ def test_disallowed_host_never_served_from_cache(tmp_path, monkeypatch):
     assert r.status_code == 400 and "x-cache" not in r.headers
     r = env.c.get(URL, headers={"host": "127.0.0.1"})  # loopback stays allowed
     assert r.status_code == 200 and r.headers["x-cache"] == "hit"
+
+
+def _last_used(env):
+    c = open_meta(env.s.data_dir)
+    try:
+        return c.execute("select last_used from result_cache where key=?", (URL + "?",)).fetchone()[0]
+    finally:
+        c.close()
+
+
+def test_fresh_bumps_last_used_but_warm_header_does_not(tmp_path, monkeypatch):
+    env, _ = _env(tmp_path, monkeypatch)
+    env.c.get(URL)
+    c = open_meta(env.s.data_dir)
+    c.execute("update result_cache set last_used=5 where key=?", (URL + "?",))
+    c.commit()
+    c.close()
+    time.sleep(1.1)
+    env.c.get(URL, params={"fresh": 1}, headers={"x-cache-warm": "1"})
+    assert _last_used(env) == 5
+    env.c.get(URL, params={"fresh": 1})
+    assert _last_used(env) > 5

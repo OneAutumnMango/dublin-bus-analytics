@@ -75,7 +75,8 @@ def install(app: FastAPI) -> None:
                     except ValueError:
                         ok = False
                     if ok:
-                        await db(lambda c: cache.store(c, key, body, ms, gen))
+                        await db(lambda c: cache.store(c, key, body, ms, gen,
+                                                           keep_last_used=request.headers.get("x-cache-warm") == "1"))
                 return out
         finally:
             if not lock.locked():

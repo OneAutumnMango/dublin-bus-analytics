@@ -119,3 +119,15 @@ def test_store_with_pending_transaction(tmp_path):
     c2 = open_meta(tmp_path)
     assert c2.execute("select count(*) from gaps").fetchone()[0] == 1
     assert c2.execute("select count(*) from result_cache where key='k'").fetchone()[0] == 1
+
+
+def test_store_keep_last_used(tmp_path):
+    c = open_meta(tmp_path)
+    lu = lambda: c.execute("select last_used from result_cache where key='k'").fetchone()[0]
+    store(c, "k", b"x", 1, None, now=1000, keep_last_used=True)
+    assert lu() == 1000  # no row yet: now
+    store(c, "k", b"y", 1, None, now=2000, keep_last_used=True)
+    assert lu() == 1000 and lookup(c, "k", now=2000)[1] == 2000 and gzip.decompress(
+        c.execute("select body from result_cache where key='k'").fetchone()[0]) == b"y"
+    store(c, "k", b"z", 1, None, now=3000)
+    assert lu() == 3000

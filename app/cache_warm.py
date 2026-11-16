@@ -35,7 +35,8 @@ class CacheWarmer:
                                      base_url="http://127.0.0.1", timeout=300) as client:
             for key in keys:
                 try:
-                    r = await client.get(key + ("fresh=1" if key.endswith("?") else "&fresh=1"))
+                    r = await client.get(key + ("fresh=1" if key.endswith("?") else "&fresh=1"),
+                                       headers={"X-Cache-Warm": "1"})
                     if r.status_code == 200:
                         n += 1
                     else:
