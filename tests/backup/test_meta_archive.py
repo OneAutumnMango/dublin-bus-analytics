@@ -1,6 +1,7 @@
 import gzip
 import hashlib
 import logging
+import os
 import sqlite3
 from datetime import datetime, timezone
 
@@ -734,3 +735,95 @@ def test_restore_unique_conflict_counts_as_mismatch(dirs, tmp_path):
     assert meta_archive.restore_archived_months(fresh, a) == []
     assert marker_months(fresh) == ["2026-09"]
     assert rows(fresh / "meta.db", "select count(*) from arrivals where service_date like '2026-09-%'") == [(1,)]
+
+
+# ---- restore hardening (fix round 1) ----
+def _two_months(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-11"])
+    return d, a, restored(tmp_path, d, a)
+
+
+def test_restore_rejects_invalid_marker_month(dirs, tmp_path, caplog):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    (tmp_path / "x.db.gz").write_bytes(b"outside")
+    c = sqlite3.connect(fresh / "meta.db")
+    c.executemany("insert into archived_months values(?, 1, 0)", [("../x",), ("",), ("2026-9",)])
+    c.commit()
+    c.close()
+    with caplog.at_level(logging.ERROR):
+        assert meta_archive.restore_archived_months(fresh, a) == ["2026-08", "2026-09"]
+    assert sorted(marker_months(fresh)) == ["", "../x", "2026-9"]
+    assert sum("invalid marker" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records) == 3
+
+
+def test_restore_cleans_only_stale_temp_files(dirs, tmp_path):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    old, new, old_wal = fresh / "restore-old.db", fresh / "restore-new.db", fresh / "restore-old.db-wal"
+    for p in (old, new, old_wal):
+        p.write_bytes(b"x")
+    os.utime(old, (1, 1))
+    os.utime(old_wal, (1, 1))
+    meta_archive.restore_archived_months(fresh, a)
+    assert not old.exists() and not old_wal.exists() and new.exists()
+
+
+def test_restore_rollback_guard_keeps_original_reason(dirs, tmp_path, monkeypatch, caplog):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    real = sqlite3.connect
+
+    class C(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith("delete from archived_months"):
+                super().execute("rollback")  # sqlite already gave up the transaction (e.g. disk full)
+                raise sqlite3.OperationalError("database or disk is full")
+            return super().execute(sql, *args)
+
+    monkeypatch.setattr(meta_archive.sqlite3, "connect", lambda *a, **k: real(*a, factory=C, **k))
+    with caplog.at_level(logging.ERROR):
+        assert meta_archive.restore_archived_months(fresh, a) == []
+    assert marker_months(fresh) == ["2026-08", "2026-09"]
+    assert any("disk is full" in r.getMessage() for r in caplog.records)
+    assert not any("no transaction" in r.getMessage() for r in caplog.records)
+
+
+def test_restore_verifies_max_id(dirs, tmp_path):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    _tamper_info(a / "meta-2026-08.db.gz", tmp_path, "update info set max_id = max_id + 1")
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert marker_months(fresh) == ["2026-08"]
+    assert rows(fresh / "meta.db", "select count(*) from arrivals where service_date like '2026-08-%'") == [(0,)]
+
+
+def test_restore_completes_partially_present_month(dirs, tmp_path):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    src, dst = sqlite3.connect(d / "meta.db"), sqlite3.connect(fresh / "meta.db")
+    ar = src.execute("select * from arrivals where service_date like '2026-08-%' order by id limit 1").fetchone()
+    dst.execute("insert into arrivals values(" + ",".join("?" * len(ar)) + ")", ar)
+    dst.executemany("insert into forecast values(?,?,?,?)", src.execute("select * from forecast where arrival_id = ?", (ar[0],)).fetchall())
+    dst.commit()
+    src.close()
+    dst.close()
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-08", "2026-09"]
+    assert content_hash(fresh) == content_hash(d)
+    assert marker_months(fresh) == []
+
+
+def test_restore_archive_dir_takes_precedence_over_data_dir(dirs, tmp_path):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    make_meta(other, ["2026-08"], per_month=2)
+    other_a = tmp_path / "other-a"
+    other_a.mkdir()
+    meta_archive.archive_meta_months(other, other_a, NOW)
+    shutil.copy(other_a / "meta-2026-08.db.gz", fresh)  # different, self-consistent content in data_dir
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-08", "2026-09"]
+    assert content_hash(fresh) == content_hash(d)
+
+
+def test_restore_removes_temp_file_when_import_fails(dirs, tmp_path):
+    d, a, fresh = _two_months(dirs, tmp_path)
+    _tamper_info(a / "meta-2026-08.db.gz", tmp_path, "update info set arrivals = 0")
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert not list(fresh.glob("restore-*"))

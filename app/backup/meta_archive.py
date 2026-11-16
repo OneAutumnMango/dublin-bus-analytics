@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # backup.py imports this module lazily (inside snapshot), so this top-level import is not circular
-from app.backup.backup import COMPACT_GRACE_S, _fsync_dir, _integrity, _ro_uri, _sha, _verify_gz
+from app.backup.backup import COMPACT_GRACE_S, _clean_stale, _fsync_dir, _integrity, _ro_uri, _sha, _verify_gz
 
 log = logging.getLogger(__name__)
 
@@ -192,7 +192,8 @@ def _import_month(c: sqlite3.Connection, mo: str, gz: Path, data_dir: Path) -> N
                 c.execute("delete from archived_months where month = ?", (mo,))
                 c.execute("commit")
             except BaseException:
-                c.execute("rollback")
+                if c.in_transaction:  # sqlite may already have rolled back (e.g. disk full); keep the real reason
+                    c.execute("rollback")
                 raise
         finally:
             c.execute("detach archive")
@@ -208,12 +209,16 @@ def restore_archived_months(data_dir: Path, archive_dir: Path | None) -> list[st
     meta = data_dir / "meta.db"
     if not meta.exists():
         return done
+    _clean_stale(data_dir, ("restore-*",))  # crashed earlier runs; fresh files may belong to another process
     c = sqlite3.connect(meta, isolation_level=None)
     try:
         c.execute("pragma busy_timeout=60000")
         if not c.execute("select 1 from sqlite_master where type='table' and name='archived_months'").fetchone():
             return done
         for (mo,) in c.execute("select month from archived_months order by month").fetchall():
+            if not re.fullmatch(r"\d{4}-\d{2}", mo or ""):  # the marker becomes a file name: never trust it
+                log.error("invalid marker month %r in archived_months: skipped, marker kept", mo)
+                continue
             name = f"meta-{mo}.db.gz"
             gz = next((p for p in (Path(d) / name for d in (archive_dir, data_dir) if d is not None) if p.is_file()), None)
             if gz is None:
