@@ -171,3 +171,109 @@ def test_snapshot_writes_meta_archive_but_not_when_archive_dir_none(dirs):
     assert list(a.iterdir()) == []
     backup.snapshot(d, d / "bk", archive_dir=a, now=ts(2026, 11, 1))
     assert (a / "meta-2026-09.db.gz").exists()
+
+
+def test_gz_fully_written_before_its_fsync(dirs, monkeypatch):
+    import os
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    seen = []
+    real = os.fsync
+
+    def spy(fd):
+        try:
+            name = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            name = ""
+        if name.endswith(".db.gz.tmp"):
+            seen.append(os.fstat(fd).st_size)
+        return real(fd)
+
+    monkeypatch.setattr(meta_archive.os, "fsync", spy)
+    archive_meta_months(d, a, ts(2026, 11, 1))
+    assert seen and seen[-1] == (a / "meta-2026-09.db.gz").stat().st_size
+
+
+@pytest.mark.parametrize("target,val", [("_verify_gz", OSError("bad gz")), ("_integrity", [("corrupt",)])])
+def test_failed_verification_leaves_nothing(dirs, monkeypatch, target, val):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+
+    def fake(*args, **kw):
+        if isinstance(val, Exception):
+            raise val
+        return val
+
+    monkeypatch.setattr(meta_archive, target, fake)
+    assert archive_meta_months(d, a, ts(2026, 11, 1)) == []
+    assert list(a.iterdir()) == []
+
+
+def test_archive_consistent_while_writer_runs(dirs, tmp_path):
+    import threading
+    import time
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    stop = threading.Event()
+    errs = []
+
+    def writer():
+        c = open_meta(d)
+        c.execute("pragma busy_timeout=5000")
+        n = 10_000
+        try:
+            while not stop.is_set():
+                n += 1
+                c.execute("insert into arrivals(id, trip_id, stop_id, seq, service_date) values(?,?,?,?,?)", (n, f"w{n}", "s", 0, "2026-09-20"))
+                c.executemany("insert into forecast values(?,?,?,?)", [(n, h, 1, 1) for h in (5, 10)])
+                c.commit()
+        except Exception as e:  # pragma: no cover
+            errs.append(e)
+        finally:
+            c.close()
+
+    t = threading.Thread(target=writer)
+    t.start()
+    try:
+        time.sleep(0.2)
+        for _ in range(3):
+            for p in a.iterdir():
+                p.unlink()
+            archive_meta_months(d, a, ts(2026, 11, 1))
+            gz = a / "meta-2026-09.db.gz"
+            assert gz.exists()
+            info = archive_info(gz)
+            assert gz_rows(gz, tmp_path, "select count(*), max(id) from arrivals") == [(info["arrivals"], info["max_id"])]
+            assert gz_rows(gz, tmp_path, "select count(*) from forecast") == [(info["forecast"],)]
+            assert gz_rows(gz, tmp_path, "select count(*) from forecast where arrival_id not in (select id from arrivals)") == [(0,)]
+    finally:
+        stop.set()
+        t.join()
+    assert not errs
+
+
+def test_null_and_garbage_service_dates_and_columns(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09"], with_forecast=False)
+    c = open_meta(d)
+    c.execute("insert into arrivals(id, trip_id, stop_id, seq, service_date) values(900, 'n', 's', 1, NULL)")
+    c.execute("insert into arrivals(id, trip_id, stop_id, seq, service_date) values(901, 'g', 's', 1, 'garbage')")
+    c.execute("insert into arrivals(id, trip_id, stop_id, seq, service_date) values(902, 'x', NULL, NULL, '2026-09-30')")
+    c.commit()
+    c.close()
+    assert archive_meta_months(d, a, ts(2026, 11, 1)) == [a / "meta-2026-09.db.gz"]
+    gz = a / "meta-2026-09.db.gz"
+    assert gz_rows(gz, tmp_path, "select id, stop_id, seq, scheduled, route from arrivals where id=902") == [(902, None, None, None, None)]
+    assert archive_info(gz)["arrivals"] == 4
+    assert gz_rows(gz, tmp_path, "select count(*) from arrivals where id in (900, 901)") == [(0,)]
+
+
+def test_missing_or_bad_meta_db_returns_empty(dirs, caplog):
+    d, a = dirs
+    with caplog.at_level(logging.ERROR):
+        assert archive_meta_months(d, a, ts(2026, 11, 1)) == []
+    (d / "meta.db").write_bytes(b"this is not a database" * 100)
+    with caplog.at_level(logging.ERROR):
+        assert archive_meta_months(d, a, ts(2026, 11, 1)) == []
+    assert list(a.iterdir()) == []
+    assert any(r.levelno == logging.ERROR for r in caplog.records)

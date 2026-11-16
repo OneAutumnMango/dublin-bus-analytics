@@ -49,6 +49,8 @@ def archive_info(gz: Path) -> dict | None:
 
 def _write_db(meta_db: Path, mo: str, tmp_db: Path) -> None:
     like = f"{mo}-%"
+    # The read snapshot of `live` starts at its first read after `begin` (the sqlite_master select),
+    # so that read must stay first and all later selects share it.
     with contextlib.closing(sqlite3.connect(tmp_db, isolation_level=None)) as c:
         c.execute("attach ? as live", (_ro_uri(meta_db),))
         c.execute("begin")  # one read snapshot of the live db for every select below
@@ -69,10 +71,10 @@ def _archive_one(meta_db: Path, archive_dir: Path, mo: str, final: Path) -> None
     tmp_db, tmp_gz = archive_dir / f"meta-{mo}.db.tmp", archive_dir / f"meta-{mo}.db.gz.tmp"
     try:
         _write_db(meta_db, mo, tmp_db)
-        with open(tmp_db, "rb") as src, open(tmp_gz, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, compresslevel=3) as out:
-            shutil.copyfileobj(src, out)
-            out.flush()
-            raw.flush()
+        with open(tmp_db, "rb") as src, open(tmp_gz, "wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, compresslevel=3) as out:
+                shutil.copyfileobj(src, out)
+            raw.flush()  # GzipFile is closed (final block + CRC trailer written) before the fsync
             os.fsync(raw.fileno())
         _verify_gz(tmp_gz, _sha(tmp_db))
         os.replace(tmp_gz, final)
