@@ -159,3 +159,65 @@ def test_fresh_bumps_last_used_but_warm_header_does_not(tmp_path, monkeypatch):
     assert _last_used(env) == 5
     env.c.get(URL, params={"fresh": 1})
     assert _last_used(env) > 5
+
+
+def _seed(env):
+    c = open_meta(env.s.data_dir)
+    try:
+        cache.store(c, "k1", b"{}", 1, None)
+        c.execute("insert or replace into result_cache(key, body, computed_at, last_used, ms) values('srv:stops:15', x'01', 0, 0, 0)")
+        c.commit()
+    finally:
+        c.close()
+
+
+def _srv(env):
+    c = open_meta(env.s.data_dir)
+    try:
+        return c.execute("select count(*) from result_cache where key='srv:stops:15'").fetchone()[0]
+    finally:
+        c.close()
+
+
+def test_remove_day_clears_cache(tmp_path):
+    from datetime import date
+    from app.maintenance import day
+    env = Env(tmp_path)
+    _seed(env)
+    assert _rows(env) == 1
+    day.remove(env.s.data_dir, date(2026, 11, 10), None)
+    assert _rows(env) == 0 and _srv(env) == 1
+
+
+def test_track_and_untrack_clear_cache(tmp_path):
+    env = Env(tmp_path)
+    _seed(env)
+    assert env.c.put("/api/routes/tracked/16").status_code == 200
+    assert _rows(env) == 0 and _srv(env) == 1
+    _seed(env)
+    assert env.c.delete("/api/routes/tracked/16").status_code == 200
+    assert _rows(env) == 0 and _srv(env) == 1
+
+
+def test_failed_track_does_not_clear(tmp_path):
+    env = Env(tmp_path)
+    _seed(env)
+    env.app.state.poller.track = lambda r: (_ for _ in ()).throw(ValueError("no"))
+    assert env.c.put("/api/routes/tracked/16").status_code == 422
+    assert _rows(env) == 1
+
+
+def test_poller_ingest_does_not_clear(tmp_path):
+    env = Env(tmp_path)
+    _seed(env)
+    env.add(route="15", delay=5)
+    assert _rows(env) == 1
+
+
+def test_clear_error_does_not_fail_track(tmp_path, monkeypatch):
+    env = Env(tmp_path)
+
+    def boom(c):
+        raise sqlite3.OperationalError("locked")
+    monkeypatch.setattr(cache, "clear", boom)
+    assert env.c.put("/api/routes/tracked/16").status_code == 200

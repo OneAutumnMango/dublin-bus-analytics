@@ -40,7 +40,7 @@ from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 
-from app import rollup
+from app import cache, rollup
 from app.analysis import lab, stats
 from app.core.db import open_meta, open_samples_readonly
 from app.collect.poller import ROUTE_RE
@@ -401,7 +401,20 @@ async def _change(request, route, fn_name):
         await run_in_threadpool(getattr(request.app.state.poller, fn_name), route)
     except ValueError as e:
         _bad(str(e))
+    if request.app.state.settings.result_cache:
+        await run_in_threadpool(_clear_cache, request.app.state.settings.data_dir)
     return await _tracked(request)
+
+
+def _clear_cache(data_dir):
+    try:  # the tracked set changed: cached pages are stale. Never fail the track/untrack over it.
+        c = open_meta(data_dir)
+        try:
+            cache.clear(c)
+        finally:
+            c.close()
+    except sqlite3.Error:
+        log.exception("result cache clear failed")
 
 
 @router.put("/routes/tracked/{route}")

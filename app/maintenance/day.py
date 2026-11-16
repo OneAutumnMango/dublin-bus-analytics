@@ -28,7 +28,9 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from app import rollup
+import logging
+
+from app import cache, rollup
 from app.api.routes import _DB_LOCK
 
 DUBLIN = ZoneInfo("Europe/Dublin")
@@ -279,6 +281,10 @@ def _drop_rollups(c, d: date, route: str | None) -> None:
     with _DB_LOCK:
         rollup.drop_days(c, [d.isoformat()], route)
         c.commit()
+        try:  # cached pages may show the removed data; a cache failure must not fail the removal
+            cache.clear(c)
+        except sqlite3.Error:
+            logging.getLogger(__name__).exception("result cache clear failed")
 
 
 def _remove(data_dir, d, route, w, out, progress) -> dict:
