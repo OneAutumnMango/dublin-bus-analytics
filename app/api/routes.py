@@ -34,7 +34,7 @@ from typing import Annotated, NamedTuple
 from urllib.parse import unquote
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 
 from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
@@ -1223,8 +1223,9 @@ def _thin(points) -> list[list[float]]:
     return out
 
 
-async def _shape(request, r, direction):
-    """Thinned [[lon, lat]] for a route direction, cached; None when the server has no shape for it."""
+async def _shape(request, r, direction, failed=None):
+    """Thinned [[lon, lat]] for a route direction, cached; None when the server has no shape for it.
+    A failed fetch (not "no shape") is also None but is appended to `failed` when given."""
     cache = getattr(request.app.state, "shape_cache", None)
     if cache is None:
         cache = request.app.state.shape_cache = _TTLCache(ttl=SHAPE_TTL, maxsize=512)
@@ -1233,7 +1234,11 @@ async def _shape(request, r, direction):
         return hit
     try:
         raw = await asyncio.wait_for(request.app.state.client.route_shape(r, direction), SHAPE_TIMEOUT)
-    except (RouteNotFound, ServerUnavailable, KeyError, TypeError, AttributeError, ValueError, asyncio.TimeoutError):
+    except RouteNotFound:
+        return None
+    except (ServerUnavailable, KeyError, TypeError, AttributeError, ValueError, asyncio.TimeoutError):
+        if failed is not None:
+            failed.append((r, direction))
         return None
     pts = _thin(raw)
     if len(pts) < 2:
@@ -1243,13 +1248,23 @@ async def _shape(request, r, direction):
 
 
 @router.get("/map/shapes")
-async def map_shapes(request: Request):
+async def map_shapes(request: Request, response: Response):
     """{shapes: {route: {direction: [[lon, lat], ...]}}} for tracked routes: the real road geometry from the
     server, thinned and cached for an hour. A direction the server has no shape for is simply absent (the page
     then falls back to a line through that direction's stops)."""
     out: dict[str, dict] = {}
+    failed: list = []  # fetches that failed (not "the server has no such shape"): the result must not be cached
+
+    async def order(r):
+        try:
+            d = await _directions(request, r)
+        except _NoOrder as e:
+            if e.status != 404:
+                failed.append(r)
+            return None, "none"
+        return {k: [_sid(x) for x in v] for k, v in d.items()}, "server"
     tracked = (await _tracked(request))["routes"]
-    orders = await _bounded_map(request, tracked, lambda r: _order(request, r))
+    orders = await _bounded_map(request, tracked, order)
     pairs = []
     for r, order in zip(tracked, orders):
         if isinstance(order, BaseException):
@@ -1257,11 +1272,13 @@ async def map_shapes(request: Request):
         if order[0] is not None:
             out[r] = {}
             pairs += [(r, d) for d in order[0]]
-    for (r, d), pts in zip(pairs, await _bounded_map(request, pairs, lambda rd: _shape(request, *rd))):
+    for (r, d), pts in zip(pairs, await _bounded_map(request, pairs, lambda rd: _shape(request, *rd, failed))):
         if isinstance(pts, BaseException):
             raise pts
         if pts:
             out[r][d] = pts
+    if failed:
+        response.headers["X-Cache-Skip"] = "1"  # read (and dropped) by the result-cache middleware
     return {"shapes": out}
 
 

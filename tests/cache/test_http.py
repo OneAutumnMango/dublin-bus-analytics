@@ -221,3 +221,31 @@ def test_clear_error_does_not_fail_track(tmp_path, monkeypatch):
         raise sqlite3.OperationalError("locked")
     monkeypatch.setattr(cache, "clear", boom)
     assert env.c.put("/api/routes/tracked/16").status_code == 200
+
+
+# ---------- /api/map/shapes: failed fetches are not stored ----------
+
+def _shapes_env(tmp_path):
+    env = Env(tmp_path)
+    env.keep_cache = True
+    env.c.put("/api/routes/tracked/15")
+    env.fake.set_route_stops("15", {"0": [{"id": "a", "name": "A", "lat": 53.3, "lon": -6.2}],
+                                    "1": [{"id": "b", "name": "B", "lat": 53.31, "lon": -6.21}]})
+    return env
+
+
+def test_shapes_with_server_down_is_not_stored(tmp_path):
+    env = _shapes_env(tmp_path)
+    env.fake.set_shape("15", "0", [[53.3, -6.2], [53.31, -6.21]])
+    env.fake.set_down(True)
+    r = env.c.get("/api/map/shapes")
+    assert r.status_code == 200 and r.headers["x-cache"] == "miss" and "x-cache-skip" not in r.headers
+    assert _rows(env) == 0
+
+
+def test_shapes_normal_is_stored_and_missing_direction_is_not_a_failure(tmp_path):
+    env = _shapes_env(tmp_path)
+    env.fake.set_shape("15", "0", [[53.3, -6.2], [53.31, -6.21]])  # direction "1": the server has none (404)
+    r = env.c.get("/api/map/shapes")
+    assert r.status_code == 200 and "x-cache-skip" not in r.headers and list(r.json()["shapes"]["15"]) == ["0"]
+    assert _rows(env) == 1 and env.c.get("/api/map/shapes").headers["x-cache"] == "hit"

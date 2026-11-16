@@ -64,11 +64,12 @@ def install(app: FastAPI) -> None:
                 body = b"".join([chunk async for chunk in resp.body_iterator])
                 ms = int((time.monotonic() - t0) * 1000)
                 out = Response(body, resp.status_code)
-                out.raw_headers = [(k, v) for k, v in resp.raw_headers if k != b"content-length"]
+                out.raw_headers = [(k, v) for k, v in resp.raw_headers if k not in (b"content-length", b"x-cache-skip")]
                 out.headers["content-length"] = str(len(body))
                 out.headers["X-Cache"] = "bypass" if fresh else "miss"
                 out.headers["X-Computed-At"] = str(int(time.time()))
-                if (gen is not _FAIL and resp.status_code == 200
+                skip = resp.headers.get("x-cache-skip")  # handler flagged a degraded result: never store, never send
+                if (skip is None and gen is not _FAIL and resp.status_code == 200
                         and resp.headers.get("content-type", "").startswith("application/json")):
                     try:
                         ok = not await asyncio.to_thread(_degraded, body)
