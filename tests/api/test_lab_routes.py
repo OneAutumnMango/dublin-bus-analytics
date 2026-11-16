@@ -416,7 +416,8 @@ def test_all_endpoints_filters_echoed(env):
         assert 0 < b["n"] < full["n"] and b["filters"]["weekdays"] == [0, 1, 2]
 
 
-def test_all_persistence_truncated_routes(env, monkeypatch):
+def test_all_persistence_truncated_routes(tmp_path, monkeypatch):
+    env = Env(tmp_path, result_cache=False)  # same request twice under different MAX_ROWS
     _seed_two_routes(env, days=3, per=2)  # 36 rows per route
     assert env.get(ALL + "persistence").json()["filters"]["truncated_routes"] == []
     monkeypatch.setattr("app.api.routes.MAX_ROWS", 30)

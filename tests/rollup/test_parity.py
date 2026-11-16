@@ -63,7 +63,7 @@ def _same(a, b, path=""):
 @pytest.mark.parametrize("q", FILTERS, ids=lambda q: ",".join(q) or "default")
 @pytest.mark.parametrize("since_mid_day", [False, True])
 def test_overview_rollup_equals_raw(tmp_path, monkeypatch, seed, q, since_mid_day):
-    env = Env(tmp_path)
+    env = Env(tmp_path, result_cache=False)
     _populate(env, seed)
     q = dict(q)
     if since_mid_day:  # like the UI: a rolling since lands in the middle of a day, making that day partial
@@ -83,7 +83,7 @@ def test_overview_rollup_equals_raw(tmp_path, monkeypatch, seed, q, since_mid_da
 
 
 def test_rolled_days_are_not_truncated_by_max_rows(tmp_path, monkeypatch):
-    env = Env(tmp_path)
+    env = Env(tmp_path, result_cache=False)
     env.app.state.poller.track("15")
     for i in range(6):
         env.add(route="15", delay=i, scheduled=T0 + i)  # default date 2026-01-01: closed
@@ -93,7 +93,7 @@ def test_rolled_days_are_not_truncated_by_max_rows(tmp_path, monkeypatch):
 
 
 def test_stale_rollup_after_remove_day_is_gone(tmp_path):
-    env = Env(tmp_path)
+    env = Env(tmp_path, result_cache=False)
     env.app.state.poller.track("15")
     env.add(route="15", delay=10)
     assert env.get("/api/all/routes").json()["routes"][0]["n"] == 1

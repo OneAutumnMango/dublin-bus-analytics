@@ -39,8 +39,8 @@ class FakePoller:
 
 
 class Env:
-    def __init__(self, tmp_path, real_poller=False):
-        self.s = Settings(server_url="http://fake", data_dir=tmp_path)
+    def __init__(self, tmp_path, real_poller=False, **settings):
+        self.s = Settings(server_url="http://fake", data_dir=tmp_path, **settings)
         self.fake = FakeServer()
         self.app = create_app(self.s, start_background=False,
                               client=ServerClient("http://fake", self.fake.client()))
@@ -1104,7 +1104,8 @@ def test_route_stops_cache_expires_after_5_min(env):
     assert stops_hits(env) == 2
 
 
-def test_route_stops_failure_not_cached(env):
+def test_route_stops_failure_not_cached(tmp_path):
+    env = Env(tmp_path, result_cache=False)  # repeated identical summaries must recompute
     env.keep_cache = True
     env.add(stop="a", delay=1)
     env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
@@ -1532,6 +1533,8 @@ def test_cap_probe_ignores_null_delay_rows(env, monkeypatch):
 
 def _heavy_env(env, monkeypatch, slots=1):
     import app.api.routes as api
+    import app.cache
+    monkeypatch.setattr(app.cache, "make_key", lambda *a: None)  # these tests need identical requests to compute
     monkeypatch.setattr(api, "MAX_HEAVY_SCANS", slots)  # the gate is created lazily per event loop
     monkeypatch.setattr(api, "HEAVY_ROWS", 3)
     for i in range(5):  # route 15 is heavy (5 > 3 rows); route 16 is light
@@ -1962,7 +1965,8 @@ def test_trip_series_ignores_foreign_files_in_data_dir(env):
     assert len(series(env).json()["visits"][0]["points"]) == 3
 
 
-def test_trip_series_truncation_caps(env, monkeypatch):
+def test_trip_series_truncation_caps(tmp_path, monkeypatch):
+    env = Env(tmp_path, result_cache=False)  # repeated identical requests must recompute
     import app.api.routes as api
     monkeypatch.setattr(api, "MAX_VISITS", 2)
     monkeypatch.setattr(api, "MAX_POINTS", 3)
@@ -2083,7 +2087,8 @@ def test_series_sample_only_visit_sorts_before_later_arrivals_visit(env):
     assert [(v["seq"], v["arrival"] is None) for v in j["visits"]] == [(S - 7200, True), (S, False)]
 
 
-def test_series_exact_caps_not_truncated_but_one_more_is(env):
+def test_series_exact_caps_not_truncated_but_one_more_is(tmp_path):
+    env = Env(tmp_path, result_cache=False)  # repeated identical requests must recompute
     for i in range(50):
         env.add(trip="T", stop="s1", scheduled=S + i, delay=0)
     j = series(env).json()
@@ -2093,7 +2098,8 @@ def test_series_exact_caps_not_truncated_but_one_more_is(env):
     assert [v["seq"] for v in j["visits"]] == [S + i for i in range(1, 51)] and j["truncated"] is True
 
 
-def test_series_exact_point_cap_and_points_only_truncation(env):
+def test_series_exact_point_cap_and_points_only_truncation(tmp_path):
+    env = Env(tmp_path, result_cache=False)  # repeated identical requests must recompute
     put_many(env, [(S, S - 5000 + i, 1, S, 1) for i in range(2000)])
     j = series(env).json()
     assert len(j["visits"][0]["points"]) == 2000 and j["truncated"] is False
@@ -2146,7 +2152,8 @@ def gz_two_months(env):
 
 
 @pytest.mark.filterwarnings("error::ResourceWarning")
-def test_series_gz_reads_are_serialised_and_leave_no_temp(env, monkeypatch, tmp_private):
+def test_series_gz_reads_are_serialised_and_leave_no_temp(tmp_path, monkeypatch, tmp_private):
+    env = Env(tmp_path, result_cache=False)  # repeated identical requests must recompute
     import app.api.routes as api
     gz_two_months(env)
     log, gate, first_in = [], threading.Event(), threading.Event()
@@ -2348,7 +2355,8 @@ def test_map_with_nothing_tracked(env):
 
 # ---------- map shapes ----------
 
-def test_map_shapes_real_geometry_thinned_cached_and_missing_directions_absent(env):
+def test_map_shapes_real_geometry_thinned_cached_and_missing_directions_absent(tmp_path):
+    env = Env(tmp_path, result_cache=False)  # repeated identical requests must recompute
     env.c.put("/api/routes/tracked/15")
     env.fake.set_route_stops("15", {"0": [_stop("a", "A", 53.3, -6.2)], "1": [_stop("b", "B", 53.31, -6.21)]})
     line = [[53.30000, -6.20000], [53.300005, -6.200005], [53.30100, -6.20100], [53.30100, -6.20100], [53.30200, -6.20200], ["x", 1], [53.3, float("nan")]]
@@ -2382,7 +2390,8 @@ def _chg(j):
     return {s["stop_id"]: s for s in j["stops"]}
 
 
-def test_map_change_example_and_two_trips(env):
+def test_map_change_example_and_two_trips(tmp_path):
+    env = Env(tmp_path, result_cache=False)  # repeated identical requests must recompute
     _chg_env(env)
     env.trip("A", [("s1", 60), ("s2", 120), ("s3", 120)])
     by = _chg(env.get("/api/map").json())

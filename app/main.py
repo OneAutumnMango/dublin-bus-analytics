@@ -16,6 +16,7 @@ from app.collect.poller import LazyTracker, Poller, seq_lookup
 from app.backup.scheduler import BackupScheduler
 from app.collect.serverclient import ServerClient
 from app.api.static import static_app
+from app.cache_http import install as install_result_cache
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     app.include_router(backup_router)
     app.include_router(export_router)
     app.include_router(maintenance_router)
+    install_result_cache(app)
 
     @app.get("/api/health")
     async def health():
