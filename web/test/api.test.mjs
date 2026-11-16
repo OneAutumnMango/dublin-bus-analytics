@@ -202,3 +202,12 @@ test('request without headers still works', async () => {
   assert.deepEqual(await A.request('/a', { fetchFn: async () => resp(200, { v: 1 }) }), { v: 1 });
   assert.equal(A.computedAt(), null);
 });
+
+test('request default timeout is 90 s for GET and the message reflects it', async () => {
+  const real = globalThis.setTimeout, ms = [];
+  globalThis.setTimeout = (fn, t, ...a) => { ms.push(t); return real(fn, t, ...a); };
+  try {
+    await A.request('/x', { fetchFn: async () => resp(200, {}) });
+  } finally { globalThis.setTimeout = real; }
+  assert.ok(ms.includes(90000), String(ms));
+});

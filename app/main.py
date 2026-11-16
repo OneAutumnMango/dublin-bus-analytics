@@ -37,6 +37,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
         try:
             yield
         finally:
+            tasks += list(getattr(app.state, "result_cache_tasks", ()))  # detached result-cache computes
             for task in tasks:  # a snapshot already running in a worker thread finishes in the background
                 task.cancel()
             try:

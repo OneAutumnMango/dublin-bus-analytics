@@ -30,7 +30,7 @@ export const computedAt = () => oldest;
 export const resetComputed = () => { oldest = null; };
 export const refresh = { on: false }; // while true, GETs carry fresh=1 (recompute server-side)
 
-export async function request(path, { method = 'GET', signal, timeout = 15000, fetchFn = globalThis.fetch } = {}) {
+export async function request(path, { method = 'GET', signal, timeout = method === 'GET' ? 90000 : 15000, fetchFn = globalThis.fetch } = {}) {
   if (refresh.on && method === 'GET') path += `${path.includes('?') ? '&' : '?'}fresh=1`;
   const ctl = new AbortController();
   let timedOut = false;

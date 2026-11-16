@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import threading
 import time
 
 import httpx
@@ -249,3 +250,29 @@ def test_shapes_normal_is_stored_and_missing_direction_is_not_a_failure(tmp_path
     r = env.c.get("/api/map/shapes")
     assert r.status_code == 200 and "x-cache-skip" not in r.headers and list(r.json()["shapes"]["15"]) == ["0"]
     assert _rows(env) == 1 and env.c.get("/api/map/shapes").headers["x-cache"] == "hit"
+
+
+def test_cancelled_request_still_stores_result(tmp_path, monkeypatch):
+    env, n = _env(tmp_path, monkeypatch)
+    started = threading.Event()
+    real = routes._summary_db
+
+    def slow(*a, **k):
+        started.set()
+        time.sleep(0.5)
+        return real(*a, **k)
+    monkeypatch.setattr(routes, "_summary_db", slow)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=env.app), base_url="http://t") as c:
+            t = asyncio.create_task(c.get(URL))
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            t.cancel()  # the UI aborted
+            for _ in range(300):
+                await asyncio.sleep(0.02)
+                if _rows(env):
+                    break
+            assert _rows(env) == 1
+            assert (await c.get(URL)).headers["x-cache"] == "hit"
+    asyncio.run(go())
