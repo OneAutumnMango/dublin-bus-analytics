@@ -43,4 +43,4 @@ def download_backup(request: Request, file: str | None = None):
         p = next((t for t in list_backups(_dir(request)) if t.name == file), None)
     if p is None:
         raise HTTPException(404, "no such backup")
-    return FileResponse(p, media_type="application/x-tar", filename=p.name)
+    return FileResponse(p, media_type="application/gzip" if p.name.endswith(".gz") else "application/x-tar", filename=p.name)

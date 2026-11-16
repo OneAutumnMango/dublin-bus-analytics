@@ -402,7 +402,7 @@ async def test_end_to_end_real_run_once_tar_and_gz(tmp_path):
     clock = Clock(datetime(2026, 6, 10, tzinfo=UTC))  # 2020-01 ended years ago: past the grace
     sc = BackupScheduler(S(tmp_path), now_fn=clock)
     path = await sc.run_once()
-    assert path.suffix == ".tar"
+    assert path.name.endswith(".tar.gz")
     with tarfile.open(path) as t:
         assert sorted(t.getnames()) == ["meta.db", "samples-2020-01.db"]  # snapshot taken BEFORE compaction
     assert (data / "samples-2020-01.db.gz").exists() and not (data / "samples-2020-01.db").exists()

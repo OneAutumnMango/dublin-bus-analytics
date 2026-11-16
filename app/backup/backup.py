@@ -24,7 +24,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 _lock = threading.Lock()  # serialises snapshot vs compaction
 _MONTH = re.compile(r"^samples-(\d{4})-(\d{2})\.db$")
-_TAR = re.compile(r"^analytics-(\d{8}T\d{6}Z)(_\d{3})?\.tar$")
+_TAR = re.compile(r"^analytics-(\d{8}T\d{6}Z)(_\d{3})?\.tar(\.gz)?$")
 FUTURE_SLACK_S = 300
 COMPACT_GRACE_S = 2 * 86400
 STALE_S = 3600
@@ -107,7 +107,7 @@ def _reserve(tmp_tar: Path, backup_dir: Path, stamp: str) -> Path:
     taken = [int((m[2] or "_0")[1:]) for p in backup_dir.iterdir()
              if (m := _TAR.match(p.name)) and m[1] == stamp]
     for n in range(max(taken) + 1 if taken else 0, 1000):
-        cand = backup_dir / f"analytics-{stamp}{'' if n == 0 else f'_{n:03d}'}.tar"
+        cand = backup_dir / f"analytics-{stamp}{'' if n == 0 else f'_{n:03d}'}.tar.gz"
         try:
             try:
                 os.link(tmp_tar, cand)  # atomic, fails rather than overwrite
@@ -140,8 +140,8 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
                  if p.is_file() and (p.name == "meta.db" or re.fullmatch(r"samples-.*\.db", p.name))]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         with tempfile.TemporaryDirectory(prefix=".snap-", dir=backup_dir) as stage:
-            tmp_tar = Path(stage) / "out.tar"
-            with tarfile.open(tmp_tar, "w") as tar:
+            tmp_tar = Path(stage) / "out.tar.gz"
+            with tarfile.open(tmp_tar, "w:gz", compresslevel=3) as tar:
                 for p in files:
                     copy = Path(stage) / p.name
                     _copy_db(p, copy)

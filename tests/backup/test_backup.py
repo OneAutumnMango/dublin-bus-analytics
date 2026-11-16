@@ -1037,7 +1037,7 @@ def test_snapshot_counter_cap_raises(tmp_path, monkeypatch):
 def test_api_origin_mismatch_403(client, data):
     r = client.post("/api/backup", headers={"Origin": "http://evil.example"})
     assert r.status_code == 403 and "detail" in r.json()
-    assert not list((data / "backups").glob("*.tar")) if (data / "backups").exists() else True
+    assert not list((data / "backups").glob("*.tar*")) if (data / "backups").exists() else True
 
 
 def test_api_origin_matching_and_absent_ok(client):
@@ -1089,3 +1089,38 @@ def test_snapshot_logs_error_when_archiving_fails(data, tmp_path, monkeypatch, c
         snapshot(data, tmp_path / "bk", archive_dir=tmp_path / "arch")
     assert any(r.levelno == logging.ERROR and "finished months are not yet in the archive" in r.getMessage()
                for r in caplog.records)
+
+
+# ---- gzipped tars ----
+
+def test_snapshot_writes_tar_gz(data, tmp_path):
+    p = snapshot(data, tmp_path / "bk")
+    assert p.name.endswith(".tar.gz")
+    with tarfile.open(p, "r:gz") as tar:
+        names = tar.getnames()
+    assert "meta.db" in names and any(n.startswith("samples-") for n in names)
+
+
+def test_plain_and_gz_backups_listed_together_oldest_first(tmp_path):
+    _mk(tmp_path, "analytics-20260102T000000Z.tar.gz")
+    _mk(tmp_path, "analytics-20260101T000000Z.tar")
+    assert [p.name for p in list_backups(tmp_path)] == [
+        "analytics-20260101T000000Z.tar", "analytics-20260102T000000Z.tar.gz"]
+    assert backup.newest_backup(tmp_path).name == "analytics-20260102T000000Z.tar.gz"
+
+
+def test_reserve_counter_shared_between_extensions(tmp_path, monkeypatch):
+    _frozen_stamp(monkeypatch)
+    mk_meta(tmp_path)
+    bk = tmp_path / "bk"
+    _mk(bk, "analytics-20260610T120000Z.tar")
+    p = snapshot(tmp_path, bk)
+    assert p.name == "analytics-20260610T120000Z_001.tar.gz"
+
+
+def test_download_gz_media_type(client, data):
+    gz = client.post("/api/backup").json()["file"]
+    _mk(data / "backups", "analytics-20200101T000000Z.tar", body=b"OLD")
+    assert client.get("/api/backup/download", params={"file": gz}).headers["content-type"] == "application/gzip"
+    r = client.get("/api/backup/download", params={"file": "analytics-20200101T000000Z.tar"})
+    assert r.headers["content-type"] == "application/x-tar"
