@@ -13,6 +13,7 @@ from app.maintenance.api import router as maintenance_router
 from app.export.gate import ExportGate
 from app.core.config import Settings
 from app.collect.poller import LazyTracker, Poller, seq_lookup
+from app.backup.meta_archive import restore_archived_months
 from app.backup.scheduler import BackupScheduler
 from app.collect.serverclient import ServerClient
 from app.api.static import static_app
@@ -30,6 +31,10 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        try:  # put archived meta months back before anything else touches meta.db; never blocks startup
+            await asyncio.to_thread(restore_archived_months, settings.data_dir, settings.archive_path)
+        except Exception:
+            log.exception("restoring archived meta months failed")
         tasks = ([asyncio.create_task(app.state.poller.run()),
                   asyncio.create_task(app.state.scheduler.run())] if start_background else [])
         if app.state.warmer is not None:

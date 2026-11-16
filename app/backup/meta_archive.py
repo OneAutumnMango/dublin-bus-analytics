@@ -163,3 +163,79 @@ def slim_meta_copy(copy: Path, archive_dir: Path | None, now: int) -> list[str]:
         if removed or cache_rows:
             _vacuum(c)
     return removed
+
+
+def _import_month(c: sqlite3.Connection, mo: str, gz: Path, data_dir: Path) -> None:
+    """Import one archived month into the live connection in ONE transaction; raise on any mismatch."""
+    fd, name = tempfile.mkstemp(prefix="restore-", suffix=".db", dir=data_dir)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as out, gzip.open(gz, "rb") as src:
+            shutil.copyfileobj(src, out)
+        res = _integrity(tmp)
+        if res != [("ok",)]:
+            raise sqlite3.DatabaseError(f"integrity_check failed: {res[:3]}")
+        info = archive_info(gz)
+        if info is None or info["month"] != mo:
+            raise ValueError(f"archive info unreadable or for another month: {info}")
+        c.execute("attach ? as archive", (_ro_uri(tmp),))
+        try:
+            c.execute("begin immediate")
+            try:
+                c.execute("insert or ignore into arrivals select * from archive.arrivals")
+                c.execute("insert or ignore into forecast select * from archive.forecast")
+                n_arr, max_id = c.execute("select count(*), coalesce(max(id), 0) from arrivals where substr(service_date, 1, 7) = ?", (mo,)).fetchone()
+                n_fc = c.execute(f"select count(*) from forecast where arrival_id in ({_MONTH_ARR})", (mo,)).fetchone()[0]
+                if (n_arr, n_fc, max_id) != (info["arrivals"], info["forecast"], info["max_id"]):
+                    raise ValueError(f"count mismatch after import: live arrivals/forecast/max_id {n_arr}/{n_fc}/{max_id}, "
+                                     f"archive {info['arrivals']}/{info['forecast']}/{info['max_id']}")
+                c.execute("delete from archived_months where month = ?", (mo,))
+                c.execute("commit")
+            except BaseException:
+                c.execute("rollback")
+                raise
+        finally:
+            c.execute("detach archive")
+    finally:
+        for sfx in ("", "-journal", "-wal", "-shm"):
+            Path(str(tmp) + sfx).unlink(missing_ok=True)
+
+
+def restore_archived_months(data_dir: Path, archive_dir: Path | None) -> list[str]:
+    """Put months recorded in `archived_months` back from meta-YYYY-MM.db.gz. Returns months imported now.
+    A month that cannot be verified keeps its marker and is logged; nothing is ever half-imported."""
+    data_dir, done = Path(data_dir), []
+    meta = data_dir / "meta.db"
+    if not meta.exists():
+        return done
+    c = sqlite3.connect(meta, isolation_level=None)
+    try:
+        c.execute("pragma busy_timeout=60000")
+        if not c.execute("select 1 from sqlite_master where type='table' and name='archived_months'").fetchone():
+            return done
+        for (mo,) in c.execute("select month from archived_months order by month").fetchall():
+            name = f"meta-{mo}.db.gz"
+            gz = next((p for p in (Path(d) / name for d in (archive_dir, data_dir) if d is not None) if p.is_file()), None)
+            if gz is None:
+                log.error("archived month %s cannot be restored: %s not found in %s or %s", mo, name, archive_dir, data_dir)
+                continue
+            try:
+                _import_month(c, mo, gz, data_dir)
+                done.append(mo)
+                log.info("restored archived month %s from %s", mo, gz)
+            except Exception as e:
+                log.error("restoring archived month %s from %s failed, marker kept: %s", mo, gz, e)
+    finally:
+        c.close()
+    if done:
+        try:
+            from app import cache
+            from app.core.db import open_meta
+            cc = open_meta(data_dir)
+            try:
+                cache.clear(cc)
+            finally:
+                cc.close()
+        except Exception:
+            log.exception("clearing the result cache after restore failed")
+    return done

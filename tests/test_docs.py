@@ -133,6 +133,7 @@ def test_dockerfile_serves_ui_and_has_healthcheck():
     assert re.search(r"^COPY web/index\.html ", d, re.M) and "COPY web/css" in d and "COPY web/js" in d
     assert "web/test" not in d and "ENV WEB_DIR=/srv/web" in d
     assert re.search(r"^HEALTHCHECK .*\n?.*api/health", d, re.M)
+    assert re.search(r"^HEALTHCHECK .*--start-period=15m", d, re.M)  # a long restore import must not look unhealthy
 
 
 def test_server_compose_passes_backup_vars():

@@ -589,3 +589,148 @@ def test_archive_info_none_and_slim_keeps_month(dirs, tmp_path, kind):
     copy = staged(d, tmp_path)
     assert meta_archive.slim_meta_copy(copy, a, NOW) == []
     assert months_in(copy) == ["2026-09"]
+
+
+# ---- restore at startup ----
+def restored(tmp_path, d, a, now=NOW, name="fresh"):
+    """Snapshot d (archiving to a) and extract the tar into a new data dir, as a restore would."""
+    tar_path = backup.snapshot(d, tmp_path / f"bk-{name}", keep=3, archive_dir=a, now=now)
+    fresh = tmp_path / name
+    fresh.mkdir()
+    with tarfile.open(tar_path) as t:
+        t.extractall(fresh, filter="data")
+    return fresh
+
+
+def marker_months(d):
+    return [r[0] for r in rows(d / "meta.db", "select month from archived_months order by 1")]
+
+
+def test_restore_noop_on_live_db(dirs):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    before = content_hash(d)
+    assert meta_archive.restore_archived_months(d, a) == []
+    assert content_hash(d) == before
+
+
+def test_restore_noop_when_meta_db_missing_and_not_created(dirs):
+    d, a = dirs
+    assert meta_archive.restore_archived_months(d, a) == []
+    assert not (d / "meta.db").exists()
+
+
+def test_restore_imports_month_with_same_ids_and_clears_marker(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    assert marker_months(fresh) == ["2026-08", "2026-09"]
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-08", "2026-09"]
+    assert marker_months(fresh) == []
+    assert content_hash(fresh) == content_hash(d)
+    assert not list(fresh.glob("restore-*"))
+
+
+def test_restore_twice_is_noop(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert meta_archive.restore_archived_months(fresh, a) == []
+    assert content_hash(fresh) == content_hash(d)
+
+
+def test_restore_missing_archive_logs_error_keeps_marker(dirs, tmp_path, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    gz = a / "meta-2026-09.db.gz"
+    hidden = tmp_path / "hidden.gz"
+    gz.rename(hidden)
+    with caplog.at_level(logging.ERROR):
+        assert meta_archive.restore_archived_months(fresh, a) == []
+    assert marker_months(fresh) == ["2026-09"]
+    assert any("2026-09" in r.getMessage() and "meta-2026-09.db.gz" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records)
+    hidden.rename(gz)
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert content_hash(fresh) == content_hash(d)
+
+
+def _tamper_info(gz, tmp_path, sql):
+    db = tmp_path / "t.db"
+    db.write_bytes(gzip.decompress(gz.read_bytes()))
+    c = sqlite3.connect(db)
+    c.execute(sql)
+    c.commit()
+    c.close()
+    gz.write_bytes(gzip.compress(db.read_bytes()))
+
+
+def test_restore_rolls_back_on_count_mismatch(dirs, tmp_path, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    _tamper_info(a / "meta-2026-08.db.gz", tmp_path, "update info set arrivals = arrivals + 1")
+    with caplog.at_level(logging.ERROR):
+        assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert marker_months(fresh) == ["2026-08"]
+    assert rows(fresh / "meta.db", "select count(*) from arrivals where service_date like '2026-08-%'") == [(0,)]
+    assert rows(fresh / "meta.db", "select count(*) from forecast where arrival_id in (select id from arrivals where service_date like '2026-08-%')") == [(0,)]
+    assert any("2026-08" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records)
+
+
+def test_restore_rejects_archive_for_other_month(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-08", "2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    shutil.copy(a / "meta-2026-09.db.gz", a / "meta-2026-08.db.gz")
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert marker_months(fresh) == ["2026-08"]
+    assert rows(fresh / "meta.db", "select count(*) from arrivals where service_date like '2026-08-%'") == [(0,)]
+
+
+def test_restore_finds_archive_in_data_dir_when_not_in_archive_dir(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    shutil.copy(a / "meta-2026-09.db.gz", fresh)
+    assert meta_archive.restore_archived_months(fresh, tmp_path / "empty") == ["2026-09"]
+    assert meta_archive.restore_archived_months(fresh, None) == []
+
+
+def test_restore_clears_result_cache(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    c = sqlite3.connect(fresh / "meta.db")
+    c.execute("insert into result_cache(key, body, computed_at, last_used, ms) values('k', 'b', 1, 1, 1)")
+    c.commit()
+    c.close()
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-09"]
+    assert rows(fresh / "meta.db", "select count(*) from result_cache where key = 'k'") == [(0,)]
+
+
+def test_restore_continues_after_one_bad_month(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-07", "2026-08", "2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    (a / "meta-2026-08.db.gz").write_bytes(b"junk")
+    assert meta_archive.restore_archived_months(fresh, a) == ["2026-07", "2026-09"]
+    assert marker_months(fresh) == ["2026-08"]
+
+
+def test_restore_unique_conflict_counts_as_mismatch(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+    fresh = restored(tmp_path, d, a)
+    src = sqlite3.connect(d / "meta.db")
+    r = list(src.execute("select * from arrivals where service_date like '2026-09-%' order by id limit 1").fetchone())
+    src.close()
+    r[0] = 999999  # same trip/stop/seq/service_date, different id: insert or ignore skips the archived row
+    c = sqlite3.connect(fresh / "meta.db")
+    c.execute("insert into arrivals values(" + ",".join("?" * len(r)) + ")", r)
+    c.commit()
+    c.close()
+    assert meta_archive.restore_archived_months(fresh, a) == []
+    assert marker_months(fresh) == ["2026-09"]
+    assert rows(fresh / "meta.db", "select count(*) from arrivals where service_date like '2026-09-%'") == [(1,)]
