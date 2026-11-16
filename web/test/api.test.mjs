@@ -167,3 +167,38 @@ test('all-routes lab endpoints request /all/lab/{distribution|variance|persisten
   await api.allLabPersistence({ since: 5 });
   assert.deepEqual(urls, ['distribution', 'variance', 'persistence'].map((x) => ['GET', `/api/all/lab/${x}?since=5`]));
 });
+
+const withHdr = (v, body = { ok: true }) => ({ ...resp(200, body), headers: { get: (n) => (n.toLowerCase() === 'x-computed-at' ? v : null) } });
+const reset = () => { A.resetComputed(); A.refresh.on = false; };
+
+test('request records X-Computed-At (oldest wins)', async () => {
+  reset();
+  await A.request('/a', { fetchFn: async () => withHdr('1000') });
+  assert.equal(A.computedAt(), 1000);
+  await A.request('/a', { fetchFn: async () => withHdr('900') });
+  assert.equal(A.computedAt(), 900);
+  await A.request('/a', { fetchFn: async () => withHdr('2000') });
+  assert.equal(A.computedAt(), 900);
+  A.resetComputed();
+  assert.equal(A.computedAt(), null);
+});
+
+test('request adds fresh=1 only while refresh.on', async () => {
+  reset();
+  const urls = [];
+  const f = async (u, init) => { urls.push([u, init.method]); return resp(200, {}); };
+  await A.request('/api/map', { fetchFn: f });
+  A.refresh.on = true;
+  await A.request('/api/map', { fetchFn: f });
+  await A.request('/api/map?a=1', { fetchFn: f });
+  for (const m of ['POST', 'PUT', 'DELETE']) await A.request('/api/x', { method: m, fetchFn: f });
+  reset();
+  assert.deepEqual(urls, [['/api/map', 'GET'], ['/api/map?fresh=1', 'GET'], ['/api/map?a=1&fresh=1', 'GET'],
+    ['/api/x', 'POST'], ['/api/x', 'PUT'], ['/api/x', 'DELETE']]);
+});
+
+test('request without headers still works', async () => {
+  reset();
+  assert.deepEqual(await A.request('/a', { fetchFn: async () => resp(200, { v: 1 }) }), { v: 1 });
+  assert.equal(A.computedAt(), null);
+});

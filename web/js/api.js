@@ -25,7 +25,13 @@ export function errorMessage(status, bodyText) {
   return `The API answered HTTP ${status}`;
 }
 
+let oldest = null; // oldest X-Computed-At (epoch s) seen since resetComputed()
+export const computedAt = () => oldest;
+export const resetComputed = () => { oldest = null; };
+export const refresh = { on: false }; // while true, GETs carry fresh=1 (recompute server-side)
+
 export async function request(path, { method = 'GET', signal, timeout = 15000, fetchFn = globalThis.fetch } = {}) {
+  if (refresh.on && method === 'GET') path += `${path.includes('?') ? '&' : '?'}fresh=1`;
   const ctl = new AbortController();
   let timedOut = false;
   const onAbort = () => ctl.abort();
@@ -49,6 +55,8 @@ export async function request(path, { method = 'GET', signal, timeout = 15000, f
       try { body = JSON.parse(text); } catch { /* not JSON */ }
       throw new ApiError('http', errorMessage(res.status, text), res.status, body && typeof body === 'object' ? body : null);
     }
+    const t = Number(res.headers?.get?.('X-Computed-At'));
+    if (Number.isFinite(t) && t > 0 && (oldest === null || t < oldest)) oldest = t;
     try { return JSON.parse(text); } catch { throw new ApiError('parse', 'The API returned an unreadable response'); }
   } finally {
     clearTimeout(timer);

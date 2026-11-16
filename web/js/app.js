@@ -1,7 +1,7 @@
 // Hash router: one page module per view, each exporting render(ctx).
-import { isAbort } from './api.js';
+import { computedAt, isAbort, refresh, resetComputed } from './api.js';
 import { errorBox, h, link, setStatus } from './dom.js';
-import { parseHash, usesTrackedSet } from './lib.js';
+import { dateTime, parseHash, usesTrackedSet } from './lib.js';
 import { onTrackedChange, renderSidebar } from './sidebar.js';
 import { installTooltip } from './tooltip.js';
 import * as all from './pages/all.js';
@@ -26,10 +26,26 @@ function markNav(name) { // highlight the current section in the top bar
   for (const a of links) { if (a.getAttribute('data-nav') === NAV[name]) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
 }
 
+function updateBar() { // shows the oldest computed-at time of this render, plus Refresh
+  const bar = globalThis.document.getElementById('cache-bar');
+  if (!bar) return;
+  const t = computedAt();
+  if (t === null) { bar.hidden = true; bar.replaceChildren(); return; }
+  const btn = h('button', { type: 'button', class: 'btn btn-quiet' }, 'Refresh');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'Refreshing…';
+    refresh.on = true;
+    try { await show(); } finally { refresh.on = false; }
+  });
+  bar.replaceChildren(`Data computed ${dateTime(t)} · `, btn);
+  bar.hidden = false;
+}
+
 async function show() {
   if (ctl) ctl.abort(); // anything still loading for the previous view is cancelled and ignored
   ctl = new AbortController();
   const { signal } = ctl;
+  resetComputed();
   const r = parseHash(globalThis.location.hash);
   markNav(r.name);
   const main = globalThis.document.getElementById('main');
@@ -57,10 +73,12 @@ async function show() {
     }
     if (key !== lastKey) { main.focus(); globalThis.scrollTo(0, 0); lastKey = key; }
     await done;
+    if (!signal.aborted) updateBar();
   } catch (e) {
     if (!isAbort(e) && !signal.aborted) {
       main.append(errorBox(e, () => show()));
       setStatus(`Error: ${e.message}`);
+      updateBar();
     }
   }
 }
