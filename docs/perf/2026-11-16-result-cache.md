@@ -24,7 +24,7 @@ The real backup from Nov 16: 6.1M samples, 347k arrivals, 1.6M forecast rows, 10
 | `/api/routes/15/lab/variance` | 0.5 s | 2 ms |
 | `/api/routes/15/lab/persistence` | 0.4 s | 2 ms |
 
-Recompute time (`fresh=1`, the Refresh button) is similar to the live time. The `x_cache` column in run-on.log is null only because the benchmark script read a capitalised header name from uvicorn's lowercase headers. The headers were confirmed separately: `x-cache: hit`, `x-cache: bypass`, `x-computed-at: <epoch>`, and no cache headers on uncached paths.
+A recompute (`fresh=1`, what the Refresh button and the hourly warmer do) runs the same live computation, so it costs what the Live column shows, give or take noise. The `x_cache` column in run-on.log is null only because the benchmark script read a capitalised header name from uvicorn's lowercase headers. The headers were confirmed separately: `x-cache: hit`, `x-cache: bypass`, `x-computed-at: <epoch>`, and no cache headers on uncached paths.
 
 ## Parity
 
@@ -36,5 +36,6 @@ All 17 responses were byte-identical between cache off and cache on (`cmp`), and
 
 ## Caveats
 
-- The very first `/api/all/routes` in the cache-off run took 13.0 s because per-day rollups were built lazily for days that had closed since the backup. This one-time cost is exactly what the first warm pass absorbs.
+- The very first `/api/all/routes` in the cache-off run took 13.0 s. The cache-on run started from an identical copy and recomputed the same endpoint first in 0.4 s, so this is probably a one-off cold file-cache effect, not rollup building. It was not reproduced or explained further, so treat the 13.0 s as an unexplained outlier and do not read it as a typical cost.
+- Each endpoint was timed once per mode, so single-run noise applies (for example `/api/map` 2.9 s live against 4.5 s on recompute, and route 15 forecast 1.8 s against 0.5 s).
 - Timings are from a faster machine than the Pi, so absolute numbers on the Pi will be larger, but a hit remains a single indexed SQLite read.
