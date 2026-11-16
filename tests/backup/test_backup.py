@@ -1157,3 +1157,26 @@ def test_snapshot_prunes_mixed_tar_and_tar_gz_population(data, tmp_path):
     p = snapshot(data, bk, keep=3)
     assert [q.name for q in list_backups(bk)] == [
         "analytics-20200103T000000Z.tar", "analytics-20200104T000000Z.tar.gz", p.name]
+
+
+def test_snapshot_never_deletes_new_file_when_clock_is_behind(data, tmp_path):
+    bk = tmp_path / "bk"
+    later = datetime.fromtimestamp(time.time() + 60, timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _old_names(bk, [f"analytics-{later}.tar"])  # within the future slack: counted, and newer than the new file
+    p = snapshot(data, bk, keep=1)
+    assert p.exists()
+
+
+def test_api_post_passes_keep_and_keep_weekly(data, monkeypatch):
+    from app.backup import api
+    seen = {}
+    real = api.snapshot
+
+    def spy(*a, **kw):
+        seen["args"], seen["kw"] = a, kw
+        return real(*a, **kw)
+
+    monkeypatch.setattr(api, "snapshot", spy)
+    app = create_app(Settings(server_url="http://x", data_dir=data, backup_keep=5, backup_keep_weekly=2))
+    assert TestClient(app).post("/api/backup").status_code == 200
+    assert seen["args"][2] == 5 and seen["kw"]["keep_weekly"] == 2

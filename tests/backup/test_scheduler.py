@@ -161,7 +161,7 @@ class Spy:
         self.calls, self.fail_snapshot, self.fail_compact, self.skip = [], fail_snapshot, fail_compact, skip
 
     def snap(self, data_dir, backup_dir, keep, archive_dir=None, keep_weekly=0):
-        self.archive_dir = archive_dir
+        self.archive_dir, self.keep_weekly = archive_dir, keep_weekly
         self.calls.append(("snapshot", data_dir, backup_dir, keep))
         if self.fail_snapshot:
             raise OSError("disk full")
@@ -195,6 +195,13 @@ async def test_run_once_snapshot_then_compaction_order(tmp_path, caplog):
     assert spy.calls[1][2] == int(NOW.timestamp())
     assert path == tmp_path / "bk" / "analytics-x.tar"
     assert any(r.levelno == logging.WARNING and "samples-2020-01.db" in r.message for r in caplog.records)
+
+
+async def test_run_once_passes_keep_weekly(tmp_path):
+    spy = Spy()
+    sc, _ = sched(tmp_path, spy, backup_keep_weekly=2)
+    await sc.run_once()
+    assert spy.keep_weekly == 2
 
 
 async def test_run_once_no_skipped_no_warning(tmp_path, caplog):
