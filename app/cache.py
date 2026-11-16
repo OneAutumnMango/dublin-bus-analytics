@@ -48,6 +48,9 @@ def lookup(c, key, now=None):
 
 
 def store(c, key, body, ms, gen, now=None):
+    """Store a gzipped body. A pending caller transaction is committed first."""
+    if c.in_transaction:
+        c.commit()
     now = int(time.time()) if now is None else now
     c.execute("begin immediate")  # lock first so the generation check and insert are atomic
     try:
@@ -64,6 +67,9 @@ def store(c, key, body, ms, gen, now=None):
 
 
 def clear(c):
+    """Drop cached rows and bump the generation. A pending caller transaction is committed first."""
+    if c.in_transaction:
+        c.commit()
     c.execute("begin immediate")
     try:
         g = generation(c) + 1

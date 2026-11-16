@@ -100,3 +100,22 @@ def test_stale_keys_order_and_filters(tmp_path):
     store(c, "unused", b"x", 1, None, now=now - 9 * DAY)
     store(c, "srv:z", b"x", 1, None, now=now - 9000)
     assert stale_keys(c, now) == ["b", "a"]
+
+
+def test_clear_with_pending_transaction(tmp_path):
+    c = open_meta(tmp_path)
+    store(c, "k", b"x", 1, None, now=1)
+    c.execute("insert into gaps(start, end) values(1, 2)")
+    clear(c)
+    c2 = open_meta(tmp_path)
+    assert c2.execute("select count(*) from gaps").fetchone()[0] == 1
+    assert c2.execute("select count(*) from result_cache where key='k'").fetchone()[0] == 0
+
+
+def test_store_with_pending_transaction(tmp_path):
+    c = open_meta(tmp_path)
+    c.execute("insert into gaps(start, end) values(1, 2)")
+    assert store(c, "k", b"x", 1, None, now=1) is True
+    c2 = open_meta(tmp_path)
+    assert c2.execute("select count(*) from gaps").fetchone()[0] == 1
+    assert c2.execute("select count(*) from result_cache where key='k'").fetchone()[0] == 1
