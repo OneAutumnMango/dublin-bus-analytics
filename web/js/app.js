@@ -35,7 +35,10 @@ function updateBar() { // shows the oldest computed-at time of this render, plus
   btn.addEventListener('click', async () => {
     btn.disabled = true; btn.textContent = 'Refreshing…';
     refresh.on = true;
+    const doc = globalThis.document;
+    const keep = doc.activeElement === btn || doc.activeElement === doc.body; // never steal focus the user moved elsewhere
     try { await show(); } finally { refresh.on = false; }
+    if (keep && (doc.activeElement === doc.body || doc.activeElement === btn)) bar.querySelector('button')?.focus();
   });
   bar.replaceChildren(`Data computed ${dateTime(t)} · `, btn);
   bar.hidden = false;

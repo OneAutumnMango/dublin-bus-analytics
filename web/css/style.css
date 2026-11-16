@@ -436,6 +436,7 @@ p.reading { font-weight: 600; }
 /* layering: `main > *` animates (rise, fill both), so each page section is its own stacking context and a later section paints over an earlier one's popover. Raise the section that holds the open popover (header is z 40, #chart-tip 1000). */
 main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 .info-host:has(> .info-pop:not([hidden])) { z-index: 20; }
+.content { min-width: 0; }
 .cache-bar { max-width: 1600px; margin: 0 auto; padding: var(--s3) var(--s6) 0; color: var(--muted); font-size: var(--fs-sm); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .cache-bar[hidden] { display: none; }
 .cache-bar .btn:disabled { cursor: progress; opacity: .7; }
