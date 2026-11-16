@@ -439,3 +439,44 @@ def test_remove_drops_rollups_of_the_day(data):
     left = {r[:2] for r in m.execute("select route, service_date from ru_done")}
     m.close()
     assert ("15", "2026-11-05") not in left and ("7", "2026-11-05") in left and ("15", "2026-11-04") in left
+
+
+# ---- archive rewrite before the live delete ----
+
+def test_remove_day_rewrites_archive_before_live_delete(data, tmp_path, monkeypatch):
+    seen = []
+
+    def fake(archive_dir, d, route):
+        seen.append((archive_dir, d, route, _count(data / "meta.db", "arrivals"), _count(data / "meta.db", "forecast")))
+        return True
+    monkeypatch.setattr(D.meta_archive, "rewrite_archive_without", fake)
+    D.remove(data, DAY, "15", archive_dir=tmp_path / "arch")
+    assert seen == [(tmp_path / "arch", DAY, "15", 5, 10)]  # live rows all still there
+    assert _count(data / "meta.db", "arrivals") == 3
+
+
+def test_remove_day_aborts_if_archive_rewrite_fails(data, tmp_path, monkeypatch):
+    def boom(*a):
+        raise OSError("disk full")
+    monkeypatch.setattr(D.meta_archive, "rewrite_archive_without", boom)
+    with pytest.raises(D.DayBusy) as e:
+        D.remove(data, DAY, None, archive_dir=tmp_path / "arch")
+    assert e.value.part == "archive" and e.value.kind == "error"
+    assert _count(data / "meta.db", "arrivals") == 5 and _count(data / "meta.db", "forecast") == 10
+    assert _count(data / "samples-2026-11.db", "sample") == 6  # nothing touched at all
+    from app.maintenance import jobs as J
+    import threading
+    lock = threading.Lock()
+    lock.acquire()
+    J._jobs["j"] = {"job_id": "j", "state": "running", "current_day": None, "done": {}, "_end": 0.0}
+    J._run("j", data, [DAY], None, lock, archive_dir=tmp_path / "arch")
+    rec = J._jobs.pop("j")
+    assert rec["state"] == "error" and rec["error"] == f"Removal of {DAY.isoformat()} stopped: archive failed."
+    assert _count(data / "meta.db", "arrivals") == 5
+
+
+def test_remove_day_without_archive_dir_unchanged(data, tmp_path):
+    (tmp_path / "arch").mkdir()
+    D.remove(data, DAY, None)
+    assert list((tmp_path / "arch").iterdir()) == []
+    assert _count(data / "meta.db", "arrivals") == 2

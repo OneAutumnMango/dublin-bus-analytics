@@ -205,3 +205,11 @@ def test_remove_error_mapping_is_neutral(client, monkeypatch, exc, word):
 
 def test_unicode_digit_date_422(client):
     assert client.get("/api/data/day", params={"date": "\u0662\u0660\u0662\u0666-11-05"}).status_code == 422
+
+
+def test_api_passes_archive_path(client, monkeypatch):
+    got = []
+    monkeypatch.setattr(D, "remove", lambda *a, **k: got.append(k.get("archive_dir")) or {k2: 0 for k2 in J.KEYS})
+    j = _remove(client, {"date": DAY, "confirm": DAY})
+    assert j["state"] == "done" and got == [client.app.state.settings.archive_path]
+    assert got[0] is not None

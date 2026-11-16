@@ -3,7 +3,7 @@ import hashlib
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -844,3 +844,79 @@ def test_restore_stale_cleanup_touches_only_own_temp_files(dirs, tmp_path):
     meta_archive.restore_archived_months(fresh, a)
     assert not any(p.exists() for p in own)
     assert notes.exists() and pfile.exists() and dbdir.is_dir() and (fresh / "restore-new.db").exists()
+
+
+# ---- rewrite_archive_without (day removal inside an archived month) ----
+
+def _archived(dirs, per_month=3):
+    """Archive 2026-09 (days 10, 11, 12; ids 7, 14, 21; 2 forecast rows each); returns the gz."""
+    d, a = dirs
+    make_meta(d, ["2026-09"], per_month=per_month)
+    archive_meta_months(d, a, ts(2026, 11, 1))
+    return a / "meta-2026-09.db.gz"
+
+
+def _leftovers(a):
+    return sorted(p.name for p in a.iterdir() if p.name != "meta-2026-09.db.gz")
+
+
+def test_rewrite_removes_day_rows_and_updates_info(dirs, tmp_path):
+    gz = _archived(dirs)
+    assert meta_archive.rewrite_archive_without(dirs[1], date(2026, 9, 12), None) is True
+    assert gz_rows(gz, tmp_path, "select id, service_date from arrivals order by id") == [(7, "2026-09-10"), (14, "2026-09-11")]
+    assert gz_rows(gz, tmp_path, "select distinct arrival_id from forecast order by 1") == [(7,), (14,)]
+    assert archive_info(gz) == {"month": "2026-09", "arrivals": 2, "forecast": 4, "max_id": 14}
+    assert _leftovers(dirs[1]) == []
+
+
+def test_rewrite_respects_route_filter(dirs, tmp_path):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    c = sqlite3.connect(d / "meta.db")
+    c.execute("update arrivals set route='x' where id = 14")  # day 11 has route x, others route r
+    c.commit()
+    c.close()
+    archive_meta_months(d, a, ts(2026, 11, 1))
+    gz = a / "meta-2026-09.db.gz"
+    before = gz.read_bytes()
+    assert meta_archive.rewrite_archive_without(a, date(2026, 9, 11), "r") is False  # no route-r row that day
+    assert gz.read_bytes() == before
+    assert meta_archive.rewrite_archive_without(a, date(2026, 9, 11), "x") is True
+    assert gz_rows(gz, tmp_path, "select id from arrivals order by id") == [(7,), (21,)]
+    assert archive_info(gz)["forecast"] == 4
+
+
+def test_rewrite_no_archive_returns_false(dirs):
+    d, a = dirs
+    assert meta_archive.rewrite_archive_without(None, date(2026, 9, 10), None) is False
+    assert meta_archive.rewrite_archive_without(a, date(2026, 9, 10), None) is False  # no file
+    gz = _archived(dirs)
+    before = gz.read_bytes()
+    assert meta_archive.rewrite_archive_without(a, date(2026, 9, 20), None) is False  # no rows that day
+    assert gz.read_bytes() == before
+    assert _leftovers(a) == []
+
+
+def test_rewrite_failure_raises_and_leaves_old_archive_intact(dirs, monkeypatch):
+    gz = _archived(dirs)
+    before = gz.read_bytes()
+
+    def bad(*a, **k):
+        raise sqlite3.DatabaseError("verify failed")
+    monkeypatch.setattr(meta_archive, "_verify_gz", bad)
+    with pytest.raises(sqlite3.DatabaseError):
+        meta_archive.rewrite_archive_without(dirs[1], date(2026, 9, 10), None)
+    assert gz.read_bytes() == before
+    assert _leftovers(dirs[1]) == []
+    monkeypatch.undo()
+    gz.write_bytes(b"not gzip")  # unreadable old archive: raise, leave it alone
+    with pytest.raises(Exception):
+        meta_archive.rewrite_archive_without(dirs[1], date(2026, 9, 10), None)
+    assert gz.read_bytes() == b"not gzip" and _leftovers(dirs[1]) == []
+
+
+def test_rewrite_handles_removing_all_rows(dirs, tmp_path):
+    gz = _archived(dirs, per_month=1)
+    assert meta_archive.rewrite_archive_without(dirs[1], date(2026, 9, 10), None) is True
+    assert archive_info(gz) == {"month": "2026-09", "arrivals": 0, "forecast": 0, "max_id": 0}
+    assert gz_rows(gz, tmp_path, "pragma integrity_check") == [("ok",)]

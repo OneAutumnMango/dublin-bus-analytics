@@ -46,7 +46,7 @@ def get(job_id: str) -> dict | None:
                 "done": dict(r["done"]), "total": dict(r["total"]), "skipped_months": list(r["skipped_months"])}
 
 
-def start(data_dir, days: "list[date]", route: str | None, lock) -> str:
+def start(data_dir, days: "list[date]", route: str | None, lock, archive_dir=None) -> str:
     with _mu:
         _prune()
         for k, r in _jobs.items():
@@ -57,7 +57,7 @@ def start(data_dir, days: "list[date]", route: str | None, lock) -> str:
                       "day_count": len(days), "current_day": None, "done": _zero(), "total": _zero(),
                       "skipped_months": [], "error": None, "_end": 0.0}
     try:
-        threading.Thread(target=_run, args=(jid, Path(data_dir), list(days), route, lock), daemon=True).start()
+        threading.Thread(target=_run, args=(jid, Path(data_dir), list(days), route, lock, archive_dir), daemon=True).start()
     except BaseException:
         with _mu:
             del _jobs[jid]
@@ -70,7 +70,7 @@ def _set(jid: str, **kw) -> None:
         _jobs[jid].update(kw)
 
 
-def _run(jid, data_dir, days, route, lock) -> None:
+def _run(jid, data_dir, days, route, lock, archive_dir=None) -> None:
     base = _zero()  # sum of finished days
     final: dict = {"state": "error", "error": "Removal failed unexpectedly."}
     try:
@@ -83,7 +83,7 @@ def _run(jid, data_dir, days, route, lock) -> None:
                 live = {k: int(out[k]) for k in KEYS}
                 _set(jid, stage=stage, done={k: base[k] + live[k] for k in KEYS})
 
-            res = day.remove(data_dir, d, route, progress=cb)
+            res = day.remove(data_dir, d, route, progress=cb, **({'archive_dir': archive_dir} if archive_dir else {}))
             for k in KEYS:
                 base[k] += int(res[k])
             _set(jid, done=dict(base), day_index=i + 1)

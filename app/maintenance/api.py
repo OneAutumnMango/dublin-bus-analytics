@@ -54,7 +54,8 @@ def remove_day(request: Request, date: str = Query(...), confirm: str = Query(..
     if not _backup._lock.acquire(blocking=False):
         return JSONResponse({"detail": _BUSY, "job_id": _jobs.running_id()}, status_code=409)
     try:
-        job_id = _jobs.start(request.app.state.settings.data_dir, days, route, _backup._lock)
+        job_id = _jobs.start(request.app.state.settings.data_dir, days, route, _backup._lock,
+                             archive_dir=request.app.state.settings.archive_path)
     except _jobs.JobBusy as e:
         _backup._lock.release()
         return JSONResponse({"detail": _BUSY, "job_id": e.job_id}, status_code=409)

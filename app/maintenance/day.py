@@ -30,6 +30,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app import cache, rollup
+from app.backup import meta_archive
 from app.api.routes import _DB_LOCK
 
 log = logging.getLogger(__name__)
@@ -264,7 +265,7 @@ def preview_range(data_dir: Path, days: "list[date]", route: str | None) -> dict
 
 
 def remove(data_dir: Path, d: date, route: str | None,
-           progress: Callable[[str, dict], None] | None = None) -> dict:
+           progress: Callable[[str, dict], None] | None = None, archive_dir: Path | None = None) -> dict:
     """Remove the day; `progress(stage, out)` runs after every committed chunk (stage: samples,
     arrivals or gaps) with the running counts."""
     data_dir, w = Path(data_dir), window(d)
@@ -272,7 +273,7 @@ def remove(data_dir: Path, d: date, route: str | None,
     if progress:
         out["_progress"] = progress
     try:
-        return _remove(data_dir, d, route, w, out, progress)
+        return _remove(data_dir, d, route, w, out, progress, archive_dir)
     finally:
         out.pop("_progress", None)
 
@@ -287,7 +288,12 @@ def _drop_rollups(c, d: date, route: str | None) -> None:
             log.exception("result cache clear failed")
 
 
-def _remove(data_dir, d, route, w, out, progress) -> dict:
+def _remove(data_dir, d, route, w, out, progress, archive_dir=None) -> dict:
+    try:  # first of all, before any sample or live row goes: a later restore must not bring the day back
+        meta_archive.rewrite_archive_without(archive_dir, d, route)
+    except Exception as e:
+        log.exception("rewriting the month archive for %s failed", d)
+        raise _fail("archive", out, e) from None
     _scan_months(data_dir, d, route, w, True, out)
     meta = data_dir / "meta.db"
     try:

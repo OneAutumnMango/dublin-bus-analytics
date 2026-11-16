@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # backup.py imports this module lazily (inside snapshot), so this top-level import is not circular
@@ -72,16 +72,60 @@ def _archive_one(meta_db: Path, archive_dir: Path, mo: str, final: Path) -> None
     tmp_db, tmp_gz = archive_dir / f"meta-{mo}.db.tmp", archive_dir / f"meta-{mo}.db.gz.tmp"
     try:
         _write_db(meta_db, mo, tmp_db)
-        with open(tmp_db, "rb") as src, open(tmp_gz, "wb") as raw:
-            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, compresslevel=3) as out:
-                shutil.copyfileobj(src, out)
-            raw.flush()  # GzipFile is closed (final block + CRC trailer written) before the fsync
-            os.fsync(raw.fileno())
-        _verify_gz(tmp_gz, _sha(tmp_db))
+        _gzip_verified(tmp_db, tmp_gz)
         os.replace(tmp_gz, final)
         _fsync_dir(archive_dir)
     finally:
         for p in (tmp_db, tmp_gz):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                log.warning("could not remove temp archive file %s", p)
+
+
+def _gzip_verified(src_db: Path, tmp_gz: Path) -> None:
+    with open(src_db, "rb") as src, open(tmp_gz, "wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, compresslevel=3) as out:
+            shutil.copyfileobj(src, out)
+        raw.flush()  # GzipFile is closed (final block + CRC trailer written) before the fsync
+        os.fsync(raw.fileno())
+    _verify_gz(tmp_gz, _sha(src_db))
+
+
+def rewrite_archive_without(archive_dir: Path | None, d: date, route: str | None) -> bool:
+    """Drop day `d` (optionally one route) from its month archive. True when the file was rewritten,
+    False when there was nothing to do. Raises on any failure, leaving the old file untouched."""
+    if archive_dir is None:
+        return False
+    archive_dir = Path(archive_dir)
+    final = archive_dir / f"meta-{d.isoformat()[:7]}.db.gz"
+    if not final.is_file():
+        return False
+    where = "service_date = ?" + (" and route = ?" if route else "")
+    args = [d.isoformat()] + ([route] if route else [])
+    fd, name = tempfile.mkstemp(prefix="rewrite-", suffix=".db", dir=archive_dir)
+    tmp_db, tmp_gz = Path(name), archive_dir / (final.name + ".tmp")
+    try:
+        with os.fdopen(fd, "wb") as out, gzip.open(final, "rb") as src:
+            shutil.copyfileobj(src, out)
+        with contextlib.closing(sqlite3.connect(tmp_db, isolation_level=None)) as c:
+            if not c.execute(f"select 1 from arrivals where {where} limit 1", args).fetchone():
+                return False
+            c.execute("begin")
+            c.execute(f"delete from forecast where arrival_id in (select id from arrivals where {where})", args)
+            c.execute(f"delete from arrivals where {where}", args)
+            c.execute("update info set arrivals = (select count(*) from arrivals), forecast = (select count(*) from forecast),"
+                      " max_id = coalesce((select max(id) from arrivals), 0)")
+            c.execute("commit")
+        res = _integrity(tmp_db)
+        if res != [("ok",)]:
+            raise sqlite3.DatabaseError(f"integrity_check failed for {tmp_db.name}: {res[:3]}")
+        _gzip_verified(tmp_db, tmp_gz)
+        os.replace(tmp_gz, final)
+        _fsync_dir(archive_dir)
+        return True
+    finally:
+        for p in (tmp_db, Path(str(tmp_db) + "-journal"), tmp_gz):
             try:
                 p.unlink(missing_ok=True)
             except OSError:

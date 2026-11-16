@@ -2,13 +2,14 @@ import logging
 import shutil
 import sqlite3
 import tarfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
 from app.backup import backup
-from app.backup.meta_archive import restore_archived_months
+from app.backup.meta_archive import archive_info, restore_archived_months
 from app.core.db import open_meta
+from app.maintenance import day
 
 NOW = int(datetime(2026, 11, 10, tzinfo=timezone.utc).timestamp())  # Aug, Sep, Oct finished; Nov current
 MONTHS = ["2026-08", "2026-09", "2026-10", "2026-11"]
@@ -104,3 +105,58 @@ def test_old_full_tar_restores_as_before(tmp_path):
         t.extractall(fresh, filter="data")
     assert restore_archived_months(fresh, tmp_path / "none") == []
     assert dump(fresh) == dump(d)
+
+
+def _remove_one_day(d, a, mo="2026-09"):
+    """A day of `mo` holding at least 2 arrivals (so a chunk of 1 leaves a partial removal)."""
+    c = sqlite3.connect(d / "meta.db")
+    sd = c.execute("select service_date from arrivals where service_date like ? group by 1 having count(*) > 1 order by 1 limit 1", (f"{mo}-%",)).fetchone()[0]
+    c.close()
+    return date.fromisoformat(sd)
+
+
+def test_removed_day_not_resurrected_by_restore(tmp_path):
+    d, a, _ = scenario(tmp_path, "rm")
+    gone = _remove_one_day(d, a)
+    day.remove(d, gone, None, archive_dir=a)
+    newest = backup.snapshot(d, tmp_path / "rm-bk", keep=3, archive_dir=a, now=NOW + 120)
+    fresh = tmp_path / "rm-fresh2"
+    fresh.mkdir()
+    with tarfile.open(newest) as t:
+        t.extractall(fresh, filter="data")
+    assert markers(fresh) == MONTHS[:3]  # month still slimmed: archive counts were kept in step
+    assert restore_archived_months(fresh, a) == MONTHS[:3]
+    c = sqlite3.connect(fresh / "meta.db")
+    assert c.execute("select count(*) from arrivals where service_date = ?", (gone.isoformat(),)).fetchone() == (0,)
+    c.close()
+    assert dump(fresh) == dump(d)
+
+
+def test_partial_live_failure_keeps_month_whole_in_next_tar(tmp_path, monkeypatch):
+    d, a, _ = scenario(tmp_path, "pf")
+    gone = _remove_one_day(d, a)
+
+    calls = []
+
+    def boom():
+        calls.append(1)
+        if len(calls) == 1:  # after the first of the day's chunks
+            raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(day, "_between_chunks", boom)
+    monkeypatch.setattr(day, "CHUNK", 1)
+    with pytest.raises(day.DayBusy):
+        day.remove(d, gone, None, archive_dir=a)  # archive rewritten, live delete dies after the first chunk
+    monkeypatch.undo()
+    c = sqlite3.connect(d / "meta.db")
+    live = c.execute("select count(*) from arrivals where service_date like '2026-09-%'").fetchone()[0]
+    c.close()
+    assert live > 0 and live != archive_info(a / "meta-2026-09.db.gz")["arrivals"]
+    newest = backup.snapshot(d, tmp_path / "pf-bk", keep=3, archive_dir=a, now=NOW + 120)
+    fresh = tmp_path / "pf-fresh2"
+    fresh.mkdir()
+    with tarfile.open(newest) as t:
+        t.extractall(fresh, filter="data")
+    assert "2026-09" not in markers(fresh)  # whole in the tar
+    c = sqlite3.connect(fresh / "meta.db")
+    assert c.execute("select count(*) from arrivals where service_date like '2026-09-%'").fetchone()[0] == live
+    c.close()
