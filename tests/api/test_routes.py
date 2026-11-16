@@ -982,28 +982,38 @@ def test_forecast_pushdown_and_values(env, spy):
 
 @pytest.mark.parametrize("what", ["summary", "accumulation", "tracked", "track"])
 async def test_event_loop_not_blocked(tmp_path, monkeypatch, what):
+    # No clock: the stand-in blocking call waits for `gate`, which only the test sets, after /api/health
+    # answered. If the handler ran on the event loop, health could not answer while it waits, the wait
+    # would time out (5 s, failure path only) and `seen` would be False.
     import app.api.routes as api
     env = Env(tmp_path)
     env.fake.set_route_stops("15", {"out": [{"id": "s1"}]})
+    gate, entered, seen = threading.Event(), threading.Event(), []
+
+    def block():
+        entered.set()
+        seen.append(gate.wait(5))
+
     if what == "summary":
-        monkeypatch.setattr(api, "_summary_db", lambda *a: (time.sleep(0.3), {})[1])
+        monkeypatch.setattr(api, "_summary_db", lambda *a: (block(), {})[1])
         req = ("GET", "/api/routes/15/summary")
     elif what == "accumulation":
-        monkeypatch.setattr(api, "_accumulation_db", lambda *a: (time.sleep(0.3), ([], a[2]))[1])
+        monkeypatch.setattr(api, "_accumulation_db", lambda *a: (block(), ([], a[2]))[1])
         req = ("GET", "/api/routes/15/accumulation")
     elif what == "tracked":
-        env.app.state.poller.tracked = lambda: (time.sleep(0.3), [])[1]
+        env.app.state.poller.tracked = lambda: (block(), [])[1]
         req = ("GET", "/api/routes/tracked")
     else:
-        env.app.state.poller.track = lambda r: time.sleep(0.3)
+        env.app.state.poller.track = lambda r: block()
         req = ("PUT", "/api/routes/tracked/15")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=env.app), base_url="http://t") as c:
-        t = time.perf_counter()  # a blocked loop delays the sleep below as well as the health call
         task = asyncio.create_task(c.request(*req))
-        await asyncio.sleep(0.05)
+        while not entered.is_set():  # the handler is now inside the blocking call
+            await asyncio.sleep(0.01)
         assert (await c.get("/api/health")).json() == {"ok": True}
-        assert time.perf_counter() - t < 0.25  # blocked loop would take >= 0.3 (the sleep)
+        gate.set()
         assert (await task).status_code == 200
+    assert seen == [True]
 
 
 def test_search_routes_404_and_502(env):
