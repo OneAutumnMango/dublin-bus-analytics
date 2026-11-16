@@ -477,12 +477,20 @@ def test_archive_disabled_snapshot_keeps_full_meta(dirs, tmp_path):
     assert not rows(m, "select name from sqlite_master where name='archived_months'")
 
 
-def test_slim_failure_falls_back_to_full_copy(dirs, tmp_path, monkeypatch, caplog):
+def tar_names(bk):
+    with tarfile.open(sorted(bk.glob("analytics-*.tar.gz"))[-1]) as tf:
+        return tf.getnames()
+
+
+def test_slim_failure_falls_back_to_full_copy(dirs, tmp_path, monkeypatch):
     d, a = dirs
     make_meta(d, ["2026-09", "2026-11"])
 
     def boom(copy, *_):
-        sqlite3.connect(copy).execute("drop table forecast").connection.commit()  # half-modified
+        c = sqlite3.connect(copy)  # closed, so the damage reaches the main file
+        c.execute("drop table forecast")
+        c.commit()
+        c.close()
         raise RuntimeError("boom")
 
     monkeypatch.setattr(meta_archive, "slim_meta_copy", boom)
@@ -490,3 +498,94 @@ def test_slim_failure_falls_back_to_full_copy(dirs, tmp_path, monkeypatch, caplo
     m = tar_meta(d / "bk", tmp_path)
     assert months_in(m) == ["2026-09", "2026-11"]
     assert rows(m, "select count(*) from forecast")[0][0] == 12
+    assert sorted(n for n in tar_names(d / "bk") if n.startswith("meta.db")) == ["meta.db"]
+
+
+def test_slim_vacuum_failure_falls_back_to_full_copy(dirs, tmp_path, monkeypatch):
+    d, a = dirs
+    make_meta(d, ["2026-09", "2026-11"])
+
+    def bad(c):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(meta_archive, "_vacuum", bad)
+    backup.snapshot(d, d / "bk", archive_dir=a, now=NOW)
+    m = tar_meta(d / "bk", tmp_path)
+    assert months_in(m) == ["2026-09", "2026-11"]
+    assert not rows(m, "select name from sqlite_master where name='archived_months'")
+    assert rows(m, "select count(*) from forecast")[0][0] == 12
+
+
+def _tamper(tmp_path, sql):
+    """Slim a 3-arrival month after running `sql` on the copy; returns (removed, copy)."""
+    d, a = tmp_path / "data", tmp_path / "arch"
+    d.mkdir(), a.mkdir()
+    make_meta(d, ["2026-09"], with_forecast=False)
+    c = sqlite3.connect(d / "meta.db")  # ids 7,14,21; forecast only for 14 and 21 (max id 21 stays)
+    c.executemany("insert into forecast values(?,?,?,?)", [(i, h, 1, h) for i in (14, 21) for h in (5, 10)])
+    c.commit()
+    c.close()
+    archive_meta_months(d, a, NOW)
+    copy = staged(d, tmp_path)
+    c = sqlite3.connect(copy)
+    c.executescript(sql)
+    c.commit()
+    c.close()
+    return meta_archive.slim_meta_copy(copy, a, NOW), copy
+
+
+@pytest.mark.parametrize("sql", [
+    "delete from arrivals where id = 7",  # arrivals count only
+    "delete from forecast where arrival_id = 14 and horizon_min = 5",  # forecast count only
+    "delete from forecast where arrival_id = 14; delete from arrivals where id = 14",  # day-removal shape
+])
+def test_slim_count_checks_each_keep_month(tmp_path, sql, caplog):
+    with caplog.at_level(logging.WARNING):
+        removed, copy = _tamper(tmp_path, sql)
+    assert removed == [] and "count mismatch" in caplog.text
+    assert months_in(copy) == ["2026-09"]
+
+
+def test_slim_keeps_month_when_archive_records_other_month(dirs, tmp_path, monkeypatch, caplog):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    archive_meta_months(d, a, NOW)
+    real = meta_archive.archive_info
+    monkeypatch.setattr(meta_archive, "archive_info", lambda g: {**real(g), "month": "2026-08"})
+    copy = staged(d, tmp_path)
+    with caplog.at_level(logging.WARNING):
+        assert meta_archive.slim_meta_copy(copy, a, NOW) == []
+    assert months_in(copy) == ["2026-09"] and "records month" in caplog.text
+
+
+def _gz_db(path, setup):
+    db = path.with_suffix("")
+    c = sqlite3.connect(db)
+    c.executescript(setup)
+    c.commit()
+    c.close()
+    path.write_bytes(gzip.compress(db.read_bytes()))
+
+
+BAD_ARCHIVES = {
+    "notsqlite": None,
+    "two_rows": "create table info(month TEXT, arrivals INT, forecast INT, max_id INT);"
+                "insert into info values('2026-09',3,6,147),('2026-09',3,6,147);",
+    "zero_rows": "create table info(month TEXT, arrivals INT, forecast INT, max_id INT);",
+    "no_info": "create table other(x);",
+}
+
+
+@pytest.mark.parametrize("kind", BAD_ARCHIVES)
+def test_archive_info_none_and_slim_keeps_month(dirs, tmp_path, kind):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    g = a / "meta-2026-09.db.gz"
+    if BAD_ARCHIVES[kind] is None:
+        g.write_bytes(gzip.compress(b"this is not sqlite" * 100))
+    else:
+        _gz_db(g, BAD_ARCHIVES[kind])
+    assert archive_info(g) is None
+    copy = staged(d, tmp_path)
+    assert meta_archive.slim_meta_copy(copy, a, NOW) == []
+    assert months_in(copy) == ["2026-09"]

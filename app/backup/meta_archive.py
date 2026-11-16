@@ -118,6 +118,10 @@ def _slim_month(c: sqlite3.Connection, mo: str, info: dict) -> None:
     c.execute("insert into archived_months values(?, ?, ?)", (mo, info["arrivals"], info["forecast"]))
 
 
+def _vacuum(c: sqlite3.Connection) -> None:
+    c.execute("vacuum")
+
+
 def slim_meta_copy(copy: Path, archive_dir: Path | None, now: int) -> list[str]:
     """Remove verified-archived finished months from the staged COPY (never the live db); returns them."""
     copy, removed = Path(copy), []
@@ -134,6 +138,9 @@ def slim_meta_copy(copy: Path, archive_dir: Path | None, now: int) -> list[str]:
             info = archive_info(gz)
             if info is None:
                 log.warning("meta month %s kept in backup: archive unreadable", mo)
+                continue
+            if info["month"] != mo:
+                log.warning("meta month %s kept in backup: archive records month %s", mo, info["month"])
                 continue
             n_arr, max_id = c.execute("select count(*), coalesce(max(id), 0) from arrivals where substr(service_date, 1, 7) = ?", (mo,)).fetchone()
             n_fc = c.execute(f"select count(*) from forecast where arrival_id in ({_MONTH_ARR})", (mo,)).fetchone()[0]
@@ -154,5 +161,5 @@ def slim_meta_copy(copy: Path, archive_dir: Path | None, now: int) -> list[str]:
                 raise
             removed.append(mo)
         if removed or cache_rows:
-            c.execute("vacuum")
+            _vacuum(c)
     return removed
