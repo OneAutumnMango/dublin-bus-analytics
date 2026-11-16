@@ -126,3 +126,14 @@ def test_cache_db_failure_falls_back_live(tmp_path, monkeypatch):
 def test_disabled_by_setting(tmp_path, monkeypatch):
     env, _ = _env(tmp_path, monkeypatch, result_cache=False)
     assert "x-cache" not in env.c.get(URL).headers and _rows(env) == 0
+
+
+def test_disallowed_host_never_served_from_cache(tmp_path, monkeypatch):
+    env, _ = _env(tmp_path, monkeypatch, allowed_hosts=("example.test",))
+    ok = {"host": "example.test"}
+    assert env.c.get(URL, headers=ok).status_code == 200
+    assert env.c.get(URL, headers=ok).headers["x-cache"] == "hit"
+    r = env.c.get(URL, headers={"host": "evil.test"})
+    assert r.status_code == 400 and "x-cache" not in r.headers
+    r = env.c.get(URL, headers={"host": "127.0.0.1"})  # loopback stays allowed
+    assert r.status_code == 200 and r.headers["x-cache"] == "hit"

@@ -71,7 +71,7 @@ def install(app: FastAPI) -> None:
                 if (gen is not _FAIL and resp.status_code == 200
                         and resp.headers.get("content-type", "").startswith("application/json")):
                     try:
-                        ok = not _degraded(body)
+                        ok = not await asyncio.to_thread(_degraded, body)
                     except ValueError:
                         ok = False
                     if ok:
