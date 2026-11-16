@@ -144,7 +144,8 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
             try:  # archive first so the tar made the night a month finishes is already slim
                 archive_dir = Path(archive_dir)
                 archive_dir.mkdir(parents=True, exist_ok=True)
-                _clean_stale(archive_dir, ("meta-*.db.tmp", "meta-*.db.gz.tmp", "verify-*.db"))
+                _clean_stale(archive_dir, ("meta-*.db.tmp", "meta-*.db.gz.tmp", "verify-*.db", "meta-info-*",
+                                          "rewrite-*.db", "rewrite-*.db-wal", "rewrite-*.db-shm", "rewrite-*.db-journal"))
                 from app.backup import meta_archive  # lazy: meta_archive imports this module
                 meta_archive.archive_meta_months(data_dir, archive_dir, int(now))
             except Exception:

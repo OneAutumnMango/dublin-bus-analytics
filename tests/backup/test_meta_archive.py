@@ -937,3 +937,39 @@ def test_rewrite_handles_removing_all_rows(dirs, tmp_path):
     assert meta_archive.rewrite_archive_without(dirs[1], date(2026, 9, 10), None) is True
     assert archive_info(gz) == {"month": "2026-09", "arrivals": 0, "forecast": 0, "max_id": 0}
     assert gz_rows(gz, tmp_path, "pragma integrity_check") == [("ok",)]
+
+
+def _age(p, secs):
+    import os
+    t = __import__("time").time() - secs
+    os.utime(p, (t, t))
+
+
+def test_archive_info_leaves_no_temp_dir_and_uses_archive_dir(dirs, monkeypatch):
+    import tempfile
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    archive_meta_months(d, a, ts(2026, 11, 1))
+    seen = []
+    real = tempfile.TemporaryDirectory
+    monkeypatch.setattr(meta_archive.tempfile, "TemporaryDirectory", lambda **kw: (seen.append(kw.get("dir")), real(**kw))[1])
+    assert archive_info(a / "meta-2026-09.db.gz") is not None
+    (a / "meta-2026-10.db.gz").write_bytes(b"junk")
+    assert archive_info(a / "meta-2026-10.db.gz") is None
+    assert seen == [a, a]
+    assert sorted(p.name for p in a.iterdir()) == ["meta-2026-09.db.gz", "meta-2026-10.db.gz"]
+
+
+def test_snapshot_cleans_stale_leftovers_in_archive_dir(dirs):
+    d, a = dirs
+    make_meta(d, ["2026-09"])
+    stale = ["meta-info-xyz", "rewrite-a.db", "rewrite-a.db-wal", "rewrite-a.db-shm", "rewrite-a.db-journal"]
+    fresh = ["meta-info-new", "rewrite-b.db", "rewrite-b.db-wal"]
+    for n in stale + fresh + ["keep-me.txt"]:
+        p = a / n
+        p.mkdir() if n.startswith("meta-info") else p.write_bytes(b"x")
+        if n in stale:
+            _age(p, 7200)
+    backup.snapshot(d, d / "bk", archive_dir=a, now=ts(2026, 11, 1))
+    assert not any((a / n).exists() for n in stale)
+    assert all((a / n).exists() for n in fresh + ["keep-me.txt"])
