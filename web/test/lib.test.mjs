@@ -261,7 +261,7 @@ test('controls: defaults, validation and API mapping', () => {
   assert.equal(q.pct_hi, '0.95');
   assert.equal(q.window_lo, -60);
   assert.equal(q.window_hi, 300);
-  assert.equal(q.since, 1_700_000_000 - 90 * 86400); // explicit since by default
+  assert.equal(q.since, Math.floor(1_700_000_000 / 86400) * 86400 - 90 * 86400); // explicit since by default (UTC-day stable)
   assert.equal(q.min_confidence, 1);
   assert.equal(q.until, null);
   const c2 = { ...c, ci: 99.9, pLo: 10, pHi: 90, winLo: -2.5, winHi: 10, since: '2025-01-01', until: '2025-01-31',
@@ -470,4 +470,14 @@ test('hoursToWindow / windowToHours round-trip every hour pair', () => {
 test('usesTrackedSet: all page and pooled lab only', () => {
   for (const h of ['#/all', '#/lab', '#/lab?hours=8']) assert.equal(L.usesTrackedSet(L.parseHash(h)), true, h);
   for (const h of ['#/lab/15', '#/route/15', '#/', '#/nothing']) assert.equal(L.usesTrackedSet(L.parseHash(h)), false, h);
+});
+
+test('default since is stable within a UTC day and never changes an explicit date', () => {
+  const day = 19675 * 86400; // a UTC midnight
+  const a = L.toApiQuery(L.DEFAULT_CONTROLS, day + 5).since;
+  assert.equal(L.toApiQuery(L.DEFAULT_CONTROLS, day + 86399).since, a);
+  assert.equal(a % 3600, 0);
+  assert.equal(L.toApiQuery(L.DEFAULT_CONTROLS, day + 86400).since, a + 86400);
+  const c = { ...L.DEFAULT_CONTROLS, since: '2025-01-01' };
+  assert.equal(L.toApiQuery(c, day + 5).since, L.toApiQuery(c, day + 90000).since);
 });

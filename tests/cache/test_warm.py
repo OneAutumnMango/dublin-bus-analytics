@@ -49,7 +49,7 @@ def test_run_once_refreshes_only_old_recently_used_entries(tmp_path):
     env = _env(tmp_path)
     _seed(env, U1, NOW - 4000, NOW - 100)
     _seed(env, U2, NOW - 100, NOW - 100)
-    _seed(env, U3, NOW - 8 * 86400, NOW - 8 * 86400)
+    _seed(env, U3, NOW - 3 * 86400, NOW - 3 * 86400)
     assert _run(env) == 1
     assert _row(env, U1)[1] > NOW - 4000
     assert _row(env, U2)[1] == NOW - 100
@@ -84,7 +84,7 @@ def test_warm_keeps_last_used_and_idle_entry_stops_being_warmed(tmp_path):
     c = open_meta(env.s.data_dir)
     assert c.execute("select last_used from result_cache where key=?", (U1,)).fetchone()[0] == NOW - 100
     c.close()
-    assert asyncio.run(CacheWarmer(env.app, now_fn=lambda: NOW - 100 + 8 * 86400).run_once()) == 0
+    assert asyncio.run(CacheWarmer(env.app, now_fn=lambda: NOW - 100 + 3 * 86400).run_once()) == 0
 
 
 def test_run_evicts_expired(tmp_path):

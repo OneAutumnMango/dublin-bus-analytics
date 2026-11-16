@@ -314,7 +314,7 @@ export function fixed(x) {
   return x.toFixed(10).replace(/\.?0+$/, '');
 }
 
-// Always sends an explicit `since` (default: now - 90 days) so unwindowed heavy requests are avoided.
+// Always sends an explicit `since` (default: UTC midnight - 90 days, so the cache key is stable all day) so unwindowed heavy requests are avoided.
 export function toApiQuery(c, nowSec) {
   const p100 = (x) => fixed(x / 100);
   const since = blank(c.since) ? null : dateToEpoch(c.since);
@@ -322,7 +322,7 @@ export function toApiQuery(c, nowSec) {
   return {
     ci: p100(c.ci), pct_lo: p100(c.pLo), pct_hi: p100(c.pHi),
     window_lo: Math.round(c.winLo * 60), window_hi: Math.round(c.winHi * 60),
-    since: since ?? Math.floor(nowSec) - DEFAULT_DAYS * 86400, until,
+    since: since ?? Math.floor(nowSec / 86400) * 86400 - DEFAULT_DAYS * 86400, until,
     weekdays: c.weekdays && c.weekdays.length ? c.weekdays : null, hours: hoursList(c.hFrom, c.hTo),
     min_confidence: c.confirmed ? 1 : 0,
   };

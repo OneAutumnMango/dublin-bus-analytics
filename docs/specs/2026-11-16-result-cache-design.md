@@ -38,7 +38,7 @@ Opening any data page or switching tabs returns a stored result at once. Raw dat
   Only HTTP 200 is stored. Concurrent identical misses share one computation (per-key lock).
 - **Refresh now:** `?fresh=1` skips the lookup, recomputes, overwrites. (`fresh` is excluded from the key.)
 - **Warmer** (`BackupScheduler`-style asyncio task started in the app lifespan): at startup + 60 s, then hourly,
-  recompute every entry with `last_used` in the last 7 days, oldest `computed_at` first, one at a time, through
+  recompute every entry with `last_used` in the last 2 days (the UI's default start date moves at UTC midnight, so older keys are dead), oldest `computed_at` first, one at a time, through
   the app's own ASGI app (in-process), behind the existing `heavy` gate. No hard-coded list: whatever the user opens
   gets pre-warmed from then on, so new analyses are covered automatically. Skips entries computed < 50 min ago
   (restart safety). A failed recompute keeps the old body.

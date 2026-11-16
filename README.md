@@ -78,7 +78,7 @@ Invalid values stop the app at startup with a message naming the variable. See `
 
 ### Result cache
 
-Pages open from stored results that are recomputed every hour, so they load instantly instead of waiting on the database. A "Data computed HH:MM · Refresh" bar shows when the page was computed; Refresh recomputes that page with the newest data (`?fresh=1` on the API). A filter combination you have not used before is computed live once and then stored. Route stop lists are kept for 24 hours, so a cold start no longer waits on the bus data server. Cached API responses carry `X-Cache` (`hit` or `bypass`) and `X-Computed-At` (epoch seconds) headers; uncached paths carry neither.
+Pages open from stored results that are recomputed every hour, so they load instantly instead of waiting on the database. A "Data computed HH:MM · Refresh" bar shows when the page was computed; Refresh recomputes that page with the newest data (`?fresh=1` on the API). The first view of each page after UTC midnight (when the default start date moves) is computed live once, then instant. A filter combination you have not used before is computed live once and then stored. Route stop lists are kept for 24 hours, so a cold start no longer waits on the bus data server. Cached API responses carry `X-Cache` (`hit` or `bypass`) and `X-Computed-At` (epoch seconds) headers; uncached paths carry neither.
 
 `RESULT_CACHE=false` turns all of this off. The cache is derived data in the `result_cache` table of `meta.db`: it is safe to delete, and the raw samples and arrivals are never modified. It is cleared automatically when a day is removed or a route is tracked or untracked. Measurements: `docs/perf/2026-11-16-result-cache.md`.
 

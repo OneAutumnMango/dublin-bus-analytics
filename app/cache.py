@@ -98,7 +98,7 @@ def evict(c, now, max_age=14 * 86400, max_entries=500, max_bytes=100 * 2**20):
     return n + len(drop)
 
 
-def stale_keys(c, now, used_within=7 * 86400, min_age=3000):
+def stale_keys(c, now, used_within=2 * 86400, min_age=3000):
     return [r[0] for r in c.execute(
         f"select key from result_cache where {_NOSRV} and last_used >= ? and computed_at <= ? order by computed_at",
         (now - used_within, now - min_age))]

@@ -97,7 +97,7 @@ def test_stale_keys_order_and_filters(tmp_path):
     store(c, "a", b"x", 1, None, now=now - 5000)
     store(c, "b", b"x", 1, None, now=now - 9000)
     store(c, "fresh", b"x", 1, None, now=now - 100)
-    store(c, "unused", b"x", 1, None, now=now - 9 * DAY)
+    store(c, "unused", b"x", 1, None, now=now - 3 * DAY)
     store(c, "srv:z", b"x", 1, None, now=now - 9000)
     assert stale_keys(c, now) == ["b", "a"]
 
