@@ -144,3 +144,8 @@ def test_server_compose_passes_backup_vars():
     assert re.search(r'^  dublin-bus-analytics:\n(?:    .*\n)*?    profiles: \["analytics"\]', t, re.M)
     for k in ("BACKUP_ENABLED", "BACKUP_TIME", "BACKUP_KEEP", "BACKUP_DIR"):
         assert re.search(rf'^\s+{k}: "\$\{{ANALYTICS_{k}:-', t, re.M), k
+
+
+@pytest.mark.parametrize("name", ["docker-compose.release.yml", "docker-compose.example.yml"])
+def test_compose_healthcheck_start_period_covers_restore(name):
+    assert re.search(r"^\s+start_period: 15m$", (ROOT / name).read_text(), re.M)  # must not override the Dockerfile's 15m with 15s
