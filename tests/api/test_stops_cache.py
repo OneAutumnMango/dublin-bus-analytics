@@ -53,6 +53,13 @@ def test_expired_persisted_stops_refetched(tmp_path):
     assert _row(env)[1] >= int(time.time()) - 5  # and the row was refreshed
 
 
+def test_future_dated_persisted_stops_ignored(tmp_path):
+    env = _env(tmp_path)
+    _put(env, json.dumps(STOPS).encode(), int(time.time()) + 3600)  # clock stepped back
+    env.c.get(URL)
+    assert env.fake.requests  # the server was asked: the future-dated row was not trusted
+
+
 def test_failed_fetch_not_persisted(tmp_path):
     env = _env(tmp_path)
     env.fake.set_down(True)

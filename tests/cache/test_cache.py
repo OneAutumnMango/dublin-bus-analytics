@@ -91,6 +91,11 @@ def test_evict_by_age_and_count_and_bytes(tmp_path):
     assert tot <= 700 and c.execute("select count(*) from result_cache where key='srv:old'").fetchone()[0] == 1
 
 
+def test_make_key_rejects_trailing_newline():
+    assert make_key("/api/map\n", []) is None
+    assert make_key("/api/map", []) == "/api/map?"
+
+
 def test_stale_keys_order_and_filters(tmp_path):
     c = open_meta(tmp_path)
     now = 100 * DAY

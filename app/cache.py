@@ -16,7 +16,7 @@ _NOSRV = "key not like 'srv:%'"
 
 
 def make_key(path, query):
-    if not ALLOWED.match(path):
+    if not ALLOWED.fullmatch(path):
         return None
     pairs = []
     for k, v in query:

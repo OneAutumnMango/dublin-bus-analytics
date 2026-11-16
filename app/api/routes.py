@@ -365,7 +365,7 @@ async def _directions(request, r) -> dict[str, list[dict]]:
     if persist:
         try:
             row = await _stops_db(request, lambda c: cache.lookup(c, key))
-            if row is not None and int(time.time()) - row[1] < STOPS_TTL:
+            if row is not None and 0 <= int(time.time()) - row[1] < STOPS_TTL:
                 raw = json.loads(row[0])
                 if _valid_stops(raw):
                     mem.put(r, raw)

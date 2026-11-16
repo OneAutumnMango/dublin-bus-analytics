@@ -20,6 +20,7 @@ Tracker interplay: the tracker's in-memory `_finalised` keys keep deleted arriva
 re-inserted for about 6 h, but a bus held at "due now" may still finalise after the delete and
 create a new row for that day; repeat the removal if that matters.
 """
+import logging
 import re
 import sqlite3
 from collections.abc import Callable
@@ -28,11 +29,10 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import logging
-
 from app import cache, rollup
 from app.api.routes import _DB_LOCK
 
+log = logging.getLogger(__name__)
 DUBLIN = ZoneInfo("Europe/Dublin")
 CHUNK = 2000
 MIN_DATE = date(2020, 1, 1)
@@ -284,7 +284,7 @@ def _drop_rollups(c, d: date, route: str | None) -> None:
         try:  # cached pages may show the removed data; a cache failure must not fail the removal
             cache.clear(c)
         except sqlite3.Error:
-            logging.getLogger(__name__).exception("result cache clear failed")
+            log.exception("result cache clear failed")
 
 
 def _remove(data_dir, d, route, w, out, progress) -> dict:
