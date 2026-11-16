@@ -170,8 +170,10 @@ def snapshot(data_dir: Path, backup_dir: Path | None = None, keep: int = 7,
             try:  # the archive copy must never fail the snapshot
                 archive_dir = Path(archive_dir)
                 archive_dir.mkdir(parents=True, exist_ok=True)
-                _clean_stale(archive_dir, ("samples-????-??.db.gz.tmp",))
+                _clean_stale(archive_dir, ("samples-????-??.db.gz.tmp", "meta-*.db.tmp", "meta-*.db.gz.tmp", "verify-*.db"))
                 archive_months(data_dir, archive_dir)
+                from app.backup.meta_archive import archive_meta_months  # lazy: meta_archive imports this module
+                archive_meta_months(data_dir, archive_dir, int(now))
             except Exception:
                 log.exception("archiving closed months to %s failed; finished months are not yet in the archive", archive_dir)
         return final
