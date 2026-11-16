@@ -65,7 +65,7 @@ Track a route on the Routes page and wait a few minutes (each tracked route is p
 | `BACKUP_KEEP` | `3` | Newest nightly backups to keep (positive integer) |
 | `BACKUP_KEEP_WEEKLY` | `4` | Also keep the newest backup of each of the previous N ISO weeks; `0` turns weekly retention off |
 | `BACKUP_DIR` | `<DATA_DIR>/backups` | Backup directory (a relative path is relative to the working directory) |
-| `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | One copy of each finished month (`samples-YYYY-MM.db.gz`), never overwritten or pruned; set to an empty string to turn the archive copy off. The nightly tar excludes finished `.gz` months, so a finished month lives only here, in `DATA_DIR` and in the one tar made before it was compacted; with the archive off, that tar rotates out after `BACKUP_KEEP` nights and the month exists only in `DATA_DIR` |
+| `BACKUP_ARCHIVE_DIR` | `<BACKUP_DIR>/archive` | Folder for the once-written archives of finished months: `samples-YYYY-MM.db.gz` and `meta-YYYY-MM.db.gz` (arrivals and forecast). Never overwritten or pruned (except by removing a day inside a month). Set to an empty string to turn both archives off: finished months are then not left out of the nightly tar |
 | `ALLOWED_HOSTS` | unset | Comma list of accepted `Host` names (wildcards like `*.example.com` work). Unset or blank: any Host is accepted. When set, only those plus `localhost`, `127.0.0.1` and `[::1]` are accepted; anything else gets `400 Invalid host header`. A bad wildcard such as `a*.com` stops the app at startup |
 | `RESULT_CACHE` | `true` | Cache API responses in `meta.db` (derived data, safe to delete). `false` computes every request live |
 | `RESULT_CACHE_REFRESH_SECONDS` | `3600` | How often cached responses are recomputed (positive integer) |
@@ -147,13 +147,24 @@ The sibling `dublin-bus-server` repo's `docker-compose.yml` also runs this servi
 cd ../dublin-bus-server && docker compose --profile analytics up -d --build
 ```
 
-Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_DIR`, `ANALYTICS_ALLOWED_HOSTS`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
+Server on `127.0.0.1:8080`, analytics on `127.0.0.1:8081`; override with `ANALYTICS_PORT`, `ANALYTICS_POLL_SECONDS`, `ANALYTICS_BACKUP_ENABLED`, `ANALYTICS_BACKUP_TIME`, `ANALYTICS_BACKUP_KEEP`, `ANALYTICS_BACKUP_KEEP_WEEKLY`, `ANALYTICS_BACKUP_DIR`, `ANALYTICS_ALLOWED_HOSTS`. `scripts/smoke.sh` runs this end to end (needs an API key); what is still unverified is listed in [docs/verification.md](docs/verification.md).
 
 ## Data and backups
 
 Under `DATA_DIR`: `meta.db` (tracked routes, stops, trips, arrivals; kept forever), `samples-YYYY-MM.db` (raw prediction samples, one file per month, stored only when a prediction changes), and `backups/`. A month's file is gzipped (`.db.gz`, still readable) once it has been closed for 2 days.
 
-A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin), writes `analytics-<UTC timestamp>.tar` of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, keeps the newest `BACKUP_KEEP` (3), then gzips closed months. Every finished `samples-YYYY-MM.db.gz` is copied once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned, so old months are not in the tars. A finished month therefore lives only in the archive folder, in `DATA_DIR`, and in the one tar made before it was compacted. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`), or if archiving keeps failing (check the log for "archiving"), that tar rotates out after `BACKUP_KEEP` nights and the month then exists only in `DATA_DIR`: keep your own copy of the `.gz` files. If none is under 24 h old at startup, one runs straight away.
+A scheduled backup runs daily at `BACKUP_TIME` (default 03:00 Europe/Dublin) and writes `analytics-<UTC timestamp>.tar.gz` (gzip level 3) of `meta.db` and the plain (not yet gzipped) `samples-*.db` months into the backup directory, then gzips closed samples months. Older plain `.tar` backups are still listed, downloadable and restorable (`tar -xf` handles both) and are pruned by the same retention. If no backup is under 24 h old at startup, one runs straight away.
+
+Retention keeps the newest `BACKUP_KEEP` (default 3) nightly backups plus, for each of the previous `BACKUP_KEEP_WEEKLY` (default 4, `0` turns it off) ISO weeks, the newest backup of that week. The current week does not use a weekly slot.
+
+Finished months are archived once into the archive folder (`BACKUP_ARCHIVE_DIR`, default `<BACKUP_DIR>/archive`), which is never overwritten or pruned except by removing a day:
+
+- Samples: each finished `samples-YYYY-MM.db.gz` is copied there once and left out of the nightly tar. Closed samples months are immutable.
+- Arrivals and forecast: once a month has been finished for 2 days, its arrivals and forecast rows are written once to `meta-YYYY-MM.db.gz` in the same folder and left out of the nightly tar. The tar's `meta.db` then lacks those months and has a small `archived_months` table. The live database is not shrunk or changed by backups. A month is only left out of a tar when its archive exists, passes `integrity_check` and its row counts and highest id match; otherwise that month stays whole in the tar and a warning is logged. With the archive turned off (blank `BACKUP_ARCHIVE_DIR`) nothing is left out.
+- The stored-results cache (`result_cache`) is emptied in backups (it is derived data).
+- Disk space: building one month's archive temporarily needs about 2x that month's size in the archive folder (temp database, gzip and a verification copy; about 1.6-1.8 GB for a 700 MB month).
+
+If archiving keeps failing (check the log), those months stay in the tars and rotate out with them, so keep your own copy of the archive folder.
 
 Manual: the Backup card on the Routes page, or
 
@@ -167,7 +178,11 @@ Restore:
 1. Stop the app.
 2. Delete any stale `meta.db-wal`, `meta.db-shm`, `samples-*.db-wal` and `samples-*.db-shm` in `DATA_DIR` (a crash-leftover WAL would otherwise be replayed over the restored database).
 3. A local `samples-YYYY-MM.db.gz` takes precedence over an extracted plain `samples-YYYY-MM.db`: delete the `.gz` for every month you want restored from the backup.
-4. Check the tar contents with `tar -tf`, extract the latest tar with `tar -xf analytics-<stamp>.tar -C "$DATA_DIR"`, copy the `.gz` files from the archive folder next to the databases, and start the app.
+4. Check the tar contents with `tar -tf`, extract the latest tar with `tar -xf analytics-<stamp>.tar.gz -C "$DATA_DIR"` (or `.tar` for an older backup), copy the `.gz` files from the archive folder next to the databases, and put the archive folder back (its `meta-*.db.gz` files, next to or under `DATA_DIR`) before starting the app.
+
+At startup the app imports every month listed in `archived_months` (archive folder first, then `DATA_DIR`), one transaction per month, verified against the archive's recorded counts. A missing or damaged archive file is logged at ERROR naming the month and file; that month stays absent, the marker is kept and the app still starts. Fix the file and restart to complete the restore. A long import on a Raspberry Pi can take minutes (the Docker health check start period is 15 minutes), and restoring needs about one month's decompressed size free in `DATA_DIR`.
+
+One-way: an older app version restoring a slim backup would silently lack the archived months. Old backups restore fine in the new version.
 
 Copies kept off the host (including the archive folder) are your responsibility. `scripts/seed_demo.py` must never be pointed at a live `DATA_DIR` (it is for throwaway demo directories).
 
@@ -215,7 +230,8 @@ In the web UI this is the "Remove a day of data" section of the Backup card on t
 
 - Deleted: arrivals of that `service_date`, their forecasts, raw samples in the day's local window (23 or 25 hours on DST days) and gaps starting in it. `routes_tracked` is kept; nothing is vacuumed.
 - With `route`, only samples belonging to that route's arrivals of the day go; samples without an arrival (buses dropped before arriving) and gaps cannot be attributed to a route and stay.
-- A gzipped (closed) month is immutable and is skipped and reported; extract it by hand if you must clean it.
+- A gzipped (closed) samples month is immutable and is skipped and reported; extract it by hand if you must clean it.
+- A day inside an archived month rewrites that month's `meta-YYYY-MM.db.gz` first (so a restore cannot bring the day back); if the rewrite fails the removal stops with "archive failed" before touching live data. A range of days inside one archived month rewrites that archive once per day, which can take a while for a large month.
 - Rows are removed in chunks of 2000, each its own short transaction, so the collector keeps writing. If a file stays locked the job ends in state `error` with the counts `done` so far; repeat the removal to finish. Only one remove, backup or compaction runs at a time (`409` when busy).
 - Today and tomorrow are accepted, but the collector keeps live state in memory: after deleting today's samples, buses still in flight get incomplete forecast rows when they finalise, and a bus held at "due now" can re-create an arrival row. Prefer completed days, or run it right after deploying a new version; a preview taken while the collector runs is not guaranteed to be all zero afterwards.
 - Windows differ by table: arrivals are matched by `service_date`, samples by recording time. In route mode, samples of a day-D arrival recorded before local midnight stay behind (they cannot be attributed), and a trip id that crosses midnight can lose the previous day's early-morning samples. In all-routes mode, after-midnight samples of late D-1 buses are deleted too (their arrival rows and forecasts survive; only the raw trip detail is truncated).
