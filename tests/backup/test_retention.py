@@ -21,11 +21,23 @@ def test_keeps_newest_n_only_when_weekly_zero():
     assert names(choose_keep(it, 3, 0)) == days(8, 3)
 
 
+def friday_run():  # 14 daily stamps 2026-05-23 (Sat) .. 2026-06-05 (Fri)
+    return items(*[f"2026-05-{d}" for d in range(23, 32)], *[f"2026-06-0{d}" for d in range(1, 6)])
+
+
 def test_weekly_picks_newest_per_week():
-    # 2026-06-01 is a Monday: weeks are 1-7, 8-14 (items 1..14)
-    it = items(*days(1, 14))
-    # keep 12,13,14 (week 2); weeks walking back: week 2 has unkept 8-11 -> 11; week 1 -> 7
-    assert names(choose_keep(it, 3, 2)) == ["2026-06-07", "2026-06-11", "2026-06-12", "2026-06-13", "2026-06-14"]
+    assert names(choose_keep(friday_run(), 3, 2)) == [
+        "2026-05-24", "2026-05-31", "2026-06-03", "2026-06-04", "2026-06-05"]
+
+
+def test_newest_week_does_not_consume_a_weekly_slot():
+    got = choose_keep(friday_run(), 3, 2)
+    assert len(got) == 5 and Path("2026-05-31") in got and Path("2026-05-24") in got
+
+
+def test_same_week_extras_are_deleted():
+    it = items("2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05")
+    assert names(choose_keep(it, 2, 3)) == ["2026-06-04", "2026-06-05"]
 
 
 def test_year_end_iso_week():

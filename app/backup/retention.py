@@ -9,8 +9,9 @@ def choose_keep(items: list[tuple[Path, int]], keep: int, weekly: int) -> set[Pa
     if weekly <= 0 or not items:
         return kept
     iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isocalendar()[:2]
+    newest_week = iso(items[-1][1])  # the newest item's own week never takes a weekly slot
     covered = 0
-    seen = set()
+    seen = {newest_week}
     for p, t in reversed(items):  # newest first, so the first unkept item seen per week is its newest
         if p in kept or iso(t) in seen:
             continue
