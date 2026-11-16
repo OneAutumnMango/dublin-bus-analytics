@@ -68,7 +68,7 @@ router = APIRouter(prefix="/api", route_class=RawPathRoute)
 
 LOW_N = 10
 FALLBACK = "__unknown__"  # query value selecting the fallback group (internally keyed by None)
-STOPS_TTL, STOPS_CACHE_MAX, STOPS_TIMEOUT = 300, 256, 3.0  # route_stops cache seconds / entries / call timeout
+STOPS_TTL, STOPS_CACHE_MAX, STOPS_TIMEOUT = 86400, 256, 3.0  # route_stops cache seconds / entries / call timeout
 CI_MAX = 0.9999
 HORIZONS = (30, 20, 10, 5, 2)
 RECENT = 20
@@ -334,26 +334,59 @@ def _cache(request) -> _TTLCache:
     return st.stops_cache
 
 
+def _valid_stops(raw) -> bool:
+    return isinstance(raw, dict) and all(
+        isinstance(k, str) and isinstance(v, list)
+        and all(isinstance(x, dict) and isinstance(_sid(x), str) for x in v)
+        for k, v in raw.items())
+
+
+def _stops_db(request, fn):
+    """Run fn(conn) on a fresh meta connection in the threadpool."""
+    def run():
+        c = open_meta(request.app.state.settings.data_dir)
+        try:
+            return fn(c)
+        finally:
+            c.close()
+    return run_in_threadpool(run)
+
+
 async def _directions(request, r) -> dict[str, list[dict]]:
-    """Server's {direction: [stop dicts in order]}, validated, cached 5 min per route (failures are
-    never cached; the call has a 3 s timeout). Raises _NoOrder (404 unknown route, 502
-    unavailable/timeout/malformed shape)."""
-    cache = _cache(request)
-    hit = cache.get(r)
+    """Server's {direction: [stop dicts in order]}, validated, cached 24 h per route in memory and
+    in meta.db (srv:stops:*; failures are never cached; the call has a 3 s timeout). Raises
+    _NoOrder (404 unknown route, 502 unavailable/timeout/malformed shape)."""
+    mem = _cache(request)
+    hit = mem.get(r)
     if hit is not None:
         return hit
+    persist = request.app.state.settings.result_cache
+    key = f"srv:stops:{r}"
+    if persist:
+        try:
+            row = await _stops_db(request, lambda c: cache.lookup(c, key))
+            if row is not None and int(time.time()) - row[1] < STOPS_TTL:
+                raw = json.loads(row[0])
+                if _valid_stops(raw):
+                    mem.put(r, raw)
+                    return raw
+        except Exception:
+            log.warning("persisted stops for %s unusable; using server", r, exc_info=True)
     try:
         raw = await asyncio.wait_for(request.app.state.client.route_stops(r), STOPS_TIMEOUT)
     except RouteNotFound:
         raise _NoOrder(404, "route not found on server") from None
     except (ServerUnavailable, KeyError, TypeError, AttributeError, ValueError, asyncio.TimeoutError) as e:
         raise _NoOrder(502, f"server unavailable or malformed: {e!r}") from None
-    if not (isinstance(raw, dict) and all(
-            isinstance(k, str) and isinstance(v, list)
-            and all(isinstance(x, dict) and isinstance(_sid(x), str) for x in v)
-            for k, v in raw.items())):
+    if not _valid_stops(raw):
         raise _NoOrder(502, "malformed stops response from server")
-    cache.put(r, raw)
+    mem.put(r, raw)
+    if persist:
+        try:
+            body = json.dumps(raw).encode()
+            await _stops_db(request, lambda c: cache.store(c, key, body, 0, None))
+        except Exception:
+            log.warning("could not persist stops for %s", r, exc_info=True)
     return raw
 
 
@@ -1167,7 +1200,7 @@ async def map_data(request: Request, p: P):
 
 # ---- map shapes ----
 
-SHAPE_TTL, SHAPE_TIMEOUT, SHAPE_MIN_GAP_M = 3600, 5.0, 4.0
+SHAPE_TTL, SHAPE_TIMEOUT, SHAPE_MIN_GAP_M = 86400, 5.0, 4.0
 
 
 def _pt(p):

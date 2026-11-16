@@ -167,7 +167,8 @@ def test_search_routes_proxy(env):
     assert env.get("/api/routes", q="x" * 65).status_code == 422
 
 
-def test_route_stops_proxy_and_errors(env):
+def test_route_stops_proxy_and_errors(tmp_path):
+    env = Env(tmp_path, result_cache=False)  # persisted stop lists would mask the later server failures
     env.fake.set_route_stops("15", {"0": [{"id": "s1"}]})
     assert env.get("/api/routes/15/stops").json() == {"route": "15", "directions": {"0": [{"id": "s1"}]}}
     assert env.get("/api/routes/nope/stops").status_code == 404
@@ -1088,18 +1089,19 @@ def test_route_stops_cached_between_requests(env):
     assert stops_hits(env, "16") == 2
 
 
-def test_route_stops_cache_expires_after_5_min(env):
+def test_route_stops_cache_expires_after_24_h(tmp_path):
     import app.api.routes as api
+    env = Env(tmp_path, result_cache=False)  # in-memory tier only
     clock = Clock()
     env.app.state.stops_cache = api._TTLCache(clock=clock)
     env.keep_cache = True
     env.fake.set_route_stops("15", {"out": [{"id": "a"}]})
     env.get("/api/routes/15/stops")
-    clock.t += 299
+    clock.t += 86399
     env.get("/api/routes/15/stops")
     assert stops_hits(env) == 1
     env.fake.set_route_stops("15", {"out": [{"id": "b"}]})
-    clock.t += 2  # 301 s old
+    clock.t += 2  # 24 h + 1 s old
     assert env.get("/api/routes/15/stops").json()["directions"] == {"out": [{"id": "b"}]}
     assert stops_hits(env) == 2
 
