@@ -177,7 +177,7 @@ export function stepGeometry(steps, markers = [], o = {}) {
 const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200];
 export const PX_PER_HOUR = 600;
 export function runsGeometry(runs, o = {}) {
-  const { left = 150, right = 16, top = 28, bottom = 8, rowH = 18 } = o;
+  const { left = 150, right = 16, top = 28, bottom = 8, rowH = 30 } = o;
   const all = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length);
   const te = o.domain || extent(all.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
   const inside = (t) => isNum(t) && t >= te[0] && t <= te[1];
@@ -212,8 +212,8 @@ export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.d
     if (r.line) g.append(el(doc, 'path', { class: 'act-line', d: r.line, fill: 'none' }));
     for (const p of r.pts) {
       const a = { 'data-tip-json': p.tip ? tipJson(p.tip) : null };
-      g.append(el(doc, 'circle', { class: 'dot-s', cx: p.xs, cy: r.cy, r: 2.5, ...(p.xa === null ? a : {}) }));
-      if (p.xa !== null) g.append(el(doc, 'line', { class: `gap ${p.cls}`, x1: p.xs, x2: p.xa, y1: r.cy, y2: r.cy }), el(doc, 'circle', { class: `dot-a ${p.cls}`, cx: p.xa, cy: r.cy, r: 3.5, ...a }));
+      g.append(el(doc, 'circle', { class: 'dot-s', cx: p.xs, cy: r.cy, r: 4, ...(p.xa === null ? a : {}) }));
+      if (p.xa !== null) g.append(el(doc, 'line', { class: `gap ${p.cls}`, x1: p.xs, x2: p.xa, y1: r.cy, y2: r.cy }), el(doc, 'circle', { class: `dot-a ${p.cls}`, cx: p.xa, cy: r.cy, r: 6, ...a }));
     }
     svg.append(g);
   }
