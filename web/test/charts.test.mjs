@@ -343,7 +343,13 @@ test('runsGeometry: one row per run ordered by first stop, gaps break the actual
   assert.ok(g.xTicks.every((t) => t.x >= g.x0 && t.x <= g.x1));
   const day = C.runsGeometry([{ trip_id: 'x', visits: [{ scheduled: 0 }, { scheduled: 18 * 3600 }] }]);
   assert.ok(day.width > g.width);
-  assert.ok(day.xTicks.length <= 40);
+  assert.ok(day.xTicks.length <= 120);
+  const win = C.runsGeometry(runs, { domain: [900, 2300] }); // only the run with a stop in the window, only its stops inside it
+  assert.deepEqual(win.runs.map((r) => r.trip_id), ['a']);
+  assert.equal(win.runs[0].pts.length, 3);
+  assert.equal(C.runsGeometry(runs, { domain: [0, 1500] }).runs[0].pts.length, 1);
+  assert.equal(C.runsGeometry(runs, { domain: [9000, 9100] }).empty, true);
+  assert.ok(C.runsGeometry(runs, { domain: [0, 7200] }).width > C.runsGeometry(runs, { domain: [0, 1800] }).width);
   assert.equal(C.runsGeometry([]).empty, true);
   assert.equal(C.runsGeometry([{ trip_id: 'x', visits: [{ scheduled: null }] }]).empty, true);
 });

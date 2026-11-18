@@ -826,7 +826,7 @@ test('runs page: needs a route and a day first, no requests', async () => {
 
 test('runs page: draws one diagram, tiles, tables; names are text not HTML', async () => {
   installFetch({ 'GET /api/routes/4/runs': runsResp(), 'GET /api/routes/4/stops': stopsResp });
-  const ctx = ctxOf({}, { routes: '4', date: '2026-11-12' });
+  const ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1300', to: '1439' });
   await (await import('../js/pages/runs.js')).render(ctx);
   await settle();
   assert.equal(ctx.main.byTag('svg').length, 1);
@@ -868,7 +868,7 @@ test('runs page: submitting the form navigates with routes and date in the hash'
   const [routes, date] = ctx.main.byTag('input');
   routes.value = '4, 15 4'; date.value = '2026-11-12';
   ctx.main.byTag('form')[0].dispatch('submit', {});
-  assert.deepEqual(ctx.gos, ['#/runs?routes=4%2C15%2C4&date=2026-11-12']);
+  assert.deepEqual(ctx.gos, ['#/runs?routes=4%2C15%2C4&date=2026-11-12&from=420&to=540']);
 });
 
 test('summarise and status', async () => {
@@ -877,4 +877,31 @@ test('summarise and status', async () => {
   assert.deepEqual([s.stops, s.missing, s.delay, s.worst], [2, 1, 60, 60]);
   assert.deepEqual([status({ actual: null }), status({ actual: 1, realtime: 0 }), status({ actual: 1, realtime: 1, confidence: 0 }), status({ actual: 1, realtime: 1, confidence: 1 })],
     ['no arrival recorded', 'scheduled only', 'estimated', 'confirmed']);
+});
+
+test('runs page: runs outside the time window are hidden with a hint; the window comes from the address', async () => {
+  installFetch({ 'GET /api/routes/4/runs': runsResp(), 'GET /api/routes/4/stops': stopsResp });
+  const runs = await import('../js/pages/runs.js');
+  let ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '600', to: '700' });
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /none has a stop in 10:00 – 11:40/);
+  assert.equal(ctx.main.byTag('svg').length, 0);
+  ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1330', to: '1339' }); // 22:10-22:19: only the first run
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /1 run in 22:10 – 22:19/);
+  ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: 'x', to: '9999' }); // bad window falls back to 07:00-09:00
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /07:00 – 09:00/);
+});
+
+test('runs: day start and window membership across the clock change', async () => {
+  const { dayStart, inWindow, runInWindow } = await import('../js/pages/runs.js');
+  assert.equal(dayStart('2023-11-14'), Date.UTC(2023, 10, 14) / 1000); // winter: Dublin = UTC
+  assert.equal(dayStart('2023-07-14'), Date.UTC(2023, 6, 14) / 1000 - 3600); // summer: local midnight is 23:00 UTC
+  const ds = dayStart('2023-11-14');
+  assert.equal(inWindow(ds + 7 * 3600, ds, [420, 540]), true);
+  assert.equal(inWindow(ds + 9 * 3600 + 1, ds, [420, 540]), false);
+  assert.equal(inWindow(ds + 26 * 3600, ds, [1200, 1439]), true); // after-midnight stop of the same service day
+  assert.equal(inWindow(null, ds, [0, 1439]), false);
+  assert.equal(runInWindow({ visits: [{ scheduled: ds, actual: ds + 8 * 3600 }] }, ds, [420, 540]), true);
 });

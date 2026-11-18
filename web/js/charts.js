@@ -173,18 +173,22 @@ export function stepGeometry(steps, markers = [], o = {}) {
 
 // ---------- runs diagram: one horizontal row per run, time on x; per stop a hollow dot (scheduled) and a filled dot (actual) ----------
 // runs: [{trip_id, label, delay, visits: [{scheduled, actual, delay, tip}]}]. Rows are ordered by first scheduled time.
-const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200, 14400];
-const PX_PER_HOUR = 150;
+// o.domain = [t0, t1] (epoch s) is the time range drawn; stops outside it are left out. 600 px per hour keeps dots a few stops apart.
+const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200];
+export const PX_PER_HOUR = 600;
 export function runsGeometry(runs, o = {}) {
   const { left = 150, right = 16, top = 28, bottom = 8, rowH = 18 } = o;
-  const rows = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length)
-    .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled);
-  const te = extent(rows.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+  const all = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length);
+  const te = o.domain || extent(all.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+  const inside = (t) => isNum(t) && t >= te[0] && t <= te[1];
+  const rows = te ? all.map((r) => ({ ...r, vs: r.vs.filter((v) => inside(v.scheduled) || inside(v.actual)) })).filter((r) => r.vs.length)
+    .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled) : [];
   const hours = te ? (te[1] - te[0]) / 3600 : 0;
-  const width = left + right + Math.round(Math.max(700, hours * PX_PER_HOUR));
+  const width = left + right + Math.round(Math.max(500, hours * PX_PER_HOUR));
   const x0 = left, x1 = width - right, y0 = top, y1 = top + rows.length * rowH;
-  const sx = linearScale(te || [0, 1], [x0, x1]);
-  const step = te ? TIME_STEPS.find((s) => (te[1] - te[0]) / s <= hours * 2 + 1) || 3600 : 3600;
+  const sx0 = linearScale(te || [0, 1], [x0, x1]);
+  const sx = (t) => Math.min(x1, Math.max(x0, sx0(t)));
+  const step = TIME_STEPS.find((s) => (s / 3600) * PX_PER_HOUR >= 80) || 3600;
   const xTicks = [];
   if (te) for (let t = Math.ceil(te[0] / step) * step; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
   return { width, height: y1 + bottom, x0, x1, y0, y1, rowH, empty: !rows.length, xTicks,
@@ -201,7 +205,6 @@ export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.d
   const svg = root(doc, geo.width, geo.height, title, desc, 'runs-chart');
   if (svg.style) svg.style.minWidth = `${geo.width}px`; // scroll sideways instead of squeezing the dots together
   for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0 - 6, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.y0 - 12, 'text-anchor': 'middle' }, t.label));
-  svg.append(el(doc, 'text', { class: 'axis-label', x: 4, y: 10 }, 'Time (Dublin local) · one row per run · hollow dot: scheduled · filled dot: actual (blue early, orange late, green on time) · hover a dot for the stop, click to inspect the run'));
   for (const r of geo.runs) {
     const g = el(doc, 'g', { class: `run ${r.cls}`, 'data-trip': r.trip_id });
     if (onSelect) g.addEventListener('click', () => onSelect(r.trip_id));
