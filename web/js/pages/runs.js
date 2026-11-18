@@ -66,7 +66,7 @@ export async function render(ctx) {
       h('button', { class: 'btn', type: 'submit' }, 'Show runs'),
       h('p', { class: 'hint', id: 'runs-hint' }, `Up to ${MAX_ROUTES} routes, separated by commas. Only tracked routes have recorded runs.`)),
     h('div', { class: 'card' }, h('span', { class: 'row-label' }, 'Time of day'), slider.el,
-      h('p', { class: 'hint' }, 'A run is shown when any of its stops is scheduled or arrives in this window; the diagram covers exactly the window.')), results);
+      h('p', { class: 'hint' }, 'A run is shown when any of its stops is scheduled or arrives in this window; the diagram then shows each of those runs in full.')), results);
   if (!routes.length && !date) { put(results, emptyState('Pick a route and a day to see its runs.')); return; }
   if (!routes.length) { put(results, notice('Enter at least one route.')); return; }
   if (!DATE_RE.test(date)) { put(results, notice('The day must be a date like 2026-11-12.')); return; }
@@ -106,13 +106,12 @@ function draw(route, date, data, stops, el, ds, win) {
     { label: 'Run', get: (r) => r.trip_id }, { label: 'First stop scheduled', get: (r) => clockTime(r.first) }, { label: 'Last stop scheduled', get: (r) => clockTime(r.last) },
     { label: 'Stops', num: true, get: (r) => fmtCount(r.stops) }, { label: 'No arrival', num: true, get: (r) => fmtCount(r.missing) },
     { label: 'Mean delay', num: true, get: (r) => fmtDelay(r.delay) }, { label: 'Worst delay', num: true, get: (r) => fmtDelay(r.worst) }] });
-  const t1 = win[1] >= MAX ? Math.max(...visits.flatMap((v) => [v.scheduled, v.actual]).filter(isNum), ds + MAX * 60) : ds + win[1] * 60;
   const geo = runsGeometry(runs.map((r) => ({ ...r, label: `${clockTime(r.first)}${r.direction ? ` · ${r.direction}` : ''}`,
-    visits: r.visits.map((v) => ({ ...v, tip: visitTipData(v, label(v.stop_id), r.trip_id, status(v), clockTime) })) })), { domain: [ds + win[0] * 60, t1] });
+    visits: r.visits.map((v) => ({ ...v, tip: visitTipData(v, label(v.stop_id), r.trip_id, status(v), clockTime) })) })));
   const insp = inspector(route, runs, label);
   const svg = renderRunsChart(geo, { onSelect: insp.select, title: `Runs of route ${route}`, desc: `${plural(runs.length, 'run')} on ${date} in ${when}; each row is one run with a dot per stop at its scheduled and actual time.` });
   put(el, figure({ title: `${plural(runs.length, 'run')} in ${when}, by first scheduled time`, svg, table: table(runs, `Runs of route ${route}, ${date}, ${when}`), level: 'h3',
-    legend: h('p', { class: 'legend' }, 'One row per run. Each stop is a hollow dot at its scheduled time and a filled dot at the time the bus actually arrived, joined by a bar that shows the delay. Blue: early, orange: late, green: on time. A hollow dot alone: no arrival recorded. Hover a dot for the stop, click to inspect the run. Scroll sideways for the rest of the window.') }));
+    legend: h('p', { class: 'legend' }, 'One row per run. Each stop is a hollow dot at its scheduled time and a filled dot at the time the bus actually arrived, joined by a bar that shows the delay. Blue: early, orange: late, green: on time. A hollow dot alone: no arrival recorded. Hover a dot for the stop, click to inspect the run. Click the time of a run on the left to jump to its first stop; the labels stay put while you scroll sideways.') }));
   put(el, insp.el);
 }
 

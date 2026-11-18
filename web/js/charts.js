@@ -172,43 +172,53 @@ export function stepGeometry(steps, markers = [], o = {}) {
 }
 
 // ---------- runs diagram: one horizontal row per run, time on x; per stop a hollow dot (scheduled) and a filled dot (actual) ----------
-// runs: [{trip_id, label, delay, visits: [{scheduled, actual, delay, tip}]}]. Rows are ordered by first scheduled time.
-// o.domain = [t0, t1] (epoch s) is the time range drawn; stops outside it are left out. 600 px per hour keeps dots a few stops apart.
+// runs: [{trip_id, label, delay, visits: [{scheduled, actual, delay, tip}]}]. Rows are ordered by first scheduled time and are
+// never cut: the time axis runs from the earliest stop rounded down to the next tick to the latest stop rounded up.
+// 600 px per hour keeps dots a few stops apart.
 const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200];
 export const PX_PER_HOUR = 600;
+export const LABEL_W = 118; // the frozen row-label column
 export function runsGeometry(runs, o = {}) {
-  const { left = 150, right = 16, top = 28, bottom = 8, rowH = 30 } = o;
-  const all = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length);
-  const te = o.domain || extent(all.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
-  const inside = (t) => isNum(t) && t >= te[0] && t <= te[1];
-  const rows = te ? all.map((r) => ({ ...r, vs: r.vs.filter((v) => inside(v.scheduled) || inside(v.actual)) })).filter((r) => r.vs.length)
-    .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled) : [];
-  const hours = te ? (te[1] - te[0]) / 3600 : 0;
-  const width = left + right + Math.round(Math.max(500, hours * PX_PER_HOUR));
-  const x0 = left, x1 = width - right, y0 = top, y1 = top + rows.length * rowH;
-  const sx0 = linearScale(te || [0, 1], [x0, x1]);
-  const sx = (t) => Math.min(x1, Math.max(x0, sx0(t)));
+  const { left = 24, right = 24, top = 28, bottom = 8, rowH = 30 } = o;
+  const rows = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length)
+    .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled);
   const step = TIME_STEPS.find((s) => (s / 3600) * PX_PER_HOUR >= 80) || 3600;
+  const e = extent(rows.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+  const te = e && [Math.floor(e[0] / step) * step, Math.ceil(e[1] / step) * step];
+  const width = left + right + Math.round(te ? ((te[1] - te[0]) / 3600) * PX_PER_HOUR : 500);
+  const x0 = left, x1 = width - right, y0 = top, y1 = top + rows.length * rowH;
+  const sx = linearScale(te || [0, 1], [x0, x1]);
   const xTicks = [];
-  if (te) for (let t = Math.ceil(te[0] / step) * step; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
+  if (te) for (let t = te[0]; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
   return { width, height: y1 + bottom, x0, x1, y0, y1, rowH, empty: !rows.length, xTicks,
     runs: rows.map((r, i) => {
       const cy = y0 + i * rowH + rowH / 2;
       let line = '', pen = false;
       for (const v of r.vs) { if (!isNum(v.actual)) { pen = false; continue; } line += `${pen ? 'L' : 'M'}${r2(sx(v.actual))} ${cy}`; pen = true; }
-      return { trip_id: r.trip_id, label: r.label ?? r.trip_id, cy, line, cls: delayClass(r.delay), tip: r.tip,
-        pts: r.vs.map((v) => ({ xs: r2(sx(v.scheduled)), xa: isNum(v.actual) ? r2(sx(v.actual)) : null, cls: delayClass(v.delay), tip: v.tip })) };
+      const pts = r.vs.map((v) => ({ xs: r2(sx(v.scheduled)), xa: isNum(v.actual) ? r2(sx(v.actual)) : null, cls: delayClass(v.delay), tip: v.tip }));
+      return { trip_id: r.trip_id, label: r.label ?? r.trip_id, cy, line, cls: delayClass(r.delay), tip: r.tip, pts,
+        firstX: Math.min(...pts.flatMap((p) => [p.xs, p.xa]).filter(isNum)) };
     }) };
 }
 
+// Returns a wrapper holding two svgs side by side: the row labels (sticky, so they stay while the chart scrolls sideways)
+// and the plot. Clicking a label scrolls the chart to that run's first stop; clicking a run's dots calls onSelect(trip_id).
 export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'runs-chart');
-  if (svg.style) svg.style.minWidth = `${geo.width}px`; // scroll sideways instead of squeezing the dots together
+  const labels = el(doc, 'svg', { viewBox: `0 0 ${LABEL_W} ${geo.height}`, class: 'chart runs-labels', 'aria-hidden': 'true', focusable: 'false' });
+  const wrap = doc.createElement('div');
+  wrap.setAttribute('class', 'runs-wrap');
+  if (svg.style) { svg.style.width = svg.style.minWidth = `${geo.width}px`; labels.style.width = labels.style.minWidth = `${LABEL_W}px`; }
+  const jump = (x) => { const box = wrap.closest?.('.chart-scroll'); if (box) box.scrollLeft = Math.max(0, x - 40); };
   for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0 - 6, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.y0 - 12, 'text-anchor': 'middle' }, t.label));
   for (const r of geo.runs) {
+    const row = el(doc, 'g', { class: 'label-row', 'data-trip': r.trip_id });
+    row.addEventListener('click', () => jump(r.firstX));
+    row.append(el(doc, 'rect', { class: 'row-hit', x: 0, y: r.cy - geo.rowH / 2, width: LABEL_W, height: geo.rowH }),
+      el(doc, 'text', { class: 'row-label', x: LABEL_W - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 17)));
+    labels.append(row);
     const g = el(doc, 'g', { class: `run ${r.cls}`, 'data-trip': r.trip_id });
     if (onSelect) g.addEventListener('click', () => onSelect(r.trip_id));
-    g.append(el(doc, 'text', { class: 'row-label', x: geo.x0 - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 24)));
     if (r.line) g.append(el(doc, 'path', { class: 'act-line', d: r.line, fill: 'none' }));
     for (const p of r.pts) {
       const a = { 'data-tip-json': p.tip ? tipJson(p.tip) : null };
@@ -217,7 +227,8 @@ export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.d
     }
     svg.append(g);
   }
-  return svg;
+  wrap.append(labels, svg);
+  return wrap;
 }
 
 // ---------- alt text ----------

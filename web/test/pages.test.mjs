@@ -829,7 +829,7 @@ test('runs page: draws one diagram, tiles, tables; names are text not HTML', asy
   const ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1300', to: '1439' });
   await (await import('../js/pages/runs.js')).render(ctx);
   await settle();
-  assert.equal(ctx.main.byTag('svg').length, 1);
+  assert.equal(ctx.main.byTag('svg').length, 2); // frozen labels + plot
   assert.match(text(ctx.main), /Route 4/);
   assert.match(text(ctx.main), /2 runs|Runs/);
   assert.match(text(ctx.main), /1 of 3 stops visited|of 3 stops visited/);
@@ -839,7 +839,7 @@ test('runs page: draws one diagram, tiles, tables; names are text not HTML', asy
   pick.dispatch('change', { target: pick });
   assert.match(text(ctx.main), /no arrival recorded/);
   pick.value = '-1'; pick.dispatch('change', { target: pick });
-  const g = ctx.main.byTag('g').find((x) => x.getAttribute('data-trip') === 't<1>');
+  const g = ctx.main.byTag('g').find((x) => x.getAttribute('data-trip') === 't<1>' && /^run /.test(x.getAttribute('class')));
   g.dispatch('click', {}); // clicking a run in the diagram opens it in the inspector
   assert.equal(pick.value, '0');
   assert.match(text(ctx.main), /no arrival recorded/);

@@ -467,3 +467,10 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 .chart .run .gap.early { stroke: var(--early); } .chart .run .gap.late { stroke: var(--late); } .chart .run .gap.ontime { stroke: var(--ok); }
 .chart .run .dot-a.early { fill: var(--early); } .chart .run .dot-a.late { fill: var(--late); } .chart .run .dot-a.ontime { fill: var(--ok); }
 .chart .run .dot-a:hover { stroke: var(--text); stroke-width: 2.5; }
+
+/* runs diagram: frozen label column */
+.runs-wrap { display: flex; width: max-content; min-width: 100%; }
+.chart.runs-labels { position: sticky; left: 0; z-index: 2; flex: none; background: var(--surface); border-right: 1px solid var(--border); }
+.chart.runs-chart { flex: none; }
+.chart .row-hit { fill: transparent; cursor: pointer; } .chart .label-row:hover .row-hit { fill: var(--surface-2); }
+.chart .label-row:hover .row-label { text-decoration: underline; }
