@@ -3,7 +3,6 @@ import { computedAt, isAbort, pageRequests, request, resetComputed } from './api
 import { errorBox, h, link, setStatus } from './dom.js';
 import { dateTime, parseHash, usesTrackedSet } from './lib.js';
 import { mountRecompute, onTrackedChange, renderSidebar } from './sidebar.js';
-import { installAutoscroll } from './autoscroll.js';
 import { installTooltip } from './tooltip.js';
 import * as all from './pages/all.js';
 import * as analytics from './pages/analytics.js';
@@ -87,7 +86,6 @@ async function show() {
 globalThis.addEventListener('hashchange', show);
 show();
 installTooltip();
-installAutoscroll();
 settings.applyAppearance();
 onSettings(() => settings.applyAppearance());
 const sidebar = globalThis.document.getElementById('sidebar-main');

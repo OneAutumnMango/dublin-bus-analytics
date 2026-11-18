@@ -467,7 +467,3 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 .chart .run .gap.early { stroke: var(--early); } .chart .run .gap.late { stroke: var(--late); } .chart .run .gap.ontime { stroke: var(--ok); }
 .chart .run .dot-a.early { fill: var(--early); } .chart .run .dot-a.late { fill: var(--late); } .chart .run .dot-a.ontime { fill: var(--ok); }
 .chart .run .dot-a:hover { stroke: var(--text); stroke-width: 2.5; }
-
-/* middle-click autoscroll */
-.autoscrolling, .autoscrolling * { cursor: all-scroll !important; }
-.autoscroll-dot { position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--surface); border: 2px solid var(--text); box-shadow: var(--shadow-sm); pointer-events: none; z-index: 50; }
