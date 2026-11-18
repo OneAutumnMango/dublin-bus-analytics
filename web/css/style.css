@@ -491,3 +491,4 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 .suggest[hidden] { display: none; }
 .suggest li { padding: 6px 10px; border-radius: 4px; cursor: pointer; font-family: var(--mono); }
 .suggest li:hover, .suggest li[aria-selected="true"] { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--early); }
+main > *:has(.suggest:not([hidden])) { position: relative; z-index: 20; } /* lift the block holding an open dropdown above the blocks after it */
