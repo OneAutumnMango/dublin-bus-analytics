@@ -1,6 +1,7 @@
-// Runs view: every run (trip) of one or more routes on one service day, scheduled against actual times.
+// Runs view: every run (trip) of one or more routes on one service day, one row per run, scheduled against actual times.
 import { api } from '../api.js';
 import { renderRunsChart, runsGeometry } from '../charts.js';
+import { visitTipData } from '../tipdata.js';
 import { dataTable, emptyState, figure, h, link, notice, put, tile } from '../dom.js';
 import { buildHash, clockTime, dateTime, describeDelay, fmtCount, fmtDelay, isNum, plural, stopCodeMap, stopLabel, stopNameMap } from '../lib.js';
 import { region } from '../view.js';
@@ -61,26 +62,19 @@ function draw(route, date, data, stops, el) {
   const arrived = visits.filter((v) => v.actual != null).length;
   const delays = visits.map((v) => v.delay).filter(isNum);
   if (data.truncated) put(el, notice('This day has more arrivals than the API returns at once, so only the earliest are shown.'));
-  if (data.order_source === 'none') put(el, notice('Stop order is unavailable (the bus data server could not be reached), so there is no diagram; the tables still work.', 'info'));
   put(el, h('div', { class: 'tiles' }, tile('Runs', fmtCount(runs.length)), tile('Arrivals recorded', fmtCount(arrived), { note: `of ${fmtCount(visits.length)} stops visited` }),
     tile('Mean delay', fmtDelay(mean(delays)), { note: describeDelay(mean(delays)) }), tile('Worst delay', fmtDelay(delays.length ? Math.max(...delays) : null))));
   const table = (rs, caption) => dataTable({ caption, rows: rs, columns: [
     { label: 'Run', get: (r) => r.trip_id }, { label: 'First stop scheduled', get: (r) => clockTime(r.first) }, { label: 'Last stop scheduled', get: (r) => clockTime(r.last) },
     { label: 'Stops', num: true, get: (r) => fmtCount(r.stops) }, { label: 'No arrival', num: true, get: (r) => fmtCount(r.missing) },
     { label: 'Mean delay', num: true, get: (r) => fmtDelay(r.delay) }, { label: 'Worst delay', num: true, get: (r) => fmtDelay(r.worst) }] });
-  const dirs = Object.entries(data.directions || {}).filter(([k]) => runs.some((r) => r.direction === k));
-  for (const [dir, ids] of dirs) {
-    const rs = runs.filter((r) => r.direction === dir);
-    const first = names.get(ids[0]), lastN = names.get(ids[ids.length - 1]);
-    const title = first && lastN ? `${first} – ${lastN}` : `Direction ${dir}`;
-    const geo = runsGeometry(rs.map((r) => ({ ...r, tip: `Run ${r.trip_id}: ${clockTime(r.first)} to ${clockTime(r.last)}, ${plural(r.stops, 'stop')}, mean delay ${fmtDelay(r.delay)}` })), ids.length);
-    const svg = renderRunsChart(geo, { title: `Runs of route ${route}, ${title}`, desc: `${plural(rs.length, 'run')} on ${date}, scheduled and actual times at each stop.`, stopLabel: (pos) => label(ids[pos]) });
-    put(el, figure({ title: `${title} · ${plural(rs.length, 'run')}`, svg, table: table(rs, `Runs of route ${route}, ${title}, ${date}`), level: 'h3',
-      legend: h('p', { class: 'legend' }, 'Each line is one run. Dashed grey: scheduled times. Solid: actual times, blue if the run was early on average, orange if late, green if exactly on time. Gaps: no arrival recorded.') }));
-  }
-  const rest = runs.filter((r) => !dirs.some(([k]) => k === r.direction));
-  if (rest.length) put(el, h('h3', {}, 'Runs without a known direction'), table(rest, `Runs of route ${route} without a known direction, ${date}`));
-  put(el, inspector(route, runs, label));
+  const geo = runsGeometry(runs.map((r) => ({ ...r, label: `${clockTime(r.first)}${r.direction ? ` · ${r.direction}` : ''}`,
+    visits: r.visits.map((v) => ({ ...v, tip: visitTipData(v, label(v.stop_id), r.trip_id, status(v), clockTime) })) })));
+  const insp = inspector(route, runs, label);
+  const svg = renderRunsChart(geo, { onSelect: insp.select, title: `Runs of route ${route}`, desc: `${plural(runs.length, 'run')} on ${date}; each row is one run with a dot per stop at its scheduled and actual time.` });
+  put(el, figure({ title: `${plural(runs.length, 'run')}, by first scheduled time`, svg, table: table(runs, `Runs of route ${route}, ${date}`), level: 'h3',
+    legend: h('p', { class: 'legend' }, 'One row per run. Each stop is a hollow dot at its scheduled time and a filled dot at the time the bus actually arrived, joined by a bar that shows the delay. Blue: early, orange: late, green: on time. A hollow dot alone: no arrival recorded. Scroll sideways for the whole day.') }));
+  put(el, insp.el);
 }
 
 // Pick one run to see every stop: scheduled, actual, delay and how sure we are.
@@ -88,7 +82,9 @@ function inspector(route, runs, label) {
   const holder = h('div', {});
   const pick = h('select', { id: `runs-pick-${route}`, on: { change: (ev) => show(Number(ev.target.value)) } },
     h('option', { value: '-1' }, 'Choose a run…'), runs.map((r, i) => h('option', { value: String(i) }, `${clockTime(r.first)} · ${r.trip_id} · ${fmtDelay(r.delay)}`)));
+  const card = h('div', { class: 'card' }, h('label', { for: pick.id }, 'Inspect a run (or click a run in the diagram)', pick), holder);
   function show(i) {
+    pick.value = String(i);
     holder.replaceChildren();
     if (i < 0) return;
     const r = runs[i];
@@ -97,5 +93,5 @@ function inspector(route, runs, label) {
       { label: 'Scheduled', get: (v) => clockTime(v.scheduled) }, { label: 'Actual', get: (v) => (v.actual == null ? '–' : clockTime(v.actual)) },
       { label: 'Delay', num: true, get: (v) => fmtDelay(v.delay) }, { label: 'Status', get: status }] }));
   }
-  return h('div', { class: 'card' }, h('label', { for: pick.id }, 'Inspect a run', pick), holder);
+  return { el: card, select: (trip) => { show(runs.findIndex((r) => r.trip_id === trip)); card.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }); } };
 }

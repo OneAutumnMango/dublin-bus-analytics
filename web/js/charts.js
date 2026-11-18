@@ -171,42 +171,47 @@ export function stepGeometry(steps, markers = [], o = {}) {
     markers: markers.map((m) => ({ ...m, x: r2(sx(m.t)) })) };
 }
 
-// ---------- runs diagram: time (x) against stop position (y), one dashed scheduled and one solid actual line per run ----------
-// runs: [{trip_id, delay (mean seconds or null), visits: [{pos, scheduled, actual}]}]; visits without a pos are not drawn.
+// ---------- runs diagram: one horizontal row per run, time on x; per stop a hollow dot (scheduled) and a filled dot (actual) ----------
+// runs: [{trip_id, label, delay, visits: [{scheduled, actual, delay, tip}]}]. Rows are ordered by first scheduled time.
 const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200, 14400];
-export function runsGeometry(runs, nStops, o = {}) {
-  const { width = 900, left = 200, right = 16, top = 16, bottom = 34, rowH = 12 } = o;
-  const height = top + bottom + Math.max(220, Math.max(1, nStops - 1) * rowH);
-  const x0 = left, x1 = width - right, y0 = top, y1 = height - bottom;
-  const drawn = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.pos) && isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length);
-  const te = extent(drawn.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+const PX_PER_HOUR = 150;
+export function runsGeometry(runs, o = {}) {
+  const { left = 150, right = 16, top = 28, bottom = 8, rowH = 18 } = o;
+  const rows = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length)
+    .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled);
+  const te = extent(rows.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+  const hours = te ? (te[1] - te[0]) / 3600 : 0;
+  const width = left + right + Math.round(Math.max(700, hours * PX_PER_HOUR));
+  const x0 = left, x1 = width - right, y0 = top, y1 = top + rows.length * rowH;
   const sx = linearScale(te || [0, 1], [x0, x1]);
-  const sy = linearScale([0, Math.max(1, nStops - 1)], [y0, y1]);
-  const step = te ? TIME_STEPS.find((s) => (te[1] - te[0]) / s <= 10) || 28800 : 3600;
+  const step = te ? TIME_STEPS.find((s) => (te[1] - te[0]) / s <= hours * 2 + 1) || 3600 : 3600;
   const xTicks = [];
   if (te) for (let t = Math.ceil(te[0] / step) * step; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
-  const every = Math.max(1, Math.ceil(nStops / Math.max(2, Math.floor((y1 - y0) / 16))));
-  const yTicks = [];
-  for (let pos = 0; pos < nStops; pos += every) yTicks.push({ y: r2(sy(pos)), pos });
-  if (nStops > 1 && (nStops - 1) % every) yTicks.push({ y: r2(sy(nStops - 1)), pos: nStops - 1 });
-  const line = (pts) => { // a missing time breaks the line instead of joining over it
-    let d = '', pen = false;
-    for (const [t, pos] of pts) { if (!isNum(t)) { pen = false; continue; } d += `${pen ? 'L' : 'M'}${r2(sx(t))} ${r2(sy(pos))}`; pen = true; }
-    return d;
-  };
-  return { width, height, x0, x1, y0, y1, empty: !drawn.length, xTicks, yTicks,
-    runs: drawn.map((r) => ({ trip_id: r.trip_id, cls: delayClass(r.delay), tip: r.tip,
-      sched: line(r.vs.map((v) => [v.scheduled, v.pos])), act: line(r.vs.map((v) => [v.actual, v.pos])) })) };
+  return { width, height: y1 + bottom, x0, x1, y0, y1, rowH, empty: !rows.length, xTicks,
+    runs: rows.map((r, i) => {
+      const cy = y0 + i * rowH + rowH / 2;
+      let line = '', pen = false;
+      for (const v of r.vs) { if (!isNum(v.actual)) { pen = false; continue; } line += `${pen ? 'L' : 'M'}${r2(sx(v.actual))} ${cy}`; pen = true; }
+      return { trip_id: r.trip_id, label: r.label ?? r.trip_id, cy, line, cls: delayClass(r.delay), tip: r.tip,
+        pts: r.vs.map((v) => ({ xs: r2(sx(v.scheduled)), xa: isNum(v.actual) ? r2(sx(v.actual)) : null, cls: delayClass(v.delay), tip: v.tip })) };
+    }) };
 }
 
-export function renderRunsChart(geo, { title, desc, stopLabel = (pos) => String(pos + 1), doc = globalThis.document } = {}) {
+export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'runs-chart');
-  for (const t of geo.yTicks) svg.append(el(doc, 'line', { class: 'grid', x1: geo.x0, x2: geo.x1, y1: t.y, y2: t.y }), el(doc, 'text', { class: 'tick-label', x: geo.x0 - 6, y: t.y + 4, 'text-anchor': 'end' }, shorten(stopLabel(t.pos), 30)));
-  for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.height - 16, 'text-anchor': 'middle' }, t.label));
-  svg.append(el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 2 }, 'Time (Dublin local) vs stop along the route · dashed grey: scheduled · solid: actual (blue early, orange late, green on time)'));
+  if (svg.style) svg.style.minWidth = `${geo.width}px`; // scroll sideways instead of squeezing the dots together
+  for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0 - 6, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.y0 - 12, 'text-anchor': 'middle' }, t.label));
+  svg.append(el(doc, 'text', { class: 'axis-label', x: 4, y: 10 }, 'Time (Dublin local) · one row per run · hollow dot: scheduled · filled dot: actual (blue early, orange late, green on time) · hover a dot for the stop, click to inspect the run'));
   for (const r of geo.runs) {
-    const g = el(doc, 'g', { class: `run ${r.cls}` });
-    g.append(el(doc, 'title', {}, r.tip), el(doc, 'path', { class: 'sched', d: r.sched, fill: 'none' }), el(doc, 'path', { class: 'act', d: r.act, fill: 'none' }), el(doc, 'path', { class: 'hit', d: r.sched, fill: 'none' }));
+    const g = el(doc, 'g', { class: `run ${r.cls}`, 'data-trip': r.trip_id });
+    if (onSelect) g.addEventListener('click', () => onSelect(r.trip_id));
+    g.append(el(doc, 'text', { class: 'row-label', x: geo.x0 - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 24)));
+    if (r.line) g.append(el(doc, 'path', { class: 'act-line', d: r.line, fill: 'none' }));
+    for (const p of r.pts) {
+      const a = { 'data-tip-json': p.tip ? tipJson(p.tip) : null };
+      g.append(el(doc, 'circle', { class: 'dot-s', cx: p.xs, cy: r.cy, r: 2.5, ...(p.xa === null ? a : {}) }));
+      if (p.xa !== null) g.append(el(doc, 'line', { class: `gap ${p.cls}`, x1: p.xs, x2: p.xa, y1: r.cy, y2: r.cy }), el(doc, 'circle', { class: `dot-a ${p.cls}`, cx: p.xa, cy: r.cy, r: 3.5, ...a }));
+    }
     svg.append(g);
   }
   return svg;

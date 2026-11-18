@@ -66,3 +66,9 @@ export function fmtTipValue(r, units = 'min') {
     default: return String(r.v ?? '–');
   }
 }
+
+// One stop visit of a run: scheduled and actual time as text, the delay as the headline.
+export function visitTipData(v, stopName, run, status, clock) {
+  return out({ title: stopName, sub: `Run ${run}`, head: head(v.delay), rows: [
+    row('sched', 'Scheduled', 'text', clock(v.scheduled)), row('actual', 'Actual', 'text', v.actual == null ? '–' : clock(v.actual)), row('status', 'Status', 'text', status)] });
+}

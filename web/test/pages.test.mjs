@@ -824,7 +824,7 @@ test('runs page: needs a route and a day first, no requests', async () => {
   assert.equal(calls?.length ?? 0, 0);
 });
 
-test('runs page: draws a diagram per direction, tiles, tables; names are text not HTML', async () => {
+test('runs page: draws one diagram, tiles, tables; names are text not HTML', async () => {
   installFetch({ 'GET /api/routes/4/runs': runsResp(), 'GET /api/routes/4/stops': stopsResp });
   const ctx = ctxOf({}, { routes: '4', date: '2026-11-12' });
   await (await import('../js/pages/runs.js')).render(ctx);
@@ -832,12 +832,16 @@ test('runs page: draws a diagram per direction, tiles, tables; names are text no
   assert.equal(ctx.main.byTag('svg').length, 1);
   assert.match(text(ctx.main), /Route 4/);
   assert.match(text(ctx.main), /2 runs|Runs/);
-  assert.match(text(ctx.main), /Runs without a known direction/);
   assert.match(text(ctx.main), /1 of 3 stops visited|of 3 stops visited/);
   assert.equal(ctx.main.byTag('img').length, 0);
   const pick = ctx.main.byTag('select')[0];
   pick.value = '0';
   pick.dispatch('change', { target: pick });
+  assert.match(text(ctx.main), /no arrival recorded/);
+  pick.value = '-1'; pick.dispatch('change', { target: pick });
+  const g = ctx.main.byTag('g').find((x) => x.getAttribute('data-trip') === 't<1>');
+  g.dispatch('click', {}); // clicking a run in the diagram opens it in the inspector
+  assert.equal(pick.value, '0');
   assert.match(text(ctx.main), /no arrival recorded/);
   assert.ok(ctx.main.byText('a', /Two|s2/).length >= 1);
 });

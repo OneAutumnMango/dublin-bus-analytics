@@ -459,9 +459,11 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 @media (max-width: 1000px) { .cache-bar { padding-inline: var(--s4); } .cache-bar .btn { min-height: 44px; } }
 
 /* runs diagram */
-.chart .run .sched { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; opacity: .6; }
-.chart .run .act { stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; }
-.chart .run.early .act { stroke: var(--early); } .chart .run.late .act { stroke: var(--late); } .chart .run.ontime .act { stroke: var(--ok); }
-.chart .run .hit { stroke: transparent; stroke-width: 8; pointer-events: stroke; }
-.chart .run:hover .act { stroke-width: 3.5; }
-.chart .run:hover .sched { opacity: 1; }
+.chart .run .act-line { stroke: var(--muted); stroke-width: 1; opacity: .5; }
+.chart .run .dot-s { fill: var(--surface); stroke: var(--muted); stroke-width: 1.25; }
+.chart .run .dot-a { fill: var(--muted); stroke: transparent; stroke-width: 8; paint-order: stroke; pointer-events: all; }
+.chart .run .dot-s[data-tip-json] { stroke-width: 1.25; }
+.chart .run .gap { stroke: var(--muted); stroke-width: 1.5; opacity: .7; }
+.chart .run .gap.early { stroke: var(--early); } .chart .run .gap.late { stroke: var(--late); } .chart .run .gap.ontime { stroke: var(--ok); }
+.chart .run .dot-a.early { fill: var(--early); } .chart .run .dot-a.late { fill: var(--late); } .chart .run .dot-a.ontime { fill: var(--ok); }
+.chart .run .dot-a:hover { stroke: var(--text); stroke-width: 1.5; }
