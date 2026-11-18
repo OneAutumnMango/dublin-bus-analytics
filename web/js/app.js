@@ -13,14 +13,15 @@ import * as stop from './pages/stop.js';
 import * as trip from './pages/trip.js';
 import * as settings from './pages/settings.js';
 import * as map from './pages/map.js';
+import * as runs from './pages/runs.js';
 import { onSettings } from './settings.js';
 
-const PAGES = { routes, route, stop, trip, analytics, lab, settings, map, all };
+const PAGES = { routes, route, stop, trip, analytics, lab, settings, map, all, runs };
 const SITE = 'Dublin Bus Analytics';
 let ctl = null;
 let lastKey = null;
 
-const NAV = { routes: 'routes', route: 'routes', stop: 'routes', trip: 'routes', analytics: 'routes', lab: 'routes', map: 'map', settings: 'settings', all: 'routes' };
+const NAV = { routes: 'routes', route: 'routes', stop: 'routes', trip: 'routes', analytics: 'routes', lab: 'routes', map: 'map', runs: 'runs', settings: 'settings', all: 'routes' };
 function markNav(name) { // highlight the current section in the top bar
   const links = globalThis.document.querySelectorAll?.('.main-nav a') || [];
   for (const a of links) { if (a.getAttribute('data-nav') === NAV[name]) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }

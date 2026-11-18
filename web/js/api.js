@@ -101,6 +101,7 @@ export function makeApi(fetchFn = globalThis.fetch) {
     allHeatmap: (q, o) => get(`/api/all/heatmap${qs(q)}`, o),
     allForecast: (q, o) => get(`/api/all/forecast${qs(q)}`, o),
     stopStats: (s, route, q, o) => get(`/api/stops/${enc(s)}/stats${qs({ route, ...q })}`, o),
+    runs: (r, date, o) => get(`/api/routes/${enc(r)}/runs${qs({ date })}`, o),
     series: (trip, stop, q, o) => get(`/api/trips/${enc(trip)}/series${qs({ stop, ...q })}`, o),
     runBackup: (o) => request('/api/backup', { ...o, method: 'POST', timeout: 120000, fetchFn }),
     dayPreview: ({ date, end, route } = {}, o) => get(`/api/data/day${qs({ date, end, route })}`, o),

@@ -45,6 +45,7 @@ Open http://127.0.0.1:8081. The pages (hash routes):
 - **Trip**: how the predictions for one trip at one stop evolved over time.
 - **Analytics**: mean delay by weekday and hour, where time is lost along the route, and how accurate the 30/20/10/5/2-minute forecasts were.
 - **All routes** (`#/all`, button at the top of the tracked list): a per-route comparison of mean and median delay, plus the weekday and hour heatmap and forecast accuracy pooled across every tracked route.
+- **Runs** (`#/runs?routes=4,15&date=2026-11-12`, the Runs tab next to Map): every run of up to five routes on one past service day, as lines through the stops (dashed scheduled, solid actual), with a per-run table and a per-stop view of any run. Needs the route to have been tracked that day; the stop order comes from the bus data server.
 - **Stats lab** (`#/lab/{route}`): the shape of the delay distribution (ECDF, QQ plot, skew, kurtosis, reliability buffer), how delay persists or recovers along a trip, and how much of the delay variance hour, weekday, stop and date each explain. Intervals resample whole days; with fewer than 5 days of data they are not shown.
 
 The fake server returns no live arrivals, so only the seeded history appears.

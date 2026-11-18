@@ -215,7 +215,7 @@ export function parseQuery(str) {
   return out;
 }
 
-const ROUTES = { routes: [], route: ['route'], stop: ['route', 'stop'], trip: ['trip', 'stop'], analytics: ['route'], lab: ['route'], settings: [], map: [], all: [] };
+const ROUTES = { routes: [], route: ['route'], stop: ['route', 'stop'], trip: ['trip', 'stop'], analytics: ['route'], lab: ['route'], settings: [], map: [], all: [], runs: [] };
 const OPTIONAL = new Set(['lab']); // the route segment may be omitted: #/lab is the all-routes view
 
 export function buildHash(name, params = {}, query = {}) {
