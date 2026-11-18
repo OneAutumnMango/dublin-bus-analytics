@@ -396,3 +396,25 @@ test('renderAccumulation: with stopHref each stop dot and bar sits inside a link
   assert.ok(links.every((a) => a.byTag('circle').length >= 2)); // dot + hit area inside
   assert.equal(C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc }).byTag('a').length, 0);
 });
+
+test('runsGeometry: zoom scales the width and keeps the ticks 80 px apart; the label column fits its text', () => {
+  const runs = [{ trip_id: 'a', label: '06:15 Heuston Station → Monkstown Avenue', delay: 0, visits: [{ scheduled: 0, actual: 0 }, { scheduled: 7200, actual: 7200 }] }];
+  const base = C.runsGeometry(runs), out = C.runsGeometry(runs, { pxPerHour: C.PX_PER_HOUR / 4 }), inn = C.runsGeometry(runs, { pxPerHour: C.PX_PER_HOUR * 4 });
+  assert.ok(out.width < base.width && base.width < inn.width);
+  for (const g of [out, base, inn]) for (let i = 1; i < g.xTicks.length; i++) assert.ok(g.xTicks[i].x - g.xTicks[i - 1].x >= 79);
+  const short = C.runsGeometry([{ trip_id: 'a', label: '06:15', visits: [{ scheduled: 0 }] }]);
+  assert.ok(short.labelW < base.labelW);
+  assert.ok(base.labelW <= 44 * 6.6 + 22 + 1);
+});
+
+test('renderRunsChart: redraws into the same element (zoom keeps the scroll box)', () => {
+  const g = C.runsGeometry([{ trip_id: 'a', delay: 0, visits: [{ scheduled: 0, actual: 5 }, { scheduled: 3600, actual: 3600 }] }]);
+  const wrap = C.renderRunsChart(g, { title: 't', desc: 'd' });
+  const again = C.renderRunsChart(C.runsGeometry([{ trip_id: 'a', delay: 0, visits: [{ scheduled: 0, actual: 5 }] }], { pxPerHour: 150 }), { title: 't', desc: 'd', into: wrap });
+  assert.equal(again, wrap);
+  assert.equal(wrap.byTag('svg').length, 2); // replaced, not appended
+  const box = { scrollLeft: 0 };
+  wrap.closest = (s) => (s === '.chart-scroll' ? box : null);
+  wrap.byTag('g').find((x) => x.getAttribute('class') === 'label-row').dispatch('click', {});
+  assert.ok(box.scrollLeft >= 0);
+});

@@ -920,3 +920,28 @@ test('trip story: first reading, changes, arrival; dropped bus', async () => {
   assert.match(tripStory({ ...v, arrival: null }, 'X'), /disappeared from the feed before arriving \(last seen/);
   assert.match(tripStory({ ...v, points: [v.points[0]] }, 'X'), /never changed/);
 });
+
+test('runs page: direction shows terminus names; zoom buttons redraw every chart without a refetch', async () => {
+  let calls = 0;
+  const stopsNamed = { route: '4', directions: { out: [{ id: 's1', name: 'Heuston Station' }, { id: 's2', name: 'Monkstown Avenue' }] } };
+  installFetch({ 'GET /api/routes/4/runs': () => { calls++; return runsResp(); }, 'GET /api/routes/4/stops': stopsNamed });
+  const ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1300', to: '1439' });
+  await (await import('../js/pages/runs.js')).render(ctx);
+  await settle();
+  const labels = () => ctx.main.byTag('text').filter((t) => t.getAttribute('class') === 'row-label').map((t) => t.textContent);
+  assert.ok(labels().some((t) => /Heuston Station \u2192 Monkstown Avenue/.test(t)), labels().join('|'));
+  const width = () => ctx.main.byTag('svg').find((x) => /runs-chart/.test(x.getAttribute('class'))).getAttribute('viewBox');
+  const before = width();
+  const pct = () => ctx.main.byTag('output').find((o) => /%$/.test(o.textContent)).textContent;
+  assert.equal(pct(), '100%');
+  ctx.main.byText('button', /^\+$/)[0].dispatch('click', {});
+  assert.equal(pct(), '150%');
+  assert.notEqual(width(), before);
+  ctx.main.byText('button', /^\u2212$/)[0].dispatch('click', {});
+  ctx.main.byText('button', /^\u2212$/)[0].dispatch('click', {});
+  assert.equal(pct(), '75%');
+  for (let i = 0; i < 10; i++) ctx.main.byText('button', /^\u2212$/)[0].dispatch('click', {});
+  assert.equal(pct(), '25%'); // stops at the smallest zoom
+  assert.equal(calls, 1);
+  assert.equal(ctx.main.byTag('svg').filter((x) => /runs-chart/.test(x.getAttribute('class'))).length, 1);
+});

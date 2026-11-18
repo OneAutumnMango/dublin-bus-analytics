@@ -179,20 +179,21 @@ export function stepGeometry(steps, markers = [], o = {}) {
 // 600 px per hour keeps dots a few stops apart.
 const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200];
 export const PX_PER_HOUR = 600;
-export const LABEL_W = 118; // the frozen row-label column
+const LABEL_MAX = 44; // characters; longer labels are cut (the full text is in the hover tip)
 export function runsGeometry(runs, o = {}) {
-  const { left = 24, right = 24, top = 28, bottom = 8, rowH = 30 } = o;
+  const { left = 24, right = 24, top = 28, bottom = 8, rowH = 30, pxPerHour = PX_PER_HOUR } = o;
   const rows = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length)
     .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled);
-  const step = TIME_STEPS.find((s) => (s / 3600) * PX_PER_HOUR >= 80) || 3600;
+  const step = TIME_STEPS.find((s) => (s / 3600) * pxPerHour >= 80) || 7200;
   const e = extent(rows.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
   const te = e && [Math.floor(e[0] / step) * step, Math.ceil(e[1] / step) * step];
-  const width = left + right + Math.round(te ? ((te[1] - te[0]) / 3600) * PX_PER_HOUR : 500);
+  const width = left + right + Math.round(te ? ((te[1] - te[0]) / 3600) * pxPerHour : 500);
   const x0 = left, x1 = width - right, y0 = top, y1 = top + rows.length * rowH;
   const sx = linearScale(te || [0, 1], [x0, x1]);
   const xTicks = [];
   if (te) for (let t = te[0]; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
-  return { width, height: y1 + bottom, x0, x1, y0, y1, rowH, empty: !rows.length, xTicks,
+  const labelW = Math.max(60, Math.round(Math.min(LABEL_MAX, Math.max(0, ...rows.map((r) => String(r.label ?? r.trip_id).length))) * 6.6) + 22); // the frozen label column fits its text
+  return { width, height: y1 + bottom, x0, x1, y0, y1, rowH, labelW, empty: !rows.length, xTicks,
     runs: rows.map((r, i) => {
       const cy = y0 + i * rowH + rowH / 2;
       let line = '', pen = false;
@@ -205,19 +206,20 @@ export function runsGeometry(runs, o = {}) {
 
 // Returns a wrapper holding two svgs side by side: the row labels (sticky, so they stay while the chart scrolls sideways)
 // and the plot. Clicking a label scrolls the chart to that run's first stop; clicking a run's dots calls onSelect(trip_id).
-export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.document } = {}) {
+export function renderRunsChart(geo, { title, desc, onSelect, into, doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'runs-chart');
-  const labels = el(doc, 'svg', { viewBox: `0 0 ${LABEL_W} ${geo.height}`, class: 'chart runs-labels', 'aria-hidden': 'true', focusable: 'false' });
-  const wrap = doc.createElement('div');
+  const labels = el(doc, 'svg', { viewBox: `0 0 ${geo.labelW} ${geo.height}`, class: 'chart runs-labels', 'aria-hidden': 'true', focusable: 'false' });
+  const wrap = into || doc.createElement('div'); // `into`: redraw (zoom) inside the same element so the scroll box and its position survive
   wrap.setAttribute('class', 'runs-wrap');
-  if (svg.style) { svg.style.width = svg.style.minWidth = `${geo.width}px`; labels.style.width = labels.style.minWidth = `${LABEL_W}px`; }
+  if (svg.style) { svg.style.width = svg.style.minWidth = `${geo.width}px`; labels.style.width = labels.style.minWidth = `${geo.labelW}px`; }
   const jump = (x) => { const box = wrap.closest?.('.chart-scroll'); if (box) box.scrollLeft = Math.max(0, x - 40); };
   for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0 - 6, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.y0 - 12, 'text-anchor': 'middle' }, t.label));
   for (const r of geo.runs) {
     const row = el(doc, 'g', { class: 'label-row', 'data-trip': r.trip_id });
     row.addEventListener('click', () => jump(r.firstX));
-    row.append(el(doc, 'rect', { class: 'row-hit', x: 0, y: r.cy - geo.rowH / 2, width: LABEL_W, height: geo.rowH }),
-      el(doc, 'text', { class: 'row-label', x: LABEL_W - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 17)));
+    row.append(el(doc, 'rect', { class: 'row-hit', x: 0, y: r.cy - geo.rowH / 2, width: geo.labelW, height: geo.rowH }),
+      el(doc, 'title', {}, `${r.label} (click to scroll to its first stop)`),
+      el(doc, 'text', { class: 'row-label', x: 8, y: r.cy + 4 }, shorten(r.label, LABEL_MAX)));
     labels.append(row);
     const g = el(doc, 'g', { class: `run ${r.cls}`, 'data-trip': r.trip_id });
     if (onSelect) g.addEventListener('click', () => onSelect(r.trip_id));
@@ -229,7 +231,7 @@ export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.d
     }
     svg.append(g);
   }
-  wrap.append(labels, svg);
+  wrap.replaceChildren(labels, svg);
   return wrap;
 }
 

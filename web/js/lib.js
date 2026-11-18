@@ -425,6 +425,17 @@ export function directionLabels(directions, route) {
   return m;
 }
 
+// {direction: [stops in route order]} -> Map(direction key -> "First stop → Last stop"); the raw key when no stop has a name.
+export function directionEnds(directions) {
+  const m = new Map();
+  const nm = (s) => (typeof (s?.name ?? s?.stopName ?? s?.stop_name) === 'string' ? (s.name ?? s.stopName ?? s.stop_name) : null);
+  for (const [key, list] of Object.entries(directions && typeof directions === 'object' ? directions : {})) {
+    const names = (Array.isArray(list) ? list : []).map(nm).filter(Boolean);
+    m.set(key, names.length > 1 ? `${names[0]} \u2192 ${names[names.length - 1]}` : names[0] || key);
+  }
+  return m;
+}
+
 // {direction: [stops]} -> Map(stop id -> public stop number, the GTFS stop_code printed on the pole).
 export function stopCodeMap(directions) {
   const m = new Map();

@@ -482,3 +482,5 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 
 .chart a.stop-link .hit, .chart a.stop-link .acc-bar { cursor: pointer; }
 .chart a.stop-link:hover .acc-dot { fill: var(--early); }
+.zoom-bar { display: flex; align-items: center; gap: var(--s3); margin: var(--s3) 0; }
+.zoom-pct { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
