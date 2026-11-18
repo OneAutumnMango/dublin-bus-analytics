@@ -378,7 +378,7 @@ export function renderStepChart(geo, { title, desc, doc = globalThis.document } 
   svg.append(el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 2 }, 'Time (Dublin local) vs minutes shown to passengers (due)'));
   for (const m of geo.markers) {
     svg.append(el(doc, 'line', { class: `marker ${m.kind}`, x1: m.x, x2: m.x, y1: geo.y1, y2: geo.y0 }),
-      el(doc, 'text', { class: 'marker-label', x: m.x + 4, y: geo.y1 + 10 + (m.kind === 'arrival' ? 12 : 0) }, m.label));
+      el(doc, 'text', { class: 'marker-label', ...(m.x > geo.width - 120 ? { x: m.x - 4, 'text-anchor': 'end' } : { x: m.x + 4 }), y: geo.y1 + 10 + (m.kind === 'arrival' ? 12 : 0) }, m.label)); // near the right edge the label goes left of the line, else it is clipped
   }
   if (!geo.empty) svg.append(el(doc, 'path', { class: 'step-line', d: geo.path, fill: 'none' }));
   for (const d of geo.dots) svg.append(el(doc, 'circle', { class: 'step-dot', cx: d.x, cy: d.y, r: 5, 'data-tip-json': d.tip ? tipJson(d.tip) : null }));

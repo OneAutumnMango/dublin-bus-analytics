@@ -376,3 +376,12 @@ test('stepGeometry/renderStepChart: stored readings become dots with tips on the
   assert.deepEqual([...svg.byTag('circle')].map((c) => JSON.parse(c.getAttribute('data-tip-json')).title), ['a', 'b']);
   assert.equal(C.stepGeometry(steps).dots.length, 0);
 });
+
+test('renderStepChart: marker labels near the right edge are anchored left of the line so they are not clipped', () => {
+  const g = C.stepGeometry([{ t: 0, due: 3 }, { t: 100, due: 0 }], [{ t: 100, label: 'scheduled 06:30', kind: 'scheduled' }, { t: 0, label: 'early', kind: 'arrival' }]);
+  const labels = C.renderStepChart(g, { title: 't', desc: 'd' }).byTag('text').filter((t) => t.getAttribute('class') === 'marker-label');
+  const right = labels.find((t) => t.textContent === 'scheduled 06:30'), left = labels.find((t) => t.textContent === 'early');
+  assert.equal(right.getAttribute('text-anchor'), 'end');
+  assert.ok(Number(right.getAttribute('x')) < g.markers[0].x);
+  assert.equal(left.getAttribute('text-anchor'), null);
+});
