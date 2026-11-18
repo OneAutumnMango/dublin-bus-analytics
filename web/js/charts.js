@@ -1,7 +1,7 @@
 // Chart geometry (pure, unit-tested) and thin SVG renderers. Colours come from CSS classes, never inline.
 // Delays in the data are seconds; chart axes are minutes. Negative = early (left/down), positive = late.
 import { isNum, extent, linearScale, niceTicks, niceDomain, divergingBucket, fmtNum, fmtDelay, fmtCount,
-  clockTime, LOW_N_NOTE, shorten, niceIntTicks, plural } from './lib.js';
+  clockTime, delayClass, LOW_N_NOTE, shorten, niceIntTicks, plural } from './lib.js';
 import { accTipData, heatTipData, histTipData } from './tipdata.js';
 
 const tipJson = (o) => JSON.stringify(o);
@@ -169,6 +169,47 @@ export function stepGeometry(steps, markers = [], o = {}) {
     xTicks: tickT.map((t) => ({ x: r2(sx(t)), label: clockTime(t) })),
     endX: last ? r2(sx(last.t)) : null,
     markers: markers.map((m) => ({ ...m, x: r2(sx(m.t)) })) };
+}
+
+// ---------- runs diagram: time (x) against stop position (y), one dashed scheduled and one solid actual line per run ----------
+// runs: [{trip_id, delay (mean seconds or null), visits: [{pos, scheduled, actual}]}]; visits without a pos are not drawn.
+const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200, 14400];
+export function runsGeometry(runs, nStops, o = {}) {
+  const { width = 900, left = 200, right = 16, top = 16, bottom = 34, rowH = 12 } = o;
+  const height = top + bottom + Math.max(220, Math.max(1, nStops - 1) * rowH);
+  const x0 = left, x1 = width - right, y0 = top, y1 = height - bottom;
+  const drawn = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.pos) && isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length);
+  const te = extent(drawn.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+  const sx = linearScale(te || [0, 1], [x0, x1]);
+  const sy = linearScale([0, Math.max(1, nStops - 1)], [y0, y1]);
+  const step = te ? TIME_STEPS.find((s) => (te[1] - te[0]) / s <= 10) || 28800 : 3600;
+  const xTicks = [];
+  if (te) for (let t = Math.ceil(te[0] / step) * step; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
+  const every = Math.max(1, Math.ceil(nStops / Math.max(2, Math.floor((y1 - y0) / 16))));
+  const yTicks = [];
+  for (let pos = 0; pos < nStops; pos += every) yTicks.push({ y: r2(sy(pos)), pos });
+  if (nStops > 1 && (nStops - 1) % every) yTicks.push({ y: r2(sy(nStops - 1)), pos: nStops - 1 });
+  const line = (pts) => { // a missing time breaks the line instead of joining over it
+    let d = '', pen = false;
+    for (const [t, pos] of pts) { if (!isNum(t)) { pen = false; continue; } d += `${pen ? 'L' : 'M'}${r2(sx(t))} ${r2(sy(pos))}`; pen = true; }
+    return d;
+  };
+  return { width, height, x0, x1, y0, y1, empty: !drawn.length, xTicks, yTicks,
+    runs: drawn.map((r) => ({ trip_id: r.trip_id, cls: delayClass(r.delay), tip: r.tip,
+      sched: line(r.vs.map((v) => [v.scheduled, v.pos])), act: line(r.vs.map((v) => [v.actual, v.pos])) })) };
+}
+
+export function renderRunsChart(geo, { title, desc, stopLabel = (pos) => String(pos + 1), doc = globalThis.document } = {}) {
+  const svg = root(doc, geo.width, geo.height, title, desc, 'runs-chart');
+  for (const t of geo.yTicks) svg.append(el(doc, 'line', { class: 'grid', x1: geo.x0, x2: geo.x1, y1: t.y, y2: t.y }), el(doc, 'text', { class: 'tick-label', x: geo.x0 - 6, y: t.y + 4, 'text-anchor': 'end' }, shorten(stopLabel(t.pos), 30)));
+  for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.height - 16, 'text-anchor': 'middle' }, t.label));
+  svg.append(el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 2 }, 'Time (Dublin local) vs stop along the route · dashed grey: scheduled · solid: actual (blue early, orange late, green on time)'));
+  for (const r of geo.runs) {
+    const g = el(doc, 'g', { class: `run ${r.cls}` });
+    g.append(el(doc, 'title', {}, r.tip), el(doc, 'path', { class: 'sched', d: r.sched, fill: 'none' }), el(doc, 'path', { class: 'act', d: r.act, fill: 'none' }), el(doc, 'path', { class: 'hit', d: r.sched, fill: 'none' }));
+    svg.append(g);
+  }
+  return svg;
 }
 
 // ---------- alt text ----------

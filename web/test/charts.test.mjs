@@ -326,3 +326,40 @@ test('median marker: domain, geometry, tip, render', async () => {
   assert.equal(circles.length, 1);
   assert.equal(circles[0].getAttribute('r'), '4');
 });
+
+test('runsGeometry: scheduled and actual lines, gaps break the actual line, undrawable visits dropped', () => {
+  const runs = [
+    { trip_id: 'a', delay: 120, visits: [{ pos: 0, scheduled: 1000, actual: 1060 }, { pos: 1, scheduled: 1600, actual: null }, { pos: 2, scheduled: 2200, actual: 2400 }, { pos: null, scheduled: 2300, actual: 2300 }] },
+    { trip_id: 'b', delay: -30, visits: [{ pos: 0, scheduled: 4000, actual: 3990 }] },
+  ];
+  const g = C.runsGeometry(runs, 3);
+  assert.equal(g.empty, false);
+  assert.equal(g.runs.length, 2);
+  const a = g.runs[0];
+  assert.equal(a.cls, 'late');
+  assert.equal((a.sched.match(/M/g) || []).length, 1);
+  assert.equal((a.sched.match(/L/g) || []).length, 2); // three scheduled points joined
+  assert.equal((a.act.match(/M/g) || []).length, 2); // the missing actual splits the line
+  assert.equal(g.runs[1].cls, 'early');
+  assert.ok(g.yTicks[0].y < g.yTicks[g.yTicks.length - 1].y); // first stop on top
+  assert.equal(g.yTicks[g.yTicks.length - 1].pos, 2);
+  assert.ok(g.xTicks.length > 0 && g.xTicks.length <= 11);
+  assert.ok(g.xTicks.every((t) => t.x >= g.x0 && t.x <= g.x1));
+  assert.equal(C.runsGeometry([], 5).empty, true);
+  assert.equal(C.runsGeometry([{ trip_id: 'x', delay: null, visits: [{ pos: null, scheduled: 1, actual: 1 }] }], 5).empty, true);
+});
+
+test('runsGeometry: many stops get thinned y labels, last stop kept', () => {
+  const runs = [{ trip_id: 'a', delay: 0, visits: [{ pos: 0, scheduled: 0, actual: 0 }, { pos: 59, scheduled: 3000, actual: 3000 }] }];
+  const g = C.runsGeometry(runs, 60);
+  assert.ok(g.yTicks.length < 40 && g.yTicks.length >= 3);
+  assert.equal(g.yTicks[g.yTicks.length - 1].pos, 59);
+});
+
+test('renderRunsChart: one group per run with a title tip, no raw HTML from labels', () => {
+  const g = C.runsGeometry([{ trip_id: 'a', delay: 0, tip: 'Trip <b>a</b>', visits: [{ pos: 0, scheduled: 0, actual: 5 }, { pos: 1, scheduled: 60, actual: 70 }] }], 2);
+  const svg = C.renderRunsChart(g, { title: 't', desc: 'd', stopLabel: (p) => `<img onerror=x> ${p}` });
+  assert.equal(svg.byTag('g').length, 1);
+  assert.equal(svg.byTag('title')[0].textContent, 'Trip <b>a</b>');
+  assert.equal(svg.byTag('img').length, 0);
+});
