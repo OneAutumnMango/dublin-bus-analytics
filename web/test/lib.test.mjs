@@ -179,6 +179,7 @@ test('hash routes round trip', () => {
     ['lab', { route: 'x y' }, {}],
     ['lab', {}, {}],
     ['all', {}, {}],
+    ['runs', {}, { routes: '4,15', date: '2026-11-12' }],
   ];
   for (const [name, params, query] of cases) {
     const h = L.buildHash(name, params, query);

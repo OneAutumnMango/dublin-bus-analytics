@@ -326,3 +326,73 @@ test('median marker: domain, geometry, tip, render', async () => {
   assert.equal(circles.length, 1);
   assert.equal(circles[0].getAttribute('r'), '4');
 });
+
+test('runsGeometry: rows ordered by first stop, gaps break the actual line, axis rounds out to the tick step', () => {
+  const runs = [
+    { trip_id: 'late', delay: -30, visits: [{ scheduled: 4000, actual: 3990, delay: -10 }] },
+    { trip_id: 'a', delay: 120, visits: [{ scheduled: 1010, actual: 1060, delay: 60 }, { scheduled: 1600, actual: null, delay: null }, { scheduled: 2210, actual: 2400, delay: 200 }] },
+  ];
+  const g = C.runsGeometry(runs);
+  assert.deepEqual(g.runs.map((r) => r.trip_id), ['a', 'late']);
+  assert.ok(g.runs[0].cy < g.runs[1].cy);
+  assert.equal(g.runs[0].cls, 'late');
+  assert.equal((g.runs[0].line.match(/M/g) || []).length, 2); // the missing actual splits the line
+  assert.equal(g.runs[0].pts[1].xa, null);
+  assert.equal(g.runs[0].pts[0].cls, 'late');
+  // every stop is drawn: axis 600..4200 (first stop 1010 rounded down, last 4000 rounded up to a 600 s step)
+  assert.deepEqual([g.xTicks[0].label.length, g.xTicks.length], [5, 7]);
+  assert.ok(g.runs.every((r) => r.pts.every((p) => p.xs >= g.x0 && p.xs <= g.x1)));
+  assert.ok(g.runs[0].firstX <= g.runs[0].pts[0].xs);
+  const day = C.runsGeometry([{ trip_id: 'x', visits: [{ scheduled: 0 }, { scheduled: 3 * 3600 - 10 }] }]);
+  assert.ok(day.width > g.width);
+  assert.equal(day.xTicks[day.xTicks.length - 1].x, day.x1); // last tick is the axis end
+  assert.equal(C.runsGeometry([]).empty, true);
+  assert.equal(C.runsGeometry([{ trip_id: 'x', visits: [{ scheduled: null }] }]).empty, true);
+});
+
+test('renderRunsChart: frozen label svg + plot svg, dots carry tips, labels stay text, label click scrolls to the first stop', () => {
+  const g = C.runsGeometry([{ trip_id: 'a', label: '<img onerror=x>', delay: 0, visits: [{ scheduled: 0, actual: 5, delay: 5, tip: { title: 'Stop' } }, { scheduled: 3600, actual: null, tip: { title: 'No arrival' } }] }]);
+  const wrap = C.renderRunsChart(g, { title: 't', desc: 'd' });
+  assert.equal(wrap.byTag('svg').length, 2);
+  assert.equal(wrap.byTag('img').length, 0);
+  const tips = [...wrap.byTag('circle')].map((c) => c.getAttribute('data-tip-json')).filter(Boolean);
+  assert.deepEqual(tips.map((t) => JSON.parse(t).title), ['Stop', 'No arrival']);
+  const box = { scrollLeft: 0 };
+  wrap.closest = (sel) => (sel === '.chart-scroll' ? box : null);
+  wrap.byTag('g').find((x) => x.getAttribute('class') === 'label-row').dispatch('click', {});
+  assert.equal(box.scrollLeft, Math.max(0, g.runs[0].firstX - 40));
+  g.runs[0].firstX = 500;
+  wrap.byTag('g').find((x) => x.getAttribute('class') === 'label-row').dispatch('click', {});
+  assert.equal(box.scrollLeft, 460);
+});
+
+test('stepGeometry/renderStepChart: stored readings become dots with tips on the line', () => {
+  const steps = [{ t: 1000, due: 5 }, { t: 1200, due: 4 }];
+  const g = C.stepGeometry(steps, [], { dots: [{ t: 1000, due: 5, tip: { title: 'a' } }, { t: 1200, due: 9, tip: { title: 'b' } }] });
+  assert.equal(g.dots.length, 2);
+  assert.ok(g.dots[0].x < g.dots[1].x && g.dots[1].y < g.dots[0].y); // a higher due is drawn higher
+  assert.ok(g.dots.every((d) => d.y >= g.y1 && d.y <= g.y0)); // the axis grew to hold the biggest dot
+  const svg = C.renderStepChart(g, { title: 't', desc: 'd' });
+  assert.deepEqual([...svg.byTag('circle')].map((c) => JSON.parse(c.getAttribute('data-tip-json')).title), ['a', 'b']);
+  assert.equal(C.stepGeometry(steps).dots.length, 0);
+});
+
+test('renderStepChart: marker labels near the right edge are anchored left of the line so they are not clipped', () => {
+  const g = C.stepGeometry([{ t: 0, due: 3 }, { t: 100, due: 0 }], [{ t: 100, label: 'scheduled 06:30', kind: 'scheduled' }, { t: 0, label: 'early', kind: 'arrival' }]);
+  const labels = C.renderStepChart(g, { title: 't', desc: 'd' }).byTag('text').filter((t) => t.getAttribute('class') === 'marker-label');
+  const right = labels.find((t) => t.textContent === 'scheduled 06:30'), left = labels.find((t) => t.textContent === 'early');
+  assert.equal(right.getAttribute('text-anchor'), 'end');
+  assert.ok(Number(right.getAttribute('x')) < g.markers[0].x);
+  assert.equal(left.getAttribute('text-anchor'), null);
+});
+
+test('renderAccumulation: with stopHref each stop dot and bar sits inside a link to its page', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const stops = [0, 1].map((i) => ({ stop_id: `s${i}`, position: i, mean_delay: 60 * i, segment_delta: 30, n: 20, n_delta: 20 }));
+  const svg = C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc, stopHref: (s) => `#/stop/15/${s.stop_id}` });
+  const links = svg.byTag('a');
+  assert.deepEqual(links.map((a) => a.getAttribute('href')), ['#/stop/15/s0', '#/stop/15/s1']);
+  assert.ok(links.every((a) => a.byTag('circle').length >= 2)); // dot + hit area inside
+  assert.equal(C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc }).byTag('a').length, 0);
+});

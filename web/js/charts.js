@@ -1,7 +1,7 @@
 // Chart geometry (pure, unit-tested) and thin SVG renderers. Colours come from CSS classes, never inline.
 // Delays in the data are seconds; chart axes are minutes. Negative = early (left/down), positive = late.
 import { isNum, extent, linearScale, niceTicks, niceDomain, divergingBucket, fmtNum, fmtDelay, fmtCount,
-  clockTime, LOW_N_NOTE, shorten, niceIntTicks, plural } from './lib.js';
+  clockTime, delayClass, LOW_N_NOTE, shorten, niceIntTicks, plural } from './lib.js';
 import { accTipData, heatTipData, histTipData } from './tipdata.js';
 
 const tipJson = (o) => JSON.stringify(o);
@@ -150,12 +150,13 @@ export function accumulationGeometry(stops, o = {}) {
 // ---------- step chart: due minutes over time ----------
 // steps: [{t, due}] from lib.dueSteps; markers: [{t, label, kind}]
 export function stepGeometry(steps, markers = [], o = {}) {
+  const dots = o.dots || []; // [{t, due, tip}]: the stored readings, drawn on the line
   const { width = 720, height = 280, left = 44, right = 16, top = 16, bottom = 34 } = o;
   const x0 = left, x1 = width - right, y0 = top + (height - top - bottom), y1 = top;
-  const ts = [...steps.map((s) => s.t), ...markers.map((m) => m.t)];
+  const ts = [...steps.map((s) => s.t), ...dots.map((d) => d.t), ...markers.map((m) => m.t)];
   const te = extent(ts);
   const sx = linearScale(te || [0, 1], [x0, x1]);
-  const maxDue = Math.max(1, ...steps.map((s) => s.due).filter(isNum));
+  const maxDue = Math.max(1, ...steps.map((s) => s.due).filter(isNum), ...dots.map((d) => d.due).filter(isNum));
   const [, dMax] = niceDomain(0, maxDue, 4);
   const sy = linearScale([0, dMax], [y0, y1]);
   let path = '';
@@ -168,7 +169,68 @@ export function stepGeometry(steps, markers = [], o = {}) {
     yTicks: niceTicks(0, dMax, 4).map((d) => ({ y: r2(sy(d)), label: String(d) })),
     xTicks: tickT.map((t) => ({ x: r2(sx(t)), label: clockTime(t) })),
     endX: last ? r2(sx(last.t)) : null,
+    dots: dots.map((d) => ({ x: r2(sx(d.t)), y: r2(sy(d.due)), tip: d.tip })),
     markers: markers.map((m) => ({ ...m, x: r2(sx(m.t)) })) };
+}
+
+// ---------- runs diagram: one horizontal row per run, time on x; per stop a hollow dot (scheduled) and a filled dot (actual) ----------
+// runs: [{trip_id, label, delay, visits: [{scheduled, actual, delay, tip}]}]. Rows are ordered by first scheduled time and are
+// never cut: the time axis runs from the earliest stop rounded down to the next tick to the latest stop rounded up.
+// 600 px per hour keeps dots a few stops apart.
+const TIME_STEPS = [300, 600, 900, 1800, 3600, 7200];
+export const PX_PER_HOUR = 600;
+export const LABEL_W = 118; // the frozen row-label column
+export function runsGeometry(runs, o = {}) {
+  const { left = 24, right = 24, top = 28, bottom = 8, rowH = 30 } = o;
+  const rows = runs.map((r) => ({ ...r, vs: r.visits.filter((v) => isNum(v.scheduled)).sort((a, b) => a.scheduled - b.scheduled) })).filter((r) => r.vs.length)
+    .sort((a, b) => a.vs[0].scheduled - b.vs[0].scheduled);
+  const step = TIME_STEPS.find((s) => (s / 3600) * PX_PER_HOUR >= 80) || 3600;
+  const e = extent(rows.flatMap((r) => r.vs.flatMap((v) => [v.scheduled, v.actual])));
+  const te = e && [Math.floor(e[0] / step) * step, Math.ceil(e[1] / step) * step];
+  const width = left + right + Math.round(te ? ((te[1] - te[0]) / 3600) * PX_PER_HOUR : 500);
+  const x0 = left, x1 = width - right, y0 = top, y1 = top + rows.length * rowH;
+  const sx = linearScale(te || [0, 1], [x0, x1]);
+  const xTicks = [];
+  if (te) for (let t = te[0]; t <= te[1]; t += step) xTicks.push({ x: r2(sx(t)), label: clockTime(t) });
+  return { width, height: y1 + bottom, x0, x1, y0, y1, rowH, empty: !rows.length, xTicks,
+    runs: rows.map((r, i) => {
+      const cy = y0 + i * rowH + rowH / 2;
+      let line = '', pen = false;
+      for (const v of r.vs) { if (!isNum(v.actual)) { pen = false; continue; } line += `${pen ? 'L' : 'M'}${r2(sx(v.actual))} ${cy}`; pen = true; }
+      const pts = r.vs.map((v) => ({ xs: r2(sx(v.scheduled)), xa: isNum(v.actual) ? r2(sx(v.actual)) : null, cls: delayClass(v.delay), tip: v.tip }));
+      return { trip_id: r.trip_id, label: r.label ?? r.trip_id, cy, line, cls: delayClass(r.delay), tip: r.tip, pts,
+        firstX: Math.min(...pts.flatMap((p) => [p.xs, p.xa]).filter(isNum)) };
+    }) };
+}
+
+// Returns a wrapper holding two svgs side by side: the row labels (sticky, so they stay while the chart scrolls sideways)
+// and the plot. Clicking a label scrolls the chart to that run's first stop; clicking a run's dots calls onSelect(trip_id).
+export function renderRunsChart(geo, { title, desc, onSelect, doc = globalThis.document } = {}) {
+  const svg = root(doc, geo.width, geo.height, title, desc, 'runs-chart');
+  const labels = el(doc, 'svg', { viewBox: `0 0 ${LABEL_W} ${geo.height}`, class: 'chart runs-labels', 'aria-hidden': 'true', focusable: 'false' });
+  const wrap = doc.createElement('div');
+  wrap.setAttribute('class', 'runs-wrap');
+  if (svg.style) { svg.style.width = svg.style.minWidth = `${geo.width}px`; labels.style.width = labels.style.minWidth = `${LABEL_W}px`; }
+  const jump = (x) => { const box = wrap.closest?.('.chart-scroll'); if (box) box.scrollLeft = Math.max(0, x - 40); };
+  for (const t of geo.xTicks) svg.append(el(doc, 'line', { class: 'grid', x1: t.x, x2: t.x, y1: geo.y0 - 6, y2: geo.y1 }), el(doc, 'text', { class: 'tick-label', x: t.x, y: geo.y0 - 12, 'text-anchor': 'middle' }, t.label));
+  for (const r of geo.runs) {
+    const row = el(doc, 'g', { class: 'label-row', 'data-trip': r.trip_id });
+    row.addEventListener('click', () => jump(r.firstX));
+    row.append(el(doc, 'rect', { class: 'row-hit', x: 0, y: r.cy - geo.rowH / 2, width: LABEL_W, height: geo.rowH }),
+      el(doc, 'text', { class: 'row-label', x: LABEL_W - 8, y: r.cy + 4, 'text-anchor': 'end' }, shorten(r.label, 17)));
+    labels.append(row);
+    const g = el(doc, 'g', { class: `run ${r.cls}`, 'data-trip': r.trip_id });
+    if (onSelect) g.addEventListener('click', () => onSelect(r.trip_id));
+    if (r.line) g.append(el(doc, 'path', { class: 'act-line', d: r.line, fill: 'none' }));
+    for (const p of r.pts) {
+      const a = { 'data-tip-json': p.tip ? tipJson(p.tip) : null };
+      g.append(el(doc, 'circle', { class: 'dot-s', cx: p.xs, cy: r.cy, r: 4, ...(p.xa === null ? a : {}) }));
+      if (p.xa !== null) g.append(el(doc, 'line', { class: `gap ${p.cls}`, x1: p.xs, x2: p.xa, y1: r.cy, y2: r.cy }), el(doc, 'circle', { class: `dot-a ${p.cls}`, cx: p.xa, cy: r.cy, r: 6, ...a }));
+    }
+    svg.append(g);
+  }
+  wrap.append(labels, svg);
+  return wrap;
 }
 
 // ---------- alt text ----------
@@ -280,7 +342,7 @@ export function renderHeatmap(grid, { title, desc, selected = null, onSelect, do
   return svg;
 }
 
-export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) => s.stop_id, doc = globalThis.document } = {}) {
+export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) => s.stop_id, stopHref = () => null, doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'acc-chart');
   for (const [ticks, x] of [[geo.ticksA, geo.x0], [geo.ticksB, geo.x0]]) {
     for (const t of ticks) svg.append(el(doc, 'line', { class: 'grid', x1: x, x2: geo.x1, y1: t.y, y2: t.y }), el(doc, 'text', { class: 'tick-label', x: x - 6, y: t.y + 4, 'text-anchor': 'end' }, t.label));
@@ -303,8 +365,10 @@ export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) =>
   stops.forEach((s, i) => {
     const p = geo.pts[i], b = geo.bars[i];
     const lab = stopLabel(s), tip = tipJson(accTipData(s, lab, p.pos));
-    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
-    if (b.delta !== null) { const r = el(doc, 'rect', { class: `acc-bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
+    const href = stopHref(s), host = href ? el(doc, 'a', { href, class: 'stop-link', tabindex: -1 }) : svg; // a click on the dot or bar opens the stop page
+    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); host.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
+    if (b.delta !== null) { const r = el(doc, 'rect', { class: `acc-bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); host.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
+    if (host !== svg) svg.append(host);
   });
   return svg;
 }
@@ -316,8 +380,9 @@ export function renderStepChart(geo, { title, desc, doc = globalThis.document } 
   svg.append(el(doc, 'text', { class: 'axis-label', x: geo.x0, y: geo.height - 2 }, 'Time (Dublin local) vs minutes shown to passengers (due)'));
   for (const m of geo.markers) {
     svg.append(el(doc, 'line', { class: `marker ${m.kind}`, x1: m.x, x2: m.x, y1: geo.y1, y2: geo.y0 }),
-      el(doc, 'text', { class: 'marker-label', x: m.x + 4, y: geo.y1 + 10 + (m.kind === 'arrival' ? 12 : 0) }, m.label));
+      el(doc, 'text', { class: 'marker-label', ...(m.x > geo.width - 120 ? { x: m.x - 4, 'text-anchor': 'end' } : { x: m.x + 4 }), y: geo.y1 + 10 + (m.kind === 'arrival' ? 12 : 0) }, m.label)); // near the right edge the label goes left of the line, else it is clipped
   }
   if (!geo.empty) svg.append(el(doc, 'path', { class: 'step-line', d: geo.path, fill: 'none' }));
+  for (const d of geo.dots) svg.append(el(doc, 'circle', { class: 'step-dot', cx: d.x, cy: d.y, r: 5, 'data-tip-json': d.tip ? tipJson(d.tip) : null }));
   return svg;
 }

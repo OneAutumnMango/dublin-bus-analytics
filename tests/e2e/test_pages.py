@@ -26,6 +26,7 @@ def open_hash(page, hash_):
     ("#/all", ""),
     ("#/settings", ""),
     ("#/map", ""),
+    ("#/runs", "Runs"),
 ])
 def test_page_renders(app, hash_, title):
     open_hash(app, hash_)
@@ -35,6 +36,11 @@ def test_page_renders(app, hash_, title):
 
 def test_trip_page_renders(app, seed_end):
     open_hash(app, f"#/trip/{trip_id(seed_end)}/15-S01")
+
+
+def test_runs_page_draws_the_diagram(app, seed_end):
+    open_hash(app, f"#/runs?routes=15&date={seed_end.isoformat()}")
+    expect(app.locator("#main svg.runs-chart").first).to_be_visible()
 
 
 def test_analytics_draws_charts(app):

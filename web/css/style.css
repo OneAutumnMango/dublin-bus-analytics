@@ -457,3 +457,28 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 @media (prefers-reduced-motion: reduce) { .ring.spin { animation: none; } }
 @media (max-width: 1000px) { .sidebar-foot .btn { min-height: 44px; } }
 @media (max-width: 1000px) { .cache-bar { padding-inline: var(--s4); } .cache-bar .btn { min-height: 44px; } }
+
+/* runs diagram */
+.chart .run .act-line { stroke: var(--muted); stroke-width: 2.5; opacity: .5; }
+.chart .run .dot-s { fill: var(--surface); stroke: var(--muted); stroke-width: 2; }
+.chart .run .dot-a { fill: var(--muted); stroke: transparent; stroke-width: 6; paint-order: stroke; pointer-events: all; }
+.chart .run .dot-s[data-tip-json] { stroke-width: 2; }
+.chart .run .gap { stroke: var(--muted); stroke-width: 3.5; stroke-linecap: round; opacity: .75; }
+.chart .run .gap.early { stroke: var(--early); } .chart .run .gap.late { stroke: var(--late); } .chart .run .gap.ontime { stroke: var(--ok); }
+.chart .run .dot-a.early { fill: var(--early); } .chart .run .dot-a.late { fill: var(--late); } .chart .run .dot-a.ontime { fill: var(--ok); }
+.chart .run .dot-a:hover { stroke: var(--text); stroke-width: 2.5; }
+
+/* runs diagram: frozen label column */
+.runs-wrap { display: flex; width: max-content; min-width: 100%; }
+.chart.runs-labels { position: sticky; left: 0; z-index: 2; flex: none; background: var(--surface); border-right: 1px solid var(--border); }
+.chart.runs-chart { flex: none; }
+.chart .row-hit { fill: transparent; cursor: pointer; } .chart .label-row:hover .row-hit { fill: var(--surface-2); }
+.chart .label-row:hover .row-label { text-decoration: underline; }
+
+/* trip chart: stored readings */
+.chart .step-dot { fill: var(--surface); stroke: var(--early); stroke-width: 2.5; paint-order: stroke; }
+.chart .step-dot:hover { fill: var(--early); }
+.story { max-width: 75ch; margin: 0 0 var(--s4); font-size: var(--fs); }
+
+.chart a.stop-link .hit, .chart a.stop-link .acc-bar { cursor: pointer; }
+.chart a.stop-link:hover .acc-dot { fill: var(--early); }

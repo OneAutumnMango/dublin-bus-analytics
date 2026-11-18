@@ -287,6 +287,9 @@ test('analytics page: heatmap, accumulation groups incl. fallback, forecast', as
   assert.match(t, /could not be matched/);
   assert.match(t, /30 min before/);
   assert.ok(!/NaN|undefined|null/.test(t));
+  const hrefs = ctx.main.byTag('a').map((x) => x.getAttribute('href')).filter((x) => /^#\/stop\/15\//.test(x));
+  assert.ok(hrefs.length >= 2 * stopRows.length, 'chart and table both link every stop to its page');
+  assert.ok(hrefs.every((x) => /^#\/stop\/15\/[^/?]+/.test(x)));
   assert.equal(ctx.main.byText('button', /Show data table/).length, 3);
 });
 
@@ -806,4 +809,114 @@ test('lab page stub: h1 and filter bar; route page links to it', async () => {
   const actx = ctxOf({ route: '15' });
   await (await import('../js/pages/analytics.js')).render(actx);
   assert.ok(actx.main.byTag('a').some((a) => a.getAttribute('href') === '#/lab/15'));
+});
+
+// ---------- runs ----------
+const runsResp = () => ({ route: '4', date: '2026-11-12', order_source: 'server', directions: { out: ['s1', 's2'] }, n: 4, truncated: false, runs: [
+  { trip_id: 't<1>', direction: 'out', visits: [{ stop_id: 's1', pos: 0, scheduled: 1_700_000_000, actual: 1_700_000_060, delay: 60, confidence: 1, realtime: 1 },
+    { stop_id: 's2', pos: 1, scheduled: 1_700_000_600, actual: null, delay: null, confidence: 0, realtime: 0 }] },
+  { trip_id: 't2', direction: null, visits: [{ stop_id: 's9', pos: null, scheduled: 1_700_003_600, actual: 1_700_003_500, delay: -100, confidence: 1, realtime: 1 }] }] });
+
+test('runs page: needs a route and a day first, no requests', async () => {
+  const calls = installFetch({});
+  const ctx = ctxOf({}, {});
+  await (await import('../js/pages/runs.js')).render(ctx);
+  await settle();
+  assert.match(text(ctx.main), /Pick a route and a day/);
+  assert.equal(ctx.main.byTag('h1').length, 1);
+  assert.equal(calls?.length ?? 0, 0);
+});
+
+test('runs page: draws one diagram, tiles, tables; names are text not HTML', async () => {
+  installFetch({ 'GET /api/routes/4/runs': runsResp(), 'GET /api/routes/4/stops': stopsResp });
+  const ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1300', to: '1439' });
+  await (await import('../js/pages/runs.js')).render(ctx);
+  await settle();
+  assert.equal(ctx.main.byTag('svg').length, 2); // frozen labels + plot
+  assert.match(text(ctx.main), /Route 4/);
+  assert.match(text(ctx.main), /2 runs|Runs/);
+  assert.match(text(ctx.main), /1 of 3 stops visited|of 3 stops visited/);
+  assert.equal(ctx.main.byTag('img').length, 0);
+  const pick = ctx.main.byTag('select')[0];
+  pick.value = '0';
+  pick.dispatch('change', { target: pick });
+  assert.match(text(ctx.main), /no arrival recorded/);
+  pick.value = '-1'; pick.dispatch('change', { target: pick });
+  const g = ctx.main.byTag('g').find((x) => x.getAttribute('data-trip') === 't<1>' && /^run /.test(x.getAttribute('class')));
+  g.dispatch('click', {}); // clicking a run in the diagram opens it in the inspector
+  assert.equal(pick.value, '0');
+  assert.match(text(ctx.main), /no arrival recorded/);
+  assert.ok(ctx.main.byText('a', /Two|s2/).length >= 1);
+});
+
+test('runs page: empty day, bad date, server error', async () => {
+  installFetch({ 'GET /api/routes/4/runs': { ...runsResp(), runs: [], n: 0 }, 'GET /api/routes/4/stops': stopsResp });
+  let ctx = ctxOf({}, { routes: '4', date: '2026-11-12' });
+  const runs = await import('../js/pages/runs.js');
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /No arrivals recorded for route 4/);
+  ctx = ctxOf({}, { routes: '4', date: 'yesterday' });
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /must be a date/);
+  installFetch({ 'GET /api/routes/4/runs': fail(422, '{"detail":"date is too far in the future"}'), 'GET /api/routes/4/stops': stopsResp });
+  ctx = ctxOf({}, { routes: '4', date: '2999-01-01' });
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /too far in the future/);
+});
+
+test('runs page: submitting the form navigates with routes and date in the hash', async () => {
+  installFetch({});
+  const ctx = ctxOf({}, {});
+  await (await import('../js/pages/runs.js')).render(ctx);
+  const [routes, date] = ctx.main.byTag('input');
+  routes.value = '4, 15 4'; date.value = '2026-11-12';
+  ctx.main.byTag('form')[0].dispatch('submit', {});
+  assert.deepEqual(ctx.gos, ['#/runs?routes=4%2C15%2C4&date=2026-11-12&from=420&to=540']);
+});
+
+test('summarise and status', async () => {
+  const { summarise, status } = await import('../js/pages/runs.js');
+  const s = summarise(runsResp().runs[0]);
+  assert.deepEqual([s.stops, s.missing, s.delay, s.worst], [2, 1, 60, 60]);
+  assert.deepEqual([status({ actual: null }), status({ actual: 1, realtime: 0 }), status({ actual: 1, realtime: 1, confidence: 0 }), status({ actual: 1, realtime: 1, confidence: 1 })],
+    ['no arrival recorded', 'scheduled only', 'estimated', 'confirmed']);
+});
+
+test('runs page: runs outside the time window are hidden with a hint; the window comes from the address', async () => {
+  installFetch({ 'GET /api/routes/4/runs': runsResp(), 'GET /api/routes/4/stops': stopsResp });
+  const runs = await import('../js/pages/runs.js');
+  let ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '600', to: '700' });
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /none has a stop in 10:00 – 11:40/);
+  assert.equal(ctx.main.byTag('svg').length, 0);
+  ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1330', to: '1339' }); // 22:10-22:19: only the first run
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /1 run in 22:10 – 22:19/);
+  ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: 'x', to: '9999' }); // bad window falls back to 07:00-09:00
+  await runs.render(ctx); await settle();
+  assert.match(text(ctx.main), /07:00 – 09:00/);
+});
+
+test('runs: day start and window membership across the clock change', async () => {
+  const { dayStart, inWindow, runInWindow } = await import('../js/pages/runs.js');
+  assert.equal(dayStart('2023-11-14'), Date.UTC(2023, 10, 14) / 1000); // winter: Dublin = UTC
+  assert.equal(dayStart('2023-07-14'), Date.UTC(2023, 6, 14) / 1000 - 3600); // summer: local midnight is 23:00 UTC
+  const ds = dayStart('2023-11-14');
+  assert.equal(inWindow(ds + 7 * 3600, ds, [420, 540]), true);
+  assert.equal(inWindow(ds + 9 * 3600 + 1, ds, [420, 540]), false);
+  assert.equal(inWindow(ds + 26 * 3600, ds, [1200, 1439]), true); // after-midnight stop of the same service day
+  assert.equal(inWindow(null, ds, [0, 1439]), false);
+  assert.equal(runInWindow({ visits: [{ scheduled: ds, actual: ds + 8 * 3600 }] }, ds, [420, 540]), true);
+});
+
+test('trip story: first reading, changes, arrival; dropped bus', async () => {
+  const { tripStory } = await import('../js/pages/trip.js');
+  const v = { scheduled: 1_700_000_600, last_seen_ts: 1_700_000_500, arrival: { actual: 1_700_000_780, delay: 180, confidence: 1 },
+    points: [{ ts: 1_700_000_000, due_min: 10, expected: 1_700_000_600, realtime: 1 }, { ts: 1_700_000_300, due_min: 6, expected: 1_700_000_720, realtime: 1 }] };
+  const s = tripStory(v, 'Main St (123)');
+  assert.match(s, /first showed this bus at \d\d:\d\d, 10 min away/);
+  assert.match(s, /changed 1 time, with the expected arrival between/);
+  assert.match(s, /scheduled at Main St \(123\) for \d\d:\d\d and arrived at \d\d:\d\d: 3\.0 min late\./);
+  assert.match(tripStory({ ...v, arrival: null }, 'X'), /disappeared from the feed before arriving \(last seen/);
+  assert.match(tripStory({ ...v, points: [v.points[0]] }, 'X'), /never changed/);
 });

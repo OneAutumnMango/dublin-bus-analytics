@@ -66,3 +66,20 @@ export function fmtTipValue(r, units = 'min') {
     default: return String(r.v ?? '–');
   }
 }
+
+// One stop visit of a run: scheduled and actual time as text, the delay as the headline.
+export function visitTipData(v, stopName, run, status, clock) {
+  return out({ title: stopName, sub: `Run ${run}`, head: head(v.delay), rows: [
+    row('sched', 'Scheduled', 'text', clock(v.scheduled)), row('actual', 'Actual', 'text', v.actual == null ? '–' : clock(v.actual)), row('status', 'Status', 'text', status)] });
+}
+
+// One stored prediction of a trip at a stop (p: {ts, due_min, expected, realtime}); prev is the reading before it or null.
+export function sampleTipData(p, i, n, prev, scheduled, due, clock) {
+  const exp = isNum(p.expected);
+  const rows = [row('shown', 'Shown to passengers', 'text', `${due} min`), row('expected', 'Bus expected at', 'text', exp ? clock(p.expected) : '–')];
+  if (exp && isNum(scheduled)) rows.push(row('vsched', 'Expected vs timetable', 'delay', p.expected - scheduled));
+  if (exp && prev && isNum(prev.expected)) rows.push(row('delta', 'Moved since previous reading', 'delay', p.expected - prev.expected));
+  rows.push(row('source', 'Source', 'text', p.realtime ? 'live prediction' : 'timetable only'));
+  return out({ title: `${clock(p.ts)} reading`, sub: `Stored change ${i + 1} of ${n}`, head: exp && isNum(scheduled) ? { sec: p.expected - scheduled, label: 'predicted vs timetable' } : undefined, rows,
+    foot: 'A reading is stored only when the prediction changes.' });
+}
