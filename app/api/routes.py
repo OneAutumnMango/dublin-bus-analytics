@@ -1108,6 +1108,66 @@ async def trip_series(request: Request, trip_id: TripP, stop: SeriesStop, seq: Q
                    "visits": [visits[k] for k in sorted(visits)]})
 
 
+# ---- runs: every trip of one service day ----
+
+RUNS_MAX_ROWS = 20_000
+
+
+def _positions(directions: dict[str, list[str]], stops: list[str]) -> tuple[str | None, list[int | None]]:
+    """Direction listing most of `stops` (a run's stops in time order) and each stop's index in it; a stop listed
+    twice (loop) takes the first index at or after the previous one. Stops the direction lacks get None."""
+    best, best_n = None, 0
+    for name, ids in directions.items():
+        n = sum(1 for s in stops if s in set(ids))
+        if n > best_n:
+            best, best_n = name, n
+    if best is None:
+        return None, [None] * len(stops)
+    at: dict[str, list[int]] = defaultdict(list)
+    for i, sid in enumerate(directions[best]):
+        at[sid].append(i)
+    out, last = [], 0
+    for sid in stops:
+        idx = at.get(sid)
+        if not idx:
+            out.append(None)
+            continue
+        last = next((i for i in idx if i >= last), idx[0])
+        out.append(last)
+    return best, out
+
+
+def _runs_db(request, r, day, lists):
+    rows = _fetch(request, "select trip_id, stop_id, scheduled, actual, delay, confidence, realtime from arrivals"
+                  " indexed by ix_arr_date where service_date = ? and route = ? and scheduled is not null"
+                  " order by trip_id, scheduled limit ?", [day, r, RUNS_MAX_ROWS + 1])
+    truncated = len(rows) > RUNS_MAX_ROWS
+    rows = rows[:RUNS_MAX_ROWS]
+    by_trip: dict[str, list[tuple]] = defaultdict(list)
+    for row in rows:
+        by_trip[row[0]].append(row)
+    runs = []
+    for trip, rs in by_trip.items():
+        direction, pos = _positions(lists or {}, [x[1] for x in rs])
+        runs.append({"trip_id": trip, "direction": direction, "visits": [
+            {"stop_id": x[1], "pos": q, "scheduled": x[2], "actual": x[3], "delay": x[4], "confidence": x[5], "realtime": x[6]}
+            for x, q in zip(rs, pos)]})
+    runs.sort(key=lambda x: (x["visits"][0]["scheduled"], x["trip_id"]))
+    return {"route": r, "date": day, "order_source": "none" if lists is None else "server",
+            "directions": lists or {}, "n": len(rows), "truncated": truncated, "runs": runs}
+
+
+@router.get("/routes/{r}/runs")
+async def route_runs(request: Request, r: RouteP, date: QStr = None):
+    from app.maintenance.day import DayError, parse_day  # lazy: maintenance imports this module
+    try:
+        day = parse_day(date or "").isoformat()
+    except DayError as e:
+        raise HTTPException(422, str(e)) from None
+    lists, _ = await _order(request, r)
+    return await run_in_threadpool(_runs_db, request, r, day, lists)
+
+
 # ---- map ----
 
 def _route_totals(request, r, p, lists):
