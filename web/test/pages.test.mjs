@@ -817,14 +817,14 @@ const runsResp = () => ({ route: '4', date: '2026-11-12', order_source: 'server'
     { stop_id: 's2', pos: 1, scheduled: 1_700_000_600, actual: null, delay: null, confidence: 0, realtime: 0 }] },
   { trip_id: 't2', direction: null, visits: [{ stop_id: 's9', pos: null, scheduled: 1_700_003_600, actual: 1_700_003_500, delay: -100, confidence: 1, realtime: 1 }] }] });
 
-test('runs page: needs a route and a day first, no requests', async () => {
-  const calls = installFetch({});
+test('runs page: needs a route and a day first; only the tracked-routes list is fetched', async () => {
+  const calls = installFetch({ 'GET /api/routes/tracked': { routes: ['15'] } });
   const ctx = ctxOf({}, {});
   await (await import('../js/pages/runs.js')).render(ctx);
   await settle();
   assert.match(text(ctx.main), /Pick a route and a day/);
   assert.equal(ctx.main.byTag('h1').length, 1);
-  assert.equal(calls?.length ?? 0, 0);
+  assert.deepEqual(calls.map((c) => c.key), ['GET /api/routes/tracked']);
 });
 
 test('runs page: draws one diagram, tiles, tables; names are text not HTML', async () => {

@@ -6,6 +6,7 @@ import { dataTable, emptyState, figure, h, link, notice, put, tile } from '../do
 import { buildHash, clockTime, dateTime, describeDelay, fmtCount, fmtDelay, isNum, plural, directionEnds, stopCodeMap, stopLabel, stopNameMap } from '../lib.js';
 import { region } from '../view.js';
 import { MAX, timeRangeSlider } from '../slider.js';
+import { routePicker } from '../routepick.js';
 import { windowLabel } from '../mapdata.js';
 
 const MAX_ROUTES = 5;
@@ -50,6 +51,8 @@ export async function render(ctx) {
   let win = winFromQuery(ctx.query);
   ctx.title('Runs');
   const routesIn = h('input', { id: 'runs-routes', type: 'text', value: routes.join(', '), placeholder: 'e.g. 4, 15', 'aria-describedby': 'runs-hint', autocomplete: 'off' });
+  const picker = routePicker(routesIn);
+  api.tracked({ signal: ctx.signal }).then((d) => picker.setTracked((d.routes || []).filter((x) => typeof x === 'string')), () => { /* no suggestions without the list; typing still works */ });
   const dateIn = h('input', { id: 'runs-date', type: 'date', value: date || dateTime(ctx.nowSec() - 86400).slice(0, 10) });
   const query = () => ({ routes: routesIn.value.split(/[\s,]+/).filter(Boolean).join(','), date: dateIn.value, from: win[0], to: win[1] });
   const apply = (ev) => { ev?.preventDefault?.(); ctx.go(buildHash('runs', {}, query())); };
@@ -65,9 +68,9 @@ export async function render(ctx) {
   put(ctx.main, h('h1', {}, 'Runs'),
     h('p', { class: 'subtitle' }, 'Look at one past service day: every run of a route as a row, with a hollow dot where each stop was scheduled and a filled dot where the bus actually arrived. Times are Dublin time.'),
     h('form', { class: 'row card', on: { submit: apply } },
-      h('label', { for: 'runs-routes' }, 'Routes', routesIn), h('label', { for: 'runs-date' }, 'Service day', dateIn),
+      h('label', { for: 'runs-routes' }, 'Routes', picker.el), h('label', { for: 'runs-date' }, 'Service day', dateIn),
       h('button', { class: 'btn', type: 'submit' }, 'Show runs'),
-      h('p', { class: 'hint', id: 'runs-hint' }, `Up to ${MAX_ROUTES} routes, separated by commas. Only tracked routes have recorded runs.`)),
+      h('p', { class: 'hint', id: 'runs-hint' }, `Up to ${MAX_ROUTES} routes, separated by commas: type, or pick from the tracked routes that drop down. Only tracked routes have recorded runs.`)),
     h('div', { class: 'card' }, h('span', { class: 'row-label' }, 'Time of day'), slider.el,
       h('p', { class: 'hint' }, 'A run is shown when any of its stops is scheduled or arrives in this window; the diagram then shows each of those runs in full.')), results);
   if (!routes.length && !date) { put(results, emptyState('Pick a route and a day to see its runs.')); return; }
