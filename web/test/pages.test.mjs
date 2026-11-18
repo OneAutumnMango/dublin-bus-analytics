@@ -287,6 +287,9 @@ test('analytics page: heatmap, accumulation groups incl. fallback, forecast', as
   assert.match(t, /could not be matched/);
   assert.match(t, /30 min before/);
   assert.ok(!/NaN|undefined|null/.test(t));
+  const hrefs = ctx.main.byTag('a').map((x) => x.getAttribute('href')).filter((x) => /^#\/stop\/15\//.test(x));
+  assert.ok(hrefs.length >= 2 * stopRows.length, 'chart and table both link every stop to its page');
+  assert.ok(hrefs.every((x) => /^#\/stop\/15\/[^/?]+/.test(x)));
   assert.equal(ctx.main.byText('button', /Show data table/).length, 3);
 });
 

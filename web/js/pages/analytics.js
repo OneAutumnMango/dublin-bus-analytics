@@ -30,7 +30,7 @@ export async function render(ctx) {
     acc.load(async (sig) => {
       const [d, stops] = await Promise.all([api.accumulation(route, q, o(sig)), api.stopsOf(route, o(sig)).catch((e) => { if (isAbort(e)) throw e; return null; })]);
       return { d, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
-    }, ({ d, names, codes, dirs }, el) => drawAcc(route, d, names, codes, dirs, el), { announce: ({ d }) => `Route ${route} delay accumulation: loaded ${plural(d.groups.length, 'group')}` }),
+    }, ({ d, names, codes, dirs }, el) => drawAcc(route, d, names, codes, dirs, el, s), { announce: ({ d }) => `Route ${route} delay accumulation: loaded ${plural(d.groups.length, 'group')}` }),
     // the forecast endpoint always reports the 5th and 95th percentiles: the percentile setting does not apply
     fc.load((sig) => api.forecast(route, forecastQuery(q), o(sig)), (d, el) => drawForecast(route, d, el), { announce: () => `Route ${route} forecast accuracy loaded` }),
   ]);
@@ -68,7 +68,7 @@ function drawHeat(route, d, el, ctx, s) {
   }
 }
 
-function drawAcc(route, d, names, codes, dirs, el) {
+function drawAcc(route, d, names, codes, dirs, el, s) {
   put(el, h('h2', {}, 'Where is time lost along the route?'), ...filterNotices(d));
   if (d.order_source === 'none') { put(el, emptyState('This view needs the stop order from the bus data server, which is unavailable right now.')); return; }
   if (!d.groups.length) { put(el, emptyState('No data for this selection.')); return; }
@@ -81,14 +81,15 @@ function drawAcc(route, d, names, codes, dirs, el) {
     }
     const geo = accumulationGeometry(g.stops);
     const label = (x) => stopLabel(x.stop_id, names, codes);
-    const svg = renderAccumulation(geo, g.stops, { title: `Delay accumulation, ${name}`, stopLabel: label,
-      desc: `Mean delay at each of ${g.stops.length} stops, from ${fmtDelay(g.stops[0].mean_delay)} at the first to ${fmtDelay(g.stops[g.stops.length - 1].mean_delay)} at the last. Bars below show the change from the previous stop, measured on trips seen at both: positive loses time, negative gains it.` });
+    const href = (x) => buildHash('stop', { route, stop: x.stop_id }, s.linkQuery);
+    const svg = renderAccumulation(geo, g.stops, { title: `Delay accumulation, ${name}`, stopLabel: label, stopHref: href,
+      desc: `Mean delay at each of ${g.stops.length} stops, from ${fmtDelay(g.stops[0].mean_delay)} at the first to ${fmtDelay(g.stops[g.stops.length - 1].mean_delay)} at the last. Bars below show the change from the previous stop, measured on trips seen at both: positive loses time, negative gains it. Each stop links to its own page.` });
     const table = dataTable({ caption: `${name}: mean delay at each stop and change from the previous stop (negative = early)`, rows: g.stops, columns: [
-      { label: '#', num: true, get: (x) => String(x.position + 1) }, { label: 'Stop', get: label },
+      { label: '#', num: true, get: (x) => String(x.position + 1) }, { label: 'Stop', get: (x) => link(href(x), label(x)) },
       { label: 'n', num: true, get: (x) => fmtCount(x.n) }, { label: 'Mean delay', num: true, get: (x) => fmtDelay(x.mean_delay) },
       { label: 'Change from previous stop', num: true, get: (x) => fmtDelay(x.segment_delta) }, { label: 'n (segment)', num: true, get: (x) => fmtCount(x.n_delta) }] });
     put(el, head, figure({ title: name, svg, table, level: 'h4',
-      legend: h('p', { class: 'legend' }, `Line: mean delay at each stop (up = later) · bars: change from the previous stop (up = loses time, down = gains time). The bars come from trips observed at both stops (up to ${plural(g.n_delta, 'trip')}), so they need not add up to the line, which averages different trips at each stop.`) }));
+      legend: h('p', { class: 'legend' }, `Line: mean delay at each stop (up = later) · bars: change from the previous stop (up = loses time, down = gains time). Click a stop (dot or bar) to open its page. The bars come from trips observed at both stops (up to ${plural(g.n_delta, 'trip')}), so they need not add up to the line, which averages different trips at each stop.`) }));
   }
 }
 

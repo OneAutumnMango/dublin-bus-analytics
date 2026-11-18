@@ -342,7 +342,7 @@ export function renderHeatmap(grid, { title, desc, selected = null, onSelect, do
   return svg;
 }
 
-export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) => s.stop_id, doc = globalThis.document } = {}) {
+export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) => s.stop_id, stopHref = () => null, doc = globalThis.document } = {}) {
   const svg = root(doc, geo.width, geo.height, title, desc, 'acc-chart');
   for (const [ticks, x] of [[geo.ticksA, geo.x0], [geo.ticksB, geo.x0]]) {
     for (const t of ticks) svg.append(el(doc, 'line', { class: 'grid', x1: x, x2: geo.x1, y1: t.y, y2: t.y }), el(doc, 'text', { class: 'tick-label', x: x - 6, y: t.y + 4, 'text-anchor': 'end' }, t.label));
@@ -365,8 +365,10 @@ export function renderAccumulation(geo, stops, { title, desc, stopLabel = (s) =>
   stops.forEach((s, i) => {
     const p = geo.pts[i], b = geo.bars[i];
     const lab = stopLabel(s), tip = tipJson(accTipData(s, lab, p.pos));
-    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); svg.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
-    if (b.delta !== null) { const r = el(doc, 'rect', { class: `acc-bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); svg.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
+    const href = stopHref(s), host = href ? el(doc, 'a', { href, class: 'stop-link', tabindex: -1 }) : svg; // a click on the dot or bar opens the stop page
+    if (p.y !== null) { const c = el(doc, 'circle', { class: 'acc-dot', cx: p.x, cy: p.y, r: 3 }); c.setAttribute('data-tip-json', tip); c.append(el(doc, 'title', {}, `Stop ${p.pos + 1} ${stopLabel(s)}: mean delay ${fmtDelay(s.mean_delay)}, ${plural(s.n, 'sample')}`)); host.append(c, el(doc, 'circle', { class: 'hit', cx: p.x, cy: p.y, r: 9, 'data-tip-json': tip })); }
+    if (b.delta !== null) { const r = el(doc, 'rect', { class: `acc-bar ${b.delta > 0 ? 'late' : 'early'}`, x: b.x, y: b.y, width: b.w, height: Math.max(b.h, 1), 'data-tip-json': tip }); r.append(el(doc, 'title', {}, `Into stop ${p.pos + 1} ${stopLabel(s)}: ${fmtDelay(b.delta)} from the previous stop, ${plural(s.n_delta, 'trip')} seen at both`)); host.append(r, el(doc, 'rect', { class: 'hit', x: b.x - 4, y: Math.min(b.y, geo.zeroB) - 4, width: b.w + 8, height: Math.max(b.h, 1) + 8, 'data-tip-json': tip })); }
+    if (host !== svg) svg.append(host);
   });
   return svg;
 }

@@ -385,3 +385,14 @@ test('renderStepChart: marker labels near the right edge are anchored left of th
   assert.ok(Number(right.getAttribute('x')) < g.markers[0].x);
   assert.equal(left.getAttribute('text-anchor'), null);
 });
+
+test('renderAccumulation: with stopHref each stop dot and bar sits inside a link to its page', async () => {
+  const { installDom } = await import('./fakedom.mjs');
+  const { doc } = installDom();
+  const stops = [0, 1].map((i) => ({ stop_id: `s${i}`, position: i, mean_delay: 60 * i, segment_delta: 30, n: 20, n_delta: 20 }));
+  const svg = C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc, stopHref: (s) => `#/stop/15/${s.stop_id}` });
+  const links = svg.byTag('a');
+  assert.deepEqual(links.map((a) => a.getAttribute('href')), ['#/stop/15/s0', '#/stop/15/s1']);
+  assert.ok(links.every((a) => a.byTag('circle').length >= 2)); // dot + hit area inside
+  assert.equal(C.renderAccumulation(C.accumulationGeometry(stops), stops, { title: 't', desc: 'd', doc }).byTag('a').length, 0);
+});

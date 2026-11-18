@@ -479,3 +479,6 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 .chart .step-dot { fill: var(--surface); stroke: var(--early); stroke-width: 2.5; paint-order: stroke; }
 .chart .step-dot:hover { fill: var(--early); }
 .story { max-width: 75ch; margin: 0 0 var(--s4); font-size: var(--fs); }
+
+.chart a.stop-link .hit, .chart a.stop-link .acc-bar { cursor: pointer; }
+.chart a.stop-link:hover .acc-dot { fill: var(--early); }
