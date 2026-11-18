@@ -482,3 +482,13 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 
 .chart a.stop-link .hit, .chart a.stop-link .acc-bar { cursor: pointer; }
 .chart a.stop-link:hover .acc-dot { fill: var(--early); }
+.zoom-bar { display: flex; align-items: center; gap: var(--s3); margin: var(--s3) 0; }
+.zoom-pct { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* route suggestions */
+.suggest-wrap { position: relative; display: block; }
+.suggest { position: absolute; z-index: 30; left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 4px; list-style: none; max-height: 14rem; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); }
+.suggest[hidden] { display: none; }
+.suggest li { padding: 6px 10px; border-radius: 4px; cursor: pointer; font-family: var(--mono); }
+.suggest li:hover, .suggest li[aria-selected="true"] { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--early); }
+main > *:has(.suggest:not([hidden])) { position: relative; z-index: 20; } /* lift the block holding an open dropdown above the blocks after it */

@@ -1,11 +1,12 @@
 // Runs view: every run (trip) of one or more routes on one service day, one row per run, scheduled against actual times.
 import { api } from '../api.js';
-import { renderRunsChart, runsGeometry } from '../charts.js';
+import { PX_PER_HOUR, renderRunsChart, runsGeometry } from '../charts.js';
 import { visitTipData } from '../tipdata.js';
 import { dataTable, emptyState, figure, h, link, notice, put, tile } from '../dom.js';
-import { buildHash, clockTime, dateTime, describeDelay, fmtCount, fmtDelay, isNum, plural, stopCodeMap, stopLabel, stopNameMap } from '../lib.js';
+import { buildHash, clockTime, dateTime, describeDelay, fmtCount, fmtDelay, isNum, plural, directionEnds, stopCodeMap, stopLabel, stopNameMap } from '../lib.js';
 import { region } from '../view.js';
 import { MAX, timeRangeSlider } from '../slider.js';
+import { routePicker } from '../routepick.js';
 import { windowLabel } from '../mapdata.js';
 
 const MAX_ROUTES = 5;
@@ -25,6 +26,8 @@ export const status = (v) => (v.actual == null ? 'no arrival recorded' : !v.real
 
 const WIN_PRESETS = [['Whole day', 0, MAX], ['Early', 240, 420], ['Morning peak', 420, 600], ['Daytime', 600, 960], ['Evening peak', 960, 1140], ['Evening', 1140, MAX]];
 const DEFAULT_WIN = [420, 540];
+export const ZOOMS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4]; // times the base 600 px per hour
+const ZOOM_START = ZOOMS.indexOf(1);
 
 // Epoch of 00:00 Dublin time on `date` (YYYY-MM-DD).
 export function dayStart(date) {
@@ -48,10 +51,13 @@ export async function render(ctx) {
   let win = winFromQuery(ctx.query);
   ctx.title('Runs');
   const routesIn = h('input', { id: 'runs-routes', type: 'text', value: routes.join(', '), placeholder: 'e.g. 4, 15', 'aria-describedby': 'runs-hint', autocomplete: 'off' });
+  const picker = routePicker(routesIn);
+  api.tracked({ signal: ctx.signal }).then((d) => picker.setTracked((d.routes || []).filter((x) => typeof x === 'string')), () => { /* no suggestions without the list; typing still works */ });
   const dateIn = h('input', { id: 'runs-date', type: 'date', value: date || dateTime(ctx.nowSec() - 86400).slice(0, 10) });
   const query = () => ({ routes: routesIn.value.split(/[\s,]+/).filter(Boolean).join(','), date: dateIn.value, from: win[0], to: win[1] });
   const apply = (ev) => { ev?.preventDefault?.(); ctx.go(buildHash('runs', {}, query())); };
   const redraws = []; // one per route section: redraw from the data already loaded
+  const zoom = { i: ZOOM_START, fns: new Map() }; // fns: route -> redraw that chart in place at the current zoom
   const slider = timeRangeSlider({ step: 15, presets: WIN_PRESETS, from: win[0], to: win[1], onChange: (a, b) => {
     win = a === b ? [a, Math.min(a + 60, MAX)] : [Math.min(a, b), Math.max(a, b)];
     if (a >= b) slider.set(win[0], win[1]);
@@ -62,9 +68,9 @@ export async function render(ctx) {
   put(ctx.main, h('h1', {}, 'Runs'),
     h('p', { class: 'subtitle' }, 'Look at one past service day: every run of a route as a row, with a hollow dot where each stop was scheduled and a filled dot where the bus actually arrived. Times are Dublin time.'),
     h('form', { class: 'row card', on: { submit: apply } },
-      h('label', { for: 'runs-routes' }, 'Routes', routesIn), h('label', { for: 'runs-date' }, 'Service day', dateIn),
+      h('label', { for: 'runs-routes' }, 'Routes', picker.el), h('label', { for: 'runs-date' }, 'Service day', dateIn),
       h('button', { class: 'btn', type: 'submit' }, 'Show runs'),
-      h('p', { class: 'hint', id: 'runs-hint' }, `Up to ${MAX_ROUTES} routes, separated by commas. Only tracked routes have recorded runs.`)),
+      h('p', { class: 'hint', id: 'runs-hint' }, `Up to ${MAX_ROUTES} routes, separated by commas: type, or pick from the tracked routes that drop down. Only tracked routes have recorded runs.`)),
     h('div', { class: 'card' }, h('span', { class: 'row-label' }, 'Time of day'), slider.el,
       h('p', { class: 'hint' }, 'A run is shown when any of its stops is scheduled or arrives in this window; the diagram then shows each of those runs in full.')), results);
   if (!routes.length && !date) { put(results, emptyState('Pick a route and a day to see its runs.')); return; }
@@ -82,14 +88,14 @@ export async function render(ctx) {
     };
     return region(box, ctx.signal).load(fetcher, ({ data, stops }, el) => {
       el.append(body);
-      const paint = () => { body.replaceChildren(); draw(route, date, data, stops, body, ds, win); };
+      const paint = () => { body.replaceChildren(); zoom.fns.delete(route); draw(route, date, data, stops, body, ds, win, zoom); };
       redraws.push(paint);
       paint();
     }, { announce: ({ data }) => `Route ${route}: ${plural(data.runs.length, 'run')} on the day` });
   }));
 }
 
-function draw(route, date, data, stops, el, ds, win) {
+function draw(route, date, data, stops, el, ds, win, zoom) {
   const names = stopNameMap(stops?.directions), codes = stopCodeMap(stops?.directions);
   const label = (id) => stopLabel(id, names, codes);
   if (!data.runs.length) { put(el, emptyState(`No arrivals recorded for route ${route} on ${date}. Was the route tracked that day?`)); return; }
@@ -106,10 +112,28 @@ function draw(route, date, data, stops, el, ds, win) {
     { label: 'Run', get: (r) => r.trip_id }, { label: 'First stop scheduled', get: (r) => clockTime(r.first) }, { label: 'Last stop scheduled', get: (r) => clockTime(r.last) },
     { label: 'Stops', num: true, get: (r) => fmtCount(r.stops) }, { label: 'No arrival', num: true, get: (r) => fmtCount(r.missing) },
     { label: 'Mean delay', num: true, get: (r) => fmtDelay(r.delay) }, { label: 'Worst delay', num: true, get: (r) => fmtDelay(r.worst) }] });
-  const geo = runsGeometry(runs.map((r) => ({ ...r, label: `${clockTime(r.first)}${r.direction ? ` · ${r.direction}` : ''}`,
-    visits: r.visits.map((v) => ({ ...v, tip: visitTipData(v, label(v.stop_id), r.trip_id, status(v), clockTime) })) })));
+  const ends = directionEnds(stops?.directions);
+  const where = (r) => (r.direction ? ends.get(r.direction) || r.direction : '');
+  const rows = runs.map((r) => ({ ...r, label: `${clockTime(r.first)}${where(r) ? ` ${where(r)}` : ''}`,
+    visits: r.visits.map((v) => ({ ...v, tip: visitTipData(v, label(v.stop_id), r.trip_id, status(v), clockTime) })) }));
+  const geoAt = () => runsGeometry(rows, { pxPerHour: PX_PER_HOUR * ZOOMS[zoom.i] });
   const insp = inspector(route, runs, label);
-  const svg = renderRunsChart(geo, { onSelect: insp.select, title: `Runs of route ${route}`, desc: `${plural(runs.length, 'run')} on ${date} in ${when}; each row is one run with a dot per stop at its scheduled and actual time.` });
+  const opts = { onSelect: insp.select, title: `Runs of route ${route}`, desc: `${plural(runs.length, 'run')} on ${date} in ${when}; each row is one run with a dot per stop at its scheduled and actual time.` };
+  const svg = renderRunsChart(geoAt(), opts);
+  const pct = h('output', { class: 'zoom-pct', 'aria-live': 'polite' });
+  const box = () => svg.closest?.('.chart-scroll');
+  const apply = (anchor) => { // redraw inside the same element; keep the middle of what you were looking at in view
+    const b = box(), mid = b && b.scrollWidth ? (b.scrollLeft + b.clientWidth / 2) / b.scrollWidth : null;
+    renderRunsChart(geoAt(), { ...opts, into: svg });
+    if (b && mid !== null) b.scrollLeft = mid * b.scrollWidth - b.clientWidth / 2;
+    pct.textContent = `${Math.round(ZOOMS[zoom.i] * 100)}%`;
+  };
+  zoom.fns.set(route, apply);
+  pct.textContent = `${Math.round(ZOOMS[zoom.i] * 100)}%`;
+  const step = (d) => () => { const i = Math.min(ZOOMS.length - 1, Math.max(0, zoom.i + d)); if (i === zoom.i) return; zoom.i = i; zoom.fns.forEach((f) => f()); };
+  put(el, h('div', { class: 'row zoom-bar', role: 'group', 'aria-label': 'Horizontal zoom' }, h('span', { class: 'row-label' }, 'Zoom'),
+    h('button', { class: 'btn btn-quiet', type: 'button', 'aria-label': 'Zoom out', on: { click: step(-1) } }, '\u2212'), pct,
+    h('button', { class: 'btn btn-quiet', type: 'button', 'aria-label': 'Zoom in', on: { click: step(1) } }, '+')));
   put(el, figure({ title: `${plural(runs.length, 'run')} in ${when}, by first scheduled time`, svg, table: table(runs, `Runs of route ${route}, ${date}, ${when}`), level: 'h3',
     legend: h('p', { class: 'legend' }, 'One row per run. Each stop is a hollow dot at its scheduled time and a filled dot at the time the bus actually arrived, joined by a bar that shows the delay. Blue: early, orange: late, green: on time. A hollow dot alone: no arrival recorded. Hover a dot for the stop, click to inspect the run. Click the time of a run on the left to jump to its first stop; the labels stay put while you scroll sideways.') }));
   put(el, insp.el);

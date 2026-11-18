@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write synthetic but plausible demo data into DATA_DIR with the real schema helpers.
 
-  scripts/seed_demo.py DATA_DIR [--routes 15,46A] [--days 14] [--end YYYY-MM-DD] [--seed 1] [--fake-server PORT]
+  scripts/seed_demo.py DATA_DIR [--routes 15,E2] [--days 14] [--end YYYY-MM-DD] [--seed 1] [--fake-server PORT]
 
 Deterministic for the same arguments (seeded random.Random, `--end` defaults to yesterday: pass it for
 reproducible output) and idempotent (INSERT OR IGNORE on the natural keys). Without a bus data server the
@@ -190,7 +190,7 @@ def fake_server(port: int, routes: list[str]) -> ThreadingHTTPServer:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("data_dir")
-    ap.add_argument("--routes", default="15,46A")
+    ap.add_argument("--routes", default="15,E2")
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--end", type=date.fromisoformat, default=None, help="last day (YYYY-MM-DD, before today), default yesterday")

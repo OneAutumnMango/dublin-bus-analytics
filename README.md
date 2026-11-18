@@ -18,10 +18,10 @@ The UI is served from the repo's `web/` directory automatically (override with `
 ### Option A: offline demo (no NTA key)
 
 ```bash
-python scripts/seed_demo.py ./data/demo --routes 15,46A --days 14 --fake-server 8765
+python scripts/seed_demo.py ./data/demo --routes 15,E2 --days 14 --fake-server 8765
 ```
 
-This writes 14 days of synthetic data for routes 15 and 46A into `./data/demo` and keeps a tiny fake bus server running on 127.0.0.1:8765 (leave it running; Ctrl-C stops it). Seeding is deterministic and safe to repeat. In a second terminal (venv active):
+This writes 14 days of synthetic data for routes 15 and E2 into `./data/demo` and keeps a tiny fake bus server running on 127.0.0.1:8765 (leave it running; Ctrl-C stops it). Seeding is deterministic and safe to repeat. In a second terminal (venv active):
 
 ```bash
 SERVER_URL=http://127.0.0.1:8765 DATA_DIR=./data/demo uvicorn app.main:app --reload --port 8081

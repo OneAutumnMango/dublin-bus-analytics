@@ -482,3 +482,11 @@ test('default since is stable within a UTC day and never changes an explicit dat
   const c = { ...L.DEFAULT_CONTROLS, since: '2025-01-01' };
   assert.equal(L.toApiQuery(c, day + 5).since, L.toApiQuery(c, day + 90000).since);
 });
+
+test('directionEnds: first and last stop names, key when unnamed', () => {
+  const m = L.directionEnds({ 0: [{ name: 'Heuston Station' }, { name: 'Middle' }, { name: 'Monkstown Avenue' }], 1: [{ id: 'x' }], 2: [{ stopName: 'Only' }] });
+  assert.equal(m.get('0'), 'Heuston Station → Monkstown Avenue');
+  assert.equal(m.get('1'), '1');
+  assert.equal(m.get('2'), 'Only');
+  assert.equal(L.directionEnds(null).size, 0);
+});

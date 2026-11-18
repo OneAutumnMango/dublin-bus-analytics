@@ -817,14 +817,14 @@ const runsResp = () => ({ route: '4', date: '2026-11-12', order_source: 'server'
     { stop_id: 's2', pos: 1, scheduled: 1_700_000_600, actual: null, delay: null, confidence: 0, realtime: 0 }] },
   { trip_id: 't2', direction: null, visits: [{ stop_id: 's9', pos: null, scheduled: 1_700_003_600, actual: 1_700_003_500, delay: -100, confidence: 1, realtime: 1 }] }] });
 
-test('runs page: needs a route and a day first, no requests', async () => {
-  const calls = installFetch({});
+test('runs page: needs a route and a day first; only the tracked-routes list is fetched', async () => {
+  const calls = installFetch({ 'GET /api/routes/tracked': { routes: ['15'] } });
   const ctx = ctxOf({}, {});
   await (await import('../js/pages/runs.js')).render(ctx);
   await settle();
   assert.match(text(ctx.main), /Pick a route and a day/);
   assert.equal(ctx.main.byTag('h1').length, 1);
-  assert.equal(calls?.length ?? 0, 0);
+  assert.deepEqual(calls.map((c) => c.key), ['GET /api/routes/tracked']);
 });
 
 test('runs page: draws one diagram, tiles, tables; names are text not HTML', async () => {
@@ -919,4 +919,29 @@ test('trip story: first reading, changes, arrival; dropped bus', async () => {
   assert.match(s, /scheduled at Main St \(123\) for \d\d:\d\d and arrived at \d\d:\d\d: 3\.0 min late\./);
   assert.match(tripStory({ ...v, arrival: null }, 'X'), /disappeared from the feed before arriving \(last seen/);
   assert.match(tripStory({ ...v, points: [v.points[0]] }, 'X'), /never changed/);
+});
+
+test('runs page: direction shows terminus names; zoom buttons redraw every chart without a refetch', async () => {
+  let calls = 0;
+  const stopsNamed = { route: '4', directions: { out: [{ id: 's1', name: 'Heuston Station' }, { id: 's2', name: 'Monkstown Avenue' }] } };
+  installFetch({ 'GET /api/routes/4/runs': () => { calls++; return runsResp(); }, 'GET /api/routes/4/stops': stopsNamed });
+  const ctx = ctxOf({}, { routes: '4', date: '2023-11-14', from: '1300', to: '1439' });
+  await (await import('../js/pages/runs.js')).render(ctx);
+  await settle();
+  const labels = () => ctx.main.byTag('text').filter((t) => t.getAttribute('class') === 'row-label').map((t) => t.textContent);
+  assert.ok(labels().some((t) => /Heuston Station \u2192 Monkstown Avenue/.test(t)), labels().join('|'));
+  const width = () => ctx.main.byTag('svg').find((x) => /runs-chart/.test(x.getAttribute('class'))).getAttribute('viewBox');
+  const before = width();
+  const pct = () => ctx.main.byTag('output').find((o) => /%$/.test(o.textContent)).textContent;
+  assert.equal(pct(), '100%');
+  ctx.main.byText('button', /^\+$/)[0].dispatch('click', {});
+  assert.equal(pct(), '150%');
+  assert.notEqual(width(), before);
+  ctx.main.byText('button', /^\u2212$/)[0].dispatch('click', {});
+  ctx.main.byText('button', /^\u2212$/)[0].dispatch('click', {});
+  assert.equal(pct(), '75%');
+  for (let i = 0; i < 10; i++) ctx.main.byText('button', /^\u2212$/)[0].dispatch('click', {});
+  assert.equal(pct(), '25%'); // stops at the smallest zoom
+  assert.equal(calls, 1);
+  assert.equal(ctx.main.byTag('svg').filter((x) => /runs-chart/.test(x.getAttribute('class'))).length, 1);
 });
