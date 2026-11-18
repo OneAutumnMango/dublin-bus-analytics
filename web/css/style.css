@@ -474,3 +474,8 @@ main > *:has(.info-pop:not([hidden])) { position: relative; z-index: 20; }
 .chart.runs-chart { flex: none; }
 .chart .row-hit { fill: transparent; cursor: pointer; } .chart .label-row:hover .row-hit { fill: var(--surface-2); }
 .chart .label-row:hover .row-label { text-decoration: underline; }
+
+/* trip chart: stored readings */
+.chart .step-dot { fill: var(--surface); stroke: var(--early); stroke-width: 2.5; paint-order: stroke; }
+.chart .step-dot:hover { fill: var(--early); }
+.story { max-width: 75ch; margin: 0 0 var(--s4); font-size: var(--fs); }

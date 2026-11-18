@@ -365,3 +365,14 @@ test('renderRunsChart: frozen label svg + plot svg, dots carry tips, labels stay
   wrap.byTag('g').find((x) => x.getAttribute('class') === 'label-row').dispatch('click', {});
   assert.equal(box.scrollLeft, 460);
 });
+
+test('stepGeometry/renderStepChart: stored readings become dots with tips on the line', () => {
+  const steps = [{ t: 1000, due: 5 }, { t: 1200, due: 4 }];
+  const g = C.stepGeometry(steps, [], { dots: [{ t: 1000, due: 5, tip: { title: 'a' } }, { t: 1200, due: 9, tip: { title: 'b' } }] });
+  assert.equal(g.dots.length, 2);
+  assert.ok(g.dots[0].x < g.dots[1].x && g.dots[1].y < g.dots[0].y); // a higher due is drawn higher
+  assert.ok(g.dots.every((d) => d.y >= g.y1 && d.y <= g.y0)); // the axis grew to hold the biggest dot
+  const svg = C.renderStepChart(g, { title: 't', desc: 'd' });
+  assert.deepEqual([...svg.byTag('circle')].map((c) => JSON.parse(c.getAttribute('data-tip-json')).title), ['a', 'b']);
+  assert.equal(C.stepGeometry(steps).dots.length, 0);
+});

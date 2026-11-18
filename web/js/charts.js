@@ -150,12 +150,13 @@ export function accumulationGeometry(stops, o = {}) {
 // ---------- step chart: due minutes over time ----------
 // steps: [{t, due}] from lib.dueSteps; markers: [{t, label, kind}]
 export function stepGeometry(steps, markers = [], o = {}) {
+  const dots = o.dots || []; // [{t, due, tip}]: the stored readings, drawn on the line
   const { width = 720, height = 280, left = 44, right = 16, top = 16, bottom = 34 } = o;
   const x0 = left, x1 = width - right, y0 = top + (height - top - bottom), y1 = top;
-  const ts = [...steps.map((s) => s.t), ...markers.map((m) => m.t)];
+  const ts = [...steps.map((s) => s.t), ...dots.map((d) => d.t), ...markers.map((m) => m.t)];
   const te = extent(ts);
   const sx = linearScale(te || [0, 1], [x0, x1]);
-  const maxDue = Math.max(1, ...steps.map((s) => s.due).filter(isNum));
+  const maxDue = Math.max(1, ...steps.map((s) => s.due).filter(isNum), ...dots.map((d) => d.due).filter(isNum));
   const [, dMax] = niceDomain(0, maxDue, 4);
   const sy = linearScale([0, dMax], [y0, y1]);
   let path = '';
@@ -168,6 +169,7 @@ export function stepGeometry(steps, markers = [], o = {}) {
     yTicks: niceTicks(0, dMax, 4).map((d) => ({ y: r2(sy(d)), label: String(d) })),
     xTicks: tickT.map((t) => ({ x: r2(sx(t)), label: clockTime(t) })),
     endX: last ? r2(sx(last.t)) : null,
+    dots: dots.map((d) => ({ x: r2(sx(d.t)), y: r2(sy(d.due)), tip: d.tip })),
     markers: markers.map((m) => ({ ...m, x: r2(sx(m.t)) })) };
 }
 
@@ -379,5 +381,6 @@ export function renderStepChart(geo, { title, desc, doc = globalThis.document } 
       el(doc, 'text', { class: 'marker-label', x: m.x + 4, y: geo.y1 + 10 + (m.kind === 'arrival' ? 12 : 0) }, m.label));
   }
   if (!geo.empty) svg.append(el(doc, 'path', { class: 'step-line', d: geo.path, fill: 'none' }));
+  for (const d of geo.dots) svg.append(el(doc, 'circle', { class: 'step-dot', cx: d.x, cy: d.y, r: 5, 'data-tip-json': d.tip ? tipJson(d.tip) : null }));
   return svg;
 }

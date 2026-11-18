@@ -905,3 +905,15 @@ test('runs: day start and window membership across the clock change', async () =
   assert.equal(inWindow(null, ds, [0, 1439]), false);
   assert.equal(runInWindow({ visits: [{ scheduled: ds, actual: ds + 8 * 3600 }] }, ds, [420, 540]), true);
 });
+
+test('trip story: first reading, changes, arrival; dropped bus', async () => {
+  const { tripStory } = await import('../js/pages/trip.js');
+  const v = { scheduled: 1_700_000_600, last_seen_ts: 1_700_000_500, arrival: { actual: 1_700_000_780, delay: 180, confidence: 1 },
+    points: [{ ts: 1_700_000_000, due_min: 10, expected: 1_700_000_600, realtime: 1 }, { ts: 1_700_000_300, due_min: 6, expected: 1_700_000_720, realtime: 1 }] };
+  const s = tripStory(v, 'Main St (123)');
+  assert.match(s, /first showed this bus at \d\d:\d\d, 10 min away/);
+  assert.match(s, /changed 1 time, with the expected arrival between/);
+  assert.match(s, /scheduled at Main St \(123\) for \d\d:\d\d and arrived at \d\d:\d\d: 3\.0 min late\./);
+  assert.match(tripStory({ ...v, arrival: null }, 'X'), /disappeared from the feed before arriving \(last seen/);
+  assert.match(tripStory({ ...v, points: [v.points[0]] }, 'X'), /never changed/);
+});

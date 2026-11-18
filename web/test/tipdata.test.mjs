@@ -51,3 +51,22 @@ test('fmtTipValue formats by kind and units', () => {
   assert.equal(T.fmtTipValue({ fmt: 'count', v: 1234 }, 'min'), '1,234');
   assert.equal(T.fmtTipValue({ fmt: 'delay', v: null }, 'min'), '–');
 });
+
+test('sampleTipData: shown, expected, versus timetable, movement, source', async () => {
+  const { sampleTipData } = await import('../js/tipdata.js');
+  const clock = (t) => `t${t}`;
+  const t = sampleTipData({ ts: 100, due_min: 9, expected: 700, realtime: 1 }, 1, 3, { expected: 640 }, 600, 10, clock);
+  assert.equal(t.title, 't100 reading');
+  assert.equal(t.sub, 'Stored change 2 of 3');
+  assert.deepEqual(t.head, { sec: 100, label: 'predicted vs timetable' });
+  const r = Object.fromEntries(t.rows.map((x) => [x.k, x]));
+  assert.equal(r.shown.v, '10 min');
+  assert.equal(r.expected.v, 't700');
+  assert.equal(r.vsched.v, 100);
+  assert.equal(r.delta.v, 60);
+  assert.equal(r.source.v, 'live prediction');
+  const first = sampleTipData({ ts: 1, due_min: 5, expected: null, realtime: 0 }, 0, 1, null, 600, 5, clock);
+  assert.equal(first.head, undefined);
+  assert.ok(!first.rows.some((x) => x.k === 'delta' || x.k === 'vsched'));
+  assert.equal(first.rows.find((x) => x.k === 'source').v, 'timetable only');
+});
