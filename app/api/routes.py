@@ -912,8 +912,18 @@ async def route_forecast(request: Request, r: RouteP, p: P):
     return await _heavy(request, p, "route = ?", [r], lambda p: _forecast_db(request, r, p), delay=False)
 
 
-def _forecast_db(request, r, p):
+@router.get("/stops/{s}/forecast")
+async def stop_forecast(request: Request, s: StopP, p: P, route: QStr = None):
+    """Same shape as /routes/{r}/forecast, for one stop (optionally one route)."""
+    where, args = ("stop_id = ?", [s]) if route is None else ("stop_id = ? and route = ?", [s, route])
+    return await _heavy(request, p, where, args, lambda p: _forecast_db(request, route, p, s), delay=False)
+
+
+def _forecast_db(request, r, p, stop=None):
     cond, cargs = _cond(p, "a.")
+    sel, sargs = ("a.stop_id = ?", [stop]) if stop else ("a.route = ?", [r])
+    if stop and r:
+        sel, sargs = sel + " and a.route = ?", sargs + [r]
     marks = ",".join("?" * len(HORIZONS))
     errs = {h: array("q") for h in HORIZONS}  # compact per-horizon arrays; percentiles need the values
 
@@ -923,8 +933,8 @@ def _forecast_db(request, r, p):
 
     _scan(request, "select f.horizon_min, f.error_s, a.scheduled from arrivals a "
           "join forecast f on f.arrival_id = a.id "
-          f"where a.route = ? and {cond} and f.error_s is not null "
-          f"and f.horizon_min in ({marks})", [r] + cargs + list(HORIZONS), fn)
+          f"where {sel} and {cond} and f.error_s is not null "
+          f"and f.horizon_min in ({marks})", sargs + cargs + list(HORIZONS), fn)
     hs = []
     for h in HORIZONS:
         a = np.asarray(errs[h], dtype=float)
@@ -933,7 +943,7 @@ def _forecast_db(request, r, p):
             v = {"mean_error": float(a.mean()), "mae": float(np.abs(a).mean()),
                  "p_low": float(np.percentile(a, 5)), "p_high": float(np.percentile(a, 95))}
         hs.append({"horizon_min": h, "n": len(a), **v, "low_n": len(a) < LOW_N})
-    return _clean({"route": r, "filters": _forecast_filters(p), "horizons": hs})
+    return _clean({"route": r, "stop_id": stop, "filters": _forecast_filters(p), "horizons": hs})
 
 
 # ---- trip series ----

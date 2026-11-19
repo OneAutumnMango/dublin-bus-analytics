@@ -623,6 +623,15 @@ def test_forecast_exact(env):
     assert 7 not in hs
 
 
+def test_stop_forecast_only_that_stop(env):
+    a, b = env.add(stop="s1", delay=0), env.add(stop="s2", delay=0)
+    env.fc(a, 10, 60)
+    env.fc(b, 10, 600)
+    env.fc(env.add(stop="s1", route="other", delay=0), 10, 6000)
+    h10 = lambda **q: env.get("/api/stops/s1/forecast", **q).json()["horizons"][2]
+    assert (h10()["n"], h10()["mean_error"]) == (2, 3030) and (h10(route="15")["n"], h10(route="15")["mean_error"]) == (1, 60)
+
+
 def test_forecast_filters(env):
     a = env.add(delay=0, confidence=0)
     b = env.add(delay=0, realtime=0)

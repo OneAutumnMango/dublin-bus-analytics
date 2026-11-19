@@ -4,6 +4,7 @@ import { histogramGeometry, renderHistogram } from '../charts.js';
 import { dataTable, emptyState, figure, h, link, tile, put } from '../dom.js';
 import { buildHash, clockTime, controlsToQuery, dateTime, describeDelay, describeRange, fmtCount, fmtDelay, fmtLevel, fmtNum, fmtPct, fmtPctile, plural, stopNameMap, stopCodeMap, stopLabel } from '../lib.js';
 import { region } from '../view.js';
+import { drawForecast, forecastQuery } from './analytics.js';
 import { crumbs, filterBar, filterNotices, setup, windowText } from './common.js';
 
 export async function render(ctx) {
@@ -12,11 +13,12 @@ export async function render(ctx) {
   ctx.title(`Stop ${stop} · route ${route}`);
   const nameSlot = h('span', { class: 'muted' }, stop);
   const box = h('div', {});
+  const fcBox = h('section', { class: 'analytics-section' });
   put(ctx.main, 
     crumbs(link('#/', '← All routes'), link(buildHash('route', { route }, s.linkQuery), `Route ${route}`), link(buildHash('analytics', { route }, s.linkQuery), 'Route analytics')),
     h('h1', {}, 'Stop ', nameSlot, ` on route ${route}`),
     h('p', { class: 'subtitle' }, 'How this stop’s buses compare with the timetable. Negative = early, positive = late.'),
-    ...filterBar(ctx, 'stop', { route, stop }, s), box);
+    ...filterBar(ctx, 'stop', { route, stop }, s), box, fcBox);
   const fetcher = async (signal) => {
     const [stats, stops] = await Promise.all([
       api.stopStats(stop, route, s.apiQuery, { signal }),
@@ -24,11 +26,12 @@ export async function render(ctx) {
     ]);
     return { stats, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions) };
   };
-  await region(box, ctx.signal).load(fetcher, ({ stats, names, codes }, el) => {
+  const fc = region(fcBox, ctx.signal).load((sig) => api.stopForecast(stop, route, forecastQuery(s.apiQuery), { signal: sig }), (d, el) => drawForecast(route, d, el), { announce: () => `Stop ${stop} forecast accuracy loaded` });
+  await Promise.all([fc, region(box, ctx.signal).load(fetcher, ({ stats, names, codes }, el) => {
     const nm = names.get(stop), code = codes.get(stop);
     if (nm || code) { nameSlot.textContent = stopLabel(stop, names, codes); ctx.title(`${nm || `Stop ${code}`} · route ${route}`); }
     draw(route, stop, s, stats, el);
-  }, { announce: ({ stats }) => `Stop ${stop}: loaded ${plural(stats.n, 'arrival')}` });
+  }, { announce: ({ stats }) => `Stop ${stop}: loaded ${plural(stats.n, 'arrival')}` })]);
 }
 
 function draw(route, stop, s, d, el) {
