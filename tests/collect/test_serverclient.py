@@ -35,6 +35,18 @@ async def test_route_arrivals_flattens_by_stop():
     assert a == Arrival("s1", "t1", "15", 3, 1000, 940, 60, True)
 
 
+async def test_route_arrivals_asks_for_cancelled_and_parses_the_flag():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.query.decode())
+        return httpx.Response(200, json={"s1": [A(), {**A(tripId="t2"), "cancelled": True}]})
+
+    out = await mock_client(handler).route_arrivals("15")
+    assert seen == ["includeCancelled=true"]
+    assert [(a.trip_id, a.cancelled) for a in out] == [("t1", False), ("t2", True)]
+
+
 async def test_missing_scheduled_is_none():
     fake, c = make()
     raw = A()
@@ -133,7 +145,7 @@ async def test_trailing_slash_base_url_and_path():
         return httpx.Response(200, json={})
     c = mock_client(h, base="http://srv:8080/")
     await c.route_arrivals("15")
-    assert seen == ["http://srv:8080/v1/routes/15/arrivals"]
+    assert seen == ["http://srv:8080/v1/routes/15/arrivals?includeCancelled=true"]
 
 
 @pytest.mark.parametrize("route,enc", [("15/A", "15%2FA"), ("N4", "N4"), ("a b", "a%20b"), ("15?x=1", "15%3Fx%3D1")])
@@ -144,7 +156,7 @@ async def test_route_is_url_encoded(route, enc):
         seen.append(req.url.raw_path.decode())
         return httpx.Response(200, json={})
     await mock_client(h).route_arrivals(route)
-    assert seen == [f"/v1/routes/{enc}/arrivals"]
+    assert seen == [f"/v1/routes/{enc}/arrivals?includeCancelled=true"]
 
 
 async def test_search_routes_stops():

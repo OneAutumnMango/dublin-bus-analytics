@@ -22,17 +22,20 @@ export async function render(ctx) {
     h('p', { class: 'subtitle' }, 'Delay at each stop: negative = early, positive = late. Pick a stop to see its arrival distribution.'),
     ...filterBar(ctx, 'route', { route }, s, dir ? { dir } : {}), box);
   const fetcher = async (signal) => {
-    const [summary, stops] = await Promise.all([
+    const win = Object.fromEntries(['since', 'until'].filter((k) => s.apiQuery?.[k] != null).map((k) => [k, s.apiQuery[k]]));
+    const [summary, stops, canc] = await Promise.all([
       api.summary(route, s.apiQuery, { signal }),
       api.stopsOf(route, { signal }).catch((e) => { if (isAbort(e)) throw e; return null; }),
+      // Best effort: an older server or a failure just hides the tile.
+      api.cancellations(route, win, { signal }).catch((e) => { if (isAbort(e)) throw e; return null; }),
     ]);
-    return { summary, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
+    return { canc, summary, names: stopNameMap(stops?.directions), codes: stopCodeMap(stops?.directions), dirs: directionLabels(stops?.directions, route) };
   };
-  await region(box, ctx.signal).load(fetcher, ({ summary, names, codes, dirs }, el) => draw(ctx, route, s, summary, names, codes, dirs, dir, page, el),
+  await region(box, ctx.signal).load(fetcher, ({ canc, summary, names, codes, dirs }, el) => draw(ctx, route, s, summary, names, codes, dirs, dir, page, el, canc),
     { announce: ({ summary }) => `Route ${route}: loaded ${plural((summary.stops || []).length, 'stop')}` });
 }
 
-function draw(ctx, route, s, data, names, codes, dirs, dir, page, el) {
+function draw(ctx, route, s, data, names, codes, dirs, dir, page, el, canc) {
   put(el, ...filterNotices(data));
   const all = data.stops || [];
   if (!all.length) {
@@ -49,7 +52,8 @@ function draw(ctx, route, s, data, names, codes, dirs, dir, page, el) {
   }
   const withData = stops.filter((x) => x.n > 0).length;
   put(el, h('div', { class: 'tiles' }, tile('Arrivals analysed', fmtCount(data.n), { lowN: data.low_n }),
-    tile('Stops with data', fmtCount(withData), { note: dir ? (dirs.get(dir) || `direction ${dir}`) : null })), h('p', { class: 'hint' }, windowText(data)));
+    tile('Stops with data', fmtCount(withData), { note: dir ? (dirs.get(dir) || `direction ${dir}`) : null }),
+    canc ? tile('Cancelled', fmtCount(canc.cancelled), { note: canc.rate == null ? 'none scheduled' : `${fmtPct(canc.rate * 100)} of ${fmtCount(canc.cancelled + canc.observed)} scheduled` }) : null), h('p', { class: 'hint' }, windowText(data)));
   if (!stops.length) { put(el, emptyState('No stops with data in this direction.')); return; }
 
   const items = stops.map((x) => ({ id: x.stop_id, label: stopLabel(x.stop_id, names, codes), short: names.get(x.stop_id) || codes.get(x.stop_id) || x.stop_id, href: buildHash('stop', { route, stop: x.stop_id }, controlsToQuery(s.controls)),

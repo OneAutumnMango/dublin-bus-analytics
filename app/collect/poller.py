@@ -20,11 +20,13 @@ import time
 from pathlib import Path
 
 from app.core.db import open_meta
+from app.collect.cancellations import record_alerts, record_cancellations
 from app.collect.serverclient import RouteNotFound, ServerUnavailable
 from app.collect.tracker import Tracker
 
 log = logging.getLogger(__name__)
 SKIP_WARN_EVERY_S = 3600
+ALERTS_EVERY_S = 300
 
 ROUTE_RE = re.compile(r"^[A-Za-z0-9 _./-]{1,20}$")
 
@@ -67,6 +69,7 @@ class Poller:
         self._skip_warned: dict[str, float] = {}  # route -> when skipped last warned
         self._gap_open: tuple[int, int] | None = None  # (rowid, start)
         self._last_now = 0
+        self._alerts_at = -ALERTS_EVERY_S
 
     # -- tracked routes (short-lived connection per call: safe from any thread) --
     def _meta(self):
@@ -121,14 +124,43 @@ class Poller:
         if not down:
             self._gap_open = None
 
+    def _record_cancellations(self, route, cancelled, live, now) -> None:
+        try:  # never let this break polling
+            c = self._meta()
+            try:
+                with c:
+                    record_cancellations(c, route, cancelled, live, now)
+            finally:
+                c.close()
+        except Exception:
+            log.exception("recording cancellations failed for route %s", route)
+
+    async def _poll_alerts(self, now: int) -> None:
+        if self.skip_clock() - self._alerts_at < ALERTS_EVERY_S:
+            return
+        self._alerts_at = self.skip_clock()
+        try:
+            alerts = await self.client.alerts()
+            c = self._meta()
+            try:
+                with c:
+                    record_alerts(c, alerts, now)
+            finally:
+                c.close()
+        except Exception as e:  # alerts are best effort: never an outage, never a gap
+            log.debug("alerts not recorded: %r", e)
+
     async def _one(self, route: str, now: int, sem: asyncio.Semaphore | None = None):
         if sem is None:
             arrivals = await self.client.route_arrivals(route)  # may raise; handled in tick
         else:
             async with sem:  # only the fetch is limited, not ingest
                 arrivals = await self.client.route_arrivals(route)
+        # Cancelled calls are scheduled-time-only rows: they must never reach the tracker's delay stats.
+        live = [a for a in arrivals if not a.cancelled]
+        self._record_cancellations(route, [a for a in arrivals if a.cancelled], live, now)
         try:
-            res = await self.tracker.ingest(route, arrivals, now)
+            res = await self.tracker.ingest(route, live, now)
         except Exception:
             log.exception("ingest failed for route %s", route)
             return None
@@ -145,6 +177,8 @@ class Poller:
 
     async def tick(self, now: int) -> None:
         routes = self.tracked()
+        if routes:  # nothing tracked, nothing to record
+            await self._poll_alerts(now)
         sem = asyncio.Semaphore(self.settings.server_concurrency)
         results = await asyncio.gather(*(self._one(r, now, sem) for r in routes), return_exceptions=True)
         down = fetched = False

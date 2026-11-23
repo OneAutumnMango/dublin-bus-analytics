@@ -67,7 +67,7 @@ async def test_tick_polls_only_tracked_routes(env):
     env.fs.set_arrivals("46A", {})
     env.poller.track("15")
     await env.poller.tick(T0)
-    assert env.fs.requests == ["/v1/routes/15/arrivals"]
+    assert [r for r in env.fs.requests if r != "/v1/alerts"] == ["/v1/routes/15/arrivals"]
 
 
 async def test_unavailable_records_gap_and_no_arrivals(env):
@@ -521,7 +521,7 @@ async def test_run_real_defaults_tick_once(env):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 10)
-    assert env.fs.requests[0] == "/v1/routes/15/arrivals"
+    assert "/v1/routes/15/arrivals" in env.fs.requests
 
 
 def test_default_now_fn_is_int_epoch(env):
@@ -625,7 +625,7 @@ async def test_create_app_injected_client_used_by_poller_and_closed_once(tmp_pat
     assert app.state.client is client and app.state.poller.client is client
     app.state.poller.track("15")
     await app.state.poller.tick(T0)  # hits the fake, not the network
-    assert fs.requests == ["/v1/routes/15/arrivals"]
+    assert [r for r in fs.requests if r != "/v1/alerts"] == ["/v1/routes/15/arrivals"]
     app.state.tracker.close()
     with TestClient(app):
         assert not http.is_closed
@@ -670,4 +670,37 @@ async def test_failure_in_one_route_does_not_block_others(env, monkeypatch):
     monkeypatch.setattr(env.client, "route_arrivals", fetch)
     await env.poller.tick(T0)
     assert sorted(fetched) == ["R1", "R2"]
+    assert env.gaps() == []
+
+
+async def test_cancelled_arrivals_are_stored_but_never_reach_the_tracker(env, monkeypatch):
+    env.fs.set_arrivals("15", {"s1": [ja(trip="live"), {**ja(trip="gone", sched=T0 + 900, rt=False), "cancelled": True}]})
+    env.poller.track("15")
+    got = []
+    real = env.tracker.ingest
+
+    async def ingest(route, arrivals, now):
+        got.extend(a.trip_id for a in arrivals)
+        return await real(route, arrivals, now)
+    monkeypatch.setattr(env.tracker, "ingest", ingest)
+    await env.poller.tick(T0)
+    assert got == ["live"]
+    assert env.rows("select trip_id, stop_id, scheduled, route, cleared from cancellations") == [("gone", "s1", T0 + 900, "15", 0)]
+    assert all(q.get("includeCancelled") == ["true"] for q, p in zip(env.fs.queries, env.fs.requests) if p.endswith("/arrivals"))
+
+
+async def test_a_cancelled_call_that_returns_as_normal_is_marked_cleared(env):
+    env.fs.set_arrivals("15", {"s1": [{**ja(trip="x", sched=T0 + 900, rt=False), "cancelled": True}]})
+    env.poller.track("15")
+    await env.poller.tick(T0)
+    env.fs.set_arrivals("15", {"s1": [ja(trip="x", sched=T0 + 900, rt=False)]})
+    await env.poller.tick(T0 + 30)
+    assert env.rows("select cleared from cancellations") == [(1,)]
+
+
+async def test_alerts_are_recorded_and_their_failure_is_not_an_outage(env):
+    env.fs.alerts = [{"id": "a1", "header": "Diversion", "effect": "DETOUR", "routeIds": ["r1"], "stopIds": []}]
+    one_route(env)
+    await env.poller.tick(T0)
+    assert env.rows("select alert_id, header, routes from alerts") == [("a1", "Diversion", '["r1"]')]
     assert env.gaps() == []

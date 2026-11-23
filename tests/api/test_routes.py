@@ -2685,3 +2685,27 @@ def test_map_shapes_concurrent_and_ordered(env):
     j = env.get("/api/map/shapes").json()["shapes"]
     assert list(j) == ["1", "2", "3", "4", "5", "6"] and all(list(v) == ["out"] for v in j.values())
     assert 1 < st["peak"] <= env.s.server_concurrency
+
+
+def test_route_cancellations_reports_rate_and_recent(env):
+    from app.collect.cancellations import record_cancellations
+    from app.core.models import Arrival
+    db = open_meta(env.s.data_dir)
+    with db:
+        record_cancellations(db, "15", [Arrival("s1", "c", "15", 0, T0, T0, None, False, cancelled=True)], [], T0)
+    db.close()
+    env.add(route="15", scheduled=T0 + 10, delay=0)
+    j = env.get("/api/routes/15/cancellations", since=T0 - 100, until=T0 + 100).json()
+    assert (j["cancelled"], j["observed"], j["rate"]) == (1, 1, 0.5)
+    assert j["recent"][0]["trip_id"] == "c"
+    assert env.c.get("/api/routes/15/cancellations?since=abc").status_code == 422
+
+
+def test_alerts_endpoint_lists_stored_alerts(env):
+    from app.collect.cancellations import record_alerts
+    db = open_meta(env.s.data_dir)
+    with db:
+        record_alerts(db, [{"id": "a", "header": "Diversion", "routeIds": ["r"]}], T0)
+    db.close()
+    (a,) = env.get("/api/alerts").json()
+    assert (a["id"], a["header"], a["routes"]) == ("a", "Diversion", ["r"])

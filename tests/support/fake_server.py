@@ -22,6 +22,8 @@ class FakeServer:
         self.status_code: int | None = None  # forced status for every request
         self.down = False
         self.requests: list[str] = []
+        self.alerts: list[dict] = []
+        self.queries: list[dict] = []
 
     def set_arrivals(self, route, by_stop):
         self.arrivals[route] = by_stop
@@ -61,6 +63,7 @@ class FakeServer:
         path = unquote(scope["path"])
         self.requests.append(path)
         qs = parse_qs(scope["query_string"].decode())
+        self.queries.append(qs)
         code, body = self._route(path, qs)
         if self.status_code is not None:
             code, body = self.status_code, {"error": "forced"}
@@ -75,6 +78,8 @@ class FakeServer:
         if p[:1] != ["v1"]:
             return nf
         p = p[1:]
+        if p == ["alerts"]:
+            return 200, self.alerts
         if p == ["status"]:
             return 200, {"ok": True}
         if p == ["routes"]:

@@ -22,6 +22,14 @@ create index if not exists ix_arr_route_sched on arrivals(route, scheduled);
 create index if not exists ix_arr_stop_sched on arrivals(stop_id, scheduled);
 create index if not exists ix_arr_date on arrivals(service_date, route);
 create table if not exists gaps(start int, end int);
+-- Cancelled trips / skipped stops the server reported (scheduled time only); cleared=1 once the same call shows up as a normal arrival.
+create table if not exists cancellations(
+  trip_id text, stop_id text, scheduled int, route text, first_seen int, last_seen int, cleared int not null default 0,
+  primary key(trip_id, stop_id, scheduled)) without rowid;
+create index if not exists ix_canc_route_sched on cancellations(route, scheduled);
+create table if not exists alerts(
+  alert_id text primary key, header text, description text, effect text, routes text, stops text,
+  starts int, ends int, first_seen int, last_seen int);
 -- Per-day rollups of closed service days (see app/rollup.py); derived data, safe to delete (rebuilt lazily).
 create table if not exists ru_done(route text, service_date text, min_s int, max_s int, primary key(route, service_date)) without rowid;
 create table if not exists ru_delay(route text, service_date text, conf int, n int, sum_d int, sum_d2 int, hist blob,

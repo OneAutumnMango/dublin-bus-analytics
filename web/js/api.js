@@ -87,6 +87,7 @@ export function makeApi(fetchFn = globalThis.fetch) {
     map: (q, o) => get(`/api/map${qs(q)}`, o),
     mapShapes: (o) => get('/api/map/shapes', o),
     stopsOf: (r, o) => get(`/api/routes/${enc(r)}/stops`, o),
+  cancellations: (r, q, o) => get(`/api/routes/${enc(r)}/cancellations${qs(q)}`, o),
     summary: (r, q, o) => get(`/api/routes/${enc(r)}/summary${qs(q)}`, o),
     heatmap: (r, q, o) => get(`/api/routes/${enc(r)}/heatmap${qs(q)}`, o),
     labDistribution: (r, q, o) => get(`/api/routes/${enc(r)}/lab/distribution${qs(q)}`, o),

@@ -11,3 +11,4 @@ class Arrival:
     scheduled: int | None
     delay: int | None
     realtime: bool
+    cancelled: bool = False  # server flag: cancelled trip or skipped stop; scheduled time only

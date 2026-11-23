@@ -38,19 +38,25 @@ class ServerClient:
             raise ServerUnavailable(f"invalid JSON from {path}") from e
 
     async def route_arrivals(self, route: str) -> list[Arrival]:
-        data = await self._get(f"/v1/routes/{quote(route, safe='')}/arrivals")
+        data = await self._get(f"/v1/routes/{quote(route, safe='')}/arrivals", includeCancelled="true")
         try:
             return [
                 Arrival(
                     stop_id=stop, trip_id=a.get("tripId", ""), route=a["routeShortName"],
                     due_min=_int(a["dueMinutes"]), expected=_int(a.get("expectedEpochSeconds", 0)),
                     scheduled=a.get("scheduledEpochSeconds"), delay=a.get("delaySeconds"),
-                    realtime=bool(a["isRealtime"]),
+                    realtime=bool(a["isRealtime"]), cancelled=a.get("cancelled") is True,
                 )
                 for stop, arrs in data.items() for a in arrs
             ]
         except (AttributeError, KeyError, TypeError) as e:
             raise ServerUnavailable(f"unexpected arrivals shape: {e!r}") from e
+
+    async def alerts(self) -> list[dict]:
+        data = await self._get("/v1/alerts")
+        if not isinstance(data, list):
+            raise ServerUnavailable("unexpected alerts shape")
+        return data
 
     async def search_routes(self, query: str) -> list[dict]:
         return await self._get("/v1/routes", query=query)

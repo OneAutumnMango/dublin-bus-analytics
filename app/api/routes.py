@@ -497,6 +497,35 @@ def _summary_db(request, r, p, lists):
                    "n": n, "low_n": n < LOW_N, "stops": out})
 
 
+def _cancellations_db(data_dir, r, since, until):
+    from app.collect.cancellations import route_summary
+    with _DB_LOCK, closing(open_meta(data_dir)) as c:
+        return route_summary(c, r, since, until)
+
+
+@router.get("/routes/{r}/cancellations")
+async def route_cancellations(request: Request, r: RouteP, since: QStr = None, until: QStr = None):
+    """Cancelled calls vs. recorded arrivals for a route; default window is the last 30 days. Not cached:
+    cheap and should show a new cancellation at once. rate is null when nothing was scheduled or cancelled."""
+    until_i = _int("until", until) if until else int(time.time()) + 86400
+    since_i = _int("since", since) if since else until_i - 30 * 86400
+    return await run_in_threadpool(_cancellations_db, request.app.state.settings.data_dir, r, since_i, until_i)
+
+
+def _alerts_db(data_dir, limit):
+    with _DB_LOCK, closing(open_meta(data_dir)) as c:
+        rows = c.execute("select alert_id, header, description, effect, routes, stops, starts, ends, first_seen, last_seen "
+                         "from alerts order by last_seen desc limit ?", (limit,)).fetchall()
+    keys = ("id", "header", "description", "effect", "routes", "stops", "starts", "ends", "first_seen", "last_seen")
+    return [{**dict(zip(keys, row)), "routes": json.loads(row[4]), "stops": json.loads(row[5])} for row in rows]
+
+
+@router.get("/alerts")
+async def alerts(request: Request, limit: int = Query(50, ge=1, le=200)):
+    """Service alerts the server has published, most recently seen first."""
+    return await run_in_threadpool(_alerts_db, request.app.state.settings.data_dir, limit)
+
+
 @router.get("/routes/{r}/summary")
 async def route_summary(request: Request, r: RouteP, p: P):
     """Per-stop delay stats in ROUTE order from the server's route_stops (first direction listing
